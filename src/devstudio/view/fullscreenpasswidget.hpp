@@ -12,6 +12,7 @@
 
 class QByteArray;
 class QString;
+class QShowEvent;
 
 namespace Pelican {
 struct PassShapePolicy;
@@ -98,6 +99,11 @@ class FullscreenPassWidget final : public QWidget {
     // Plan's Add fullscreen pass... hands it, and the Graph tab places the
     // pass. False -- or no action -- keeps the form's new authored pass.
     void setGraphPlaceAction(std::function<bool(const QString &op)> action);
+
+  protected:
+    // RP-1a2: a tabified dock's non-selected page gets no showEvent; its
+    // dock's visibilityChanged drives the same catch-up.
+    void showEvent(QShowEvent *event) override;
 };
 
 } // namespace PelicanStudio

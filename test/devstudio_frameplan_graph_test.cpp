@@ -7,7 +7,9 @@
 #include "nativewindowhost.hpp"
 #include "viewportgeometry.hpp"
 
+#include <QDockWidget>
 #include <QElapsedTimer>
+#include <QMainWindow>
 #include <QPoint>
 #include <QPushButton>
 #include <QSet>
@@ -13077,5 +13079,382 @@ TEST_CASE("RC-6 B7 Frame Plan menu checks wrapped Serial Isolate and No alias an
     REQUIRE(recorder.submits == 1);
     CHECK(Json::parse(QJsonDocument(recorder.params).toJson().toStdString()).at("nodes").at("wp343_mixed_a").at("serial") == Json{{"value", false}, {"strength", "require"}});
 }
+
+// --- RP-1a2. The Frame Plan follows whether it is actually shown: a tabified
+// dock keeps its content isVisible() == true while another tab is in front.
+namespace {
+
+void answerFramePlanRead(EmbeddedViewport &viewport, qint64 id) {
+    Q_EMIT viewport.inspectorRpcSucceeded(
+        id, QByteArray::fromStdString(mixedEditingWire().dump()));
+    QApplication::processEvents();
 }
+
+QTimer *gpuPollTimer(FramePlanWidget &widget) {
+    auto *timer = widget.findChild<QTimer *>(
+        QStringLiteral("pelican.gpuTimingPollTimer"));
+    REQUIRE(timer != nullptr);
+    return timer;
+}
+
+// A capability whose two reads are counted and whose context reply a test
+// hands back through the real result subscription.
+struct CountingFramePlanEditCapability {
+    qint64 next_id = 1;
+    qint64 context_id = 0;
+    qint64 task_id = 0;
+    int context_requests = 0;
+    int task_requests = 0;
+    FramePlanEditCapability::ResultHandler result;
+    FramePlanEditCapability::FailureHandler failure;
+
+    FramePlanEditCapability capability() {
+        FramePlanEditCapability capability;
+        capability.requestAuthoringContext = [this](QString *) {
+            ++context_requests;
+            context_id = next_id++;
+            return context_id;
+        };
+        capability.requestTaskAuthoring = [this](QString *) {
+            ++task_requests;
+            task_id = next_id++;
+            return task_id;
+        };
+        capability.result = [this](
+                                QObject *,
+                                FramePlanEditCapability::ResultHandler handler) {
+            result = std::move(handler);
+        };
+        capability.failure =
+            [this](QObject *,
+                   FramePlanEditCapability::FailureHandler handler) {
+                failure = std::move(handler);
+            };
+        return capability;
+    }
+};
+
+} // namespace
+
+TEST_CASE("RP-1a2 a: a Frame Plan behind another dock tab reads once when its tab is "
+          "selected and stops polling GPU timing while it is behind",
+          "[devstudio][frame-plan][rp1a2][docks]") {
+    application();
+    EmbeddedViewport viewport;
+    std::vector<qint64> reads;
+    qint64 next = 9000;
+
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *plan_dock = new QDockWidget(QStringLiteral("Frame Plan"), &window);
+    auto *other_dock = new QDockWidget(QStringLiteral("Other"), &window);
+    auto *widget = new FramePlanWidget(&viewport, plan_dock);
+    // The poll's three facts: an engine to ask, a shown panel, and a report.
+    // Readiness is turned on after construction so the constructor's own
+    // initial read (which predates setPlanRequest) is out of this count.
+    viewport.rpc_ready_ = true;
+    plan_dock->setWidget(widget);
+    other_dock->setWidget(new QWidget(other_dock));
+    window.addDockWidget(Qt::LeftDockWidgetArea, plan_dock);
+    window.addDockWidget(Qt::LeftDockWidgetArea, other_dock);
+    window.tabifyDockWidget(plan_dock, other_dock);
+    widget->setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    plan_dock->raise();
+    window.resize(1200, 800);
+    window.show();
+    plan_dock->raise();
+    QApplication::processEvents();
+
+    // The panel's own tab is selected. Its content is visible and the GPU
+    // timing clock runs, but no plan has been asked for yet.
+    REQUIRE(widget->isVisible());
+    REQUIRE(gpuPollTimer(*widget)->isActive());
+    CHECK(reads.empty());
+
+    // A first, shown read completes, so the later silence is not vacuous.
+    widget->planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+    answerFramePlanRead(viewport, reads[0]);
+    REQUIRE(reads.size() == 1);
+
+    // The other tab is selected. Qt still calls the content visible, but the
+    // dock is not: the poll stops and a commit sends no read.
+    other_dock->raise();
+    QApplication::processEvents();
+    CHECK(widget->isVisible());
+    CHECK_FALSE(gpuPollTimer(*widget)->isActive());
+    widget->planChangedByCommit();
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+
+    // Selecting the Frame Plan tab catches up exactly once, and the clock
+    // starts again.
+    plan_dock->raise();
+    QApplication::processEvents();
+    CHECK(widget->isVisible());
+    CHECK(gpuPollTimer(*widget)->isActive());
+    REQUIRE(reads.size() == 2);
+    answerFramePlanRead(viewport, reads[1]);
+    CHECK(reads.size() == 2);
+}
+
+TEST_CASE("RP-1a2 a2: a Frame Plan whose tab starts behind another one catches up on "
+          "selection",
+          "[devstudio][frame-plan][rp1a2][docks]") {
+    application();
+    EmbeddedViewport viewport;
+    std::vector<qint64> reads;
+    qint64 next = 9100;
+
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *plan_dock = new QDockWidget(QStringLiteral("Frame Plan"), &window);
+    auto *other_dock = new QDockWidget(QStringLiteral("Other"), &window);
+    auto *widget = new FramePlanWidget(&viewport, plan_dock);
+    viewport.rpc_ready_ = true;
+    plan_dock->setWidget(widget);
+    other_dock->setWidget(new QWidget(other_dock));
+    window.addDockWidget(Qt::LeftDockWidgetArea, plan_dock);
+    window.addDockWidget(Qt::LeftDockWidgetArea, other_dock);
+    window.tabifyDockWidget(plan_dock, other_dock);
+    other_dock->raise();
+    widget->setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    window.resize(1200, 800);
+    window.show();
+    other_dock->raise();
+    QApplication::processEvents();
+
+    // The content is visible, but its tab is not in front: no clock, no read.
+    REQUIRE(widget->isVisible());
+    CHECK_FALSE(gpuPollTimer(*widget)->isActive());
+    widget->planChangedByCommit();
+    QApplication::processEvents();
+    CHECK(reads.empty());
+
+    // Selecting its tab is one catch-up read and one clock start.
+    plan_dock->raise();
+    QApplication::processEvents();
+    CHECK(gpuPollTimer(*widget)->isActive());
+    REQUIRE(reads.size() == 1);
+    answerFramePlanRead(viewport, reads[0]);
+}
+
+TEST_CASE("RP-1a2 b: without a dock the Frame Plan keeps plain show/hide behaviour",
+          "[devstudio][frame-plan][rp1a2]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    std::vector<qint64> reads;
+    qint64 next = 9200;
+    widget.setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    viewport.rpc_ready_ = true;
+    widget.resize(900, 600);
+    widget.show();
+    QApplication::processEvents();
+    REQUIRE(widget.isVisible());
+    REQUIRE(gpuPollTimer(widget)->isActive());
+
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+    answerFramePlanRead(viewport, reads[0]);
+
+    widget.hide();
+    QApplication::processEvents();
+    CHECK_FALSE(gpuPollTimer(widget)->isActive());
+    widget.planChangedByCommit();
+    QApplication::processEvents();
+    CHECK(reads.size() == 1);
+
+    widget.show();
+    QApplication::processEvents();
+    CHECK(widget.isVisible());
+    CHECK(gpuPollTimer(widget)->isActive());
+    REQUIRE(reads.size() == 2);
+    answerFramePlanRead(viewport, reads[1]);
+    CHECK(reads.size() == 2);
+}
+
+TEST_CASE("RP-1a2 b2: a dock assigned to an already shown Frame Plan is picked up",
+          "[devstudio][frame-plan][rp1a2][docks]") {
+    application();
+    EmbeddedViewport viewport;
+    auto *widget = new FramePlanWidget(&viewport);
+    viewport.rpc_ready_ = true;
+    std::vector<qint64> reads;
+    qint64 next = 9300;
+    widget->setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    widget->resize(900, 600);
+    widget->show();
+    QApplication::processEvents();
+    REQUIRE(gpuPollTimer(*widget)->isActive());
+
+    // The panel is moved into a dock after it was already shown. The helper
+    // has to find that dock, not keep trusting the earlier bare widget state.
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *plan_dock = new QDockWidget(QStringLiteral("Frame Plan"), &window);
+    auto *other_dock = new QDockWidget(QStringLiteral("Other"), &window);
+    plan_dock->setWidget(widget);
+    other_dock->setWidget(new QWidget(other_dock));
+    window.addDockWidget(Qt::LeftDockWidgetArea, plan_dock);
+    window.addDockWidget(Qt::LeftDockWidgetArea, other_dock);
+    window.tabifyDockWidget(plan_dock, other_dock);
+    plan_dock->raise();
+    window.resize(1200, 800);
+    window.show();
+    plan_dock->raise();
+    QApplication::processEvents();
+
+    REQUIRE(widget->isVisible());
+    CHECK(gpuPollTimer(*widget)->isActive());
+    other_dock->raise();
+    QApplication::processEvents();
+    CHECK_FALSE(gpuPollTimer(*widget)->isActive());
+    plan_dock->raise();
+    QApplication::processEvents();
+    CHECK(gpuPollTimer(*widget)->isActive());
+
+    widget->planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+    answerFramePlanRead(viewport, reads[0]);
+}
+
+TEST_CASE("RP-1a2 c: a hidden Frame Plan asks for its auxiliary authoring reads on show",
+          "[devstudio][frame-plan][rp1a2][authoring]") {
+    application();
+    EmbeddedViewport viewport;
+    CountingFramePlanEditCapability recorder;
+    auto hub = std::make_shared<RenderConfigDigest>();
+
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *plan_dock = new QDockWidget(QStringLiteral("Frame Plan"), &window);
+    auto *other_dock = new QDockWidget(QStringLiteral("Other"), &window);
+    auto *widget = new FramePlanWidget(&viewport, plan_dock);
+    plan_dock->setWidget(widget);
+    other_dock->setWidget(new QWidget(other_dock));
+    window.addDockWidget(Qt::LeftDockWidgetArea, plan_dock);
+    window.addDockWidget(Qt::LeftDockWidgetArea, other_dock);
+    window.tabifyDockWidget(plan_dock, other_dock);
+    plan_dock->raise();
+    window.resize(1200, 800);
+    window.show();
+    plan_dock->raise();
+    QApplication::processEvents();
+
+    const auto wire = mixedEditingWire();
+    const std::string graph = wire.at("graph").get<std::string>();
+    widget->setRenderConfigDigest(hub);
+    widget->receiveResult(QByteArray::fromStdString(wire.dump()));
+    widget->setEditCapability(recorder.capability());
+    QApplication::processEvents();
+    REQUIRE(recorder.context_requests == 1);
+    REQUIRE(recorder.task_requests == 1);
+    REQUIRE(recorder.result);
+    recorder.result(
+        recorder.context_id,
+        QByteArray::fromStdString(mixedAuthoringContext(graph).dump()));
+    QApplication::processEvents();
+    REQUIRE(hub->current() == std::string{RootDigest});
+
+    // Another panel publishes while this one is behind a tab: neither read is
+    // sent now.
+    other_dock->raise();
+    QApplication::processEvents();
+    CHECK(widget->isVisible());
+    hub->publish(std::string(64, 'e'));
+    QApplication::processEvents();
+    CHECK(recorder.context_requests == 1);
+    CHECK(recorder.task_requests == 1);
+
+    // Selecting the tab catches the context up once. The task read is still
+    // in flight, so it is not doubled.
+    plan_dock->raise();
+    QApplication::processEvents();
+    REQUIRE(recorder.context_requests == 2);
+    CHECK(recorder.task_requests == 1);
+}
+
+TEST_CASE("RP-1a2 d: a Frame Plan behind a dock tab leaves the Raw JSON tab alone until shown",
+          "[devstudio][frame-plan][rp1a2][raw-json]") {
+    application();
+    EmbeddedViewport viewport;
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *plan_dock = new QDockWidget(QStringLiteral("Frame Plan"), &window);
+    auto *other_dock = new QDockWidget(QStringLiteral("Other"), &window);
+    auto *widget = new FramePlanWidget(&viewport, plan_dock);
+    plan_dock->setWidget(widget);
+    other_dock->setWidget(new QWidget(other_dock));
+    window.addDockWidget(Qt::LeftDockWidgetArea, plan_dock);
+    window.addDockWidget(Qt::LeftDockWidgetArea, other_dock);
+    window.tabifyDockWidget(plan_dock, other_dock);
+    plan_dock->raise();
+
+    std::vector<qint64> reads;
+    qint64 next = 9400;
+    widget->setPlanRequest([&](QString *) {
+        reads.push_back(next);
+        return next++;
+    });
+    window.resize(900, 600);
+    window.show();
+    QApplication::processEvents();
+    REQUIRE(plan_dock->isVisible());
+    widget->planChangedByCommit();
+    QApplication::processEvents();
+    REQUIRE(reads.size() == 1);
+
+    auto *raw = widget->findChild<QPlainTextEdit *>(
+        QStringLiteral("pelican.framePlanRawJson"));
+    auto *tabs = widget->findChild<QTabWidget *>(
+        QStringLiteral("pelican.framePlanTabs"));
+    REQUIRE(raw != nullptr);
+    REQUIRE(tabs != nullptr);
+    int index = -1;
+    for (int tab = 0; tab < tabs->count(); ++tab)
+        if (tabs->widget(tab) == raw) index = tab;
+    REQUIRE(index >= 0);
+    tabs->setCurrentIndex(index);
+    QApplication::processEvents();
+    answerFramePlanRead(viewport, reads[0]);
+    const QString first = raw->toPlainText();
+    REQUIRE_FALSE(first.isEmpty());
+
+    // A non-selected tab still has isVisible() true, so before RP-1a2 the
+    // model update below would have filled Raw JSON while nobody could see
+    // it. It is cleared with the rest of the rebuilt view, but not rendered
+    // again until the panel comes back in front.
+    other_dock->raise();
+    QApplication::processEvents();
+    REQUIRE(other_dock->isVisible());
+    REQUIRE(plan_dock->isVisible());
+    auto moved = mixedEditingWire();
+    moved["runtime_generation"] = 4242;
+    widget->receiveResult(QByteArray::fromStdString(moved.dump()));
+    QApplication::processEvents();
+    CHECK(raw->toPlainText().isEmpty());
+
+    plan_dock->raise();
+    QApplication::processEvents();
+    CHECK_FALSE(raw->toPlainText().isEmpty());
+    REQUIRE(Json::parse(raw->toPlainText().toStdString()) == moved);
+}
+} // namespace PelicanStudio
+
 #include "rc6b1_studio_test.inc"

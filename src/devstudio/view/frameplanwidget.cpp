@@ -6,6 +6,7 @@
 #include "shaderinputcontract.hpp"
 #include "jsonrpcrequest.hpp"
 #include "panelhelp.hpp"
+#include "panelshown.hpp"
 #include "studiocommands.hpp"
 #include "../model/frameplanmodel.hpp"
 #include "../viewport/embeddedviewport.hpp"
@@ -695,9 +696,17 @@ struct FramePlanWidget::Impl {
     QPushButton *contract_use_passthrough = nullptr;
     QPushButton *contract_open_shader = nullptr;
     std::optional<std::filesystem::path> project_root;
+    // RP-1a2: what a tabified dock shows, and what a plain widget shows.
+    // Declared last so it is destroyed first: its callbacks use the members
+    // above it.
+    PanelShown shown;
 
     Impl(FramePlanWidget &widget, EmbeddedViewport &embedded_viewport)
-        : owner{widget}, viewport{embedded_viewport} {
+        : owner{widget},
+          viewport{embedded_viewport},
+          shown{widget,
+                [this] { caughtUpOnShow(); },
+                [this] { wentOutOfView(); }} {
         shader_source_open_action = [](const std::filesystem::path &path) {
             return QDesktopServices::openUrl(QUrl::fromLocalFile(
                 QString::fromStdWString(path.wstring())));
@@ -1928,7 +1937,7 @@ struct FramePlanWidget::Impl {
     void requestAuthoringContext(bool even_hidden = false) {
         const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestAuthoringContext || pending_authoring_request != 0 ||
-            (!owner.isVisible() && !even_hidden))
+            (!shown.isShown() && !even_hidden))
             return;
         QString error;
         pending_authoring_request = edit.requestAuthoringContext(&error);
@@ -1939,7 +1948,7 @@ struct FramePlanWidget::Impl {
     void requestTaskAuthoring(bool even_hidden = false) {
         const auto finished = qScopeGuard([this] { updateCanvasEnabled(); });
         if (!edit.requestTaskAuthoring || pending_task_request != 0 ||
-            (!owner.isVisible() && !even_hidden))
+            (!shown.isShown() && !even_hidden))
             return;
         QString error;
         pending_task_request = edit.requestTaskAuthoring(&error);
@@ -1950,7 +1959,7 @@ struct FramePlanWidget::Impl {
     // --- Q-13. Every read and every commit of the document says which digest
     // it saw; a digest another panel saw moves this panel's context.
     void publishDigest(const std::string &digest) {
-        if (digest_hub) digest_hub->publish(digest, &owner);
+        if (digest_hub) digest_hub->publish(digest, &shown); // the subscription's context (RP-1a2): not told its own news
     }
 
     // Another panel read or committed the document at `digest`. A context
@@ -3877,7 +3886,7 @@ struct FramePlanWidget::Impl {
     // engine coming back reads the plan anyway.
     void planChangedByCommit() {
         if (!planReadable()) return;
-        if (!owner.isVisible()) {
+        if (!shown.isShown()) {
             plan_stale = true;
             return;
         }
@@ -3898,6 +3907,9 @@ struct FramePlanWidget::Impl {
             return;
         }
         if (!planReadable()) {
+            // RP-1a2: a refresh asked for by being shown is not lost because
+            // the engine cannot be asked yet.
+            plan_stale = true;
             showUnavailable(owner.tr("the engine RPC connection is not ready."));
             return;
         }
@@ -3909,6 +3921,9 @@ struct FramePlanWidget::Impl {
                               : viewport.requestRpc(QStringLiteral("get_frame_plan"),
                                                     QJsonObject{}, &error);
         if (pending_request == 0) {
+            // The deferred read keeps its flag, so the next show or commit
+            // asks again. Nothing is retried in a loop.
+            plan_stale = true;
             showFailure(error);
             return;
         }
@@ -3917,9 +3932,32 @@ struct FramePlanWidget::Impl {
         showStatus(owner.tr("Requesting the current frame plan..."));
     }
 
+    // RP-1a2: the body of showEvent, after the base class. Reached from a
+    // plain show and from selecting this panel's tabified dock.
+    void caughtUpOnShow() {
+        // Coming back into view is a moment the numbers are stale, so ask
+        // once now and let the clock take over.
+        requestGpuTiming();
+        updateGpuTimingPoll();
+        // Now that it is in front, it may ask. Nothing is lost by having
+        // waited: both reads are cheap and the canvas draws its bands the
+        // moment they land.
+        requestAuthoringContext();
+        requestTaskAuthoring();
+        refreshRawJson();
+        if (model) loadPlacement();
+        // Q-18: a commit elsewhere while out of view left the plan behind.
+        if (plan_stale && planReadable()) readPlanAgain();
+    }
+
+    // RP-1a2: the body of hideEvent, after the base class. Called once per
+    // shown -> hidden transition, whichever of hideEvent, the Hide event and
+    // the dock's visibilityChanged arrived last.
+    void wentOutOfView() { updateGpuTimingPoll(); }
+
     void updateGpuTimingPoll() {
         if (gpu_timing_reportable && viewport.rpcReady() &&
-            owner.isVisible()) {
+            shown.isShown()) {
             if (!gpu_timing_poll->isActive()) gpu_timing_poll->start();
             return;
         }
@@ -4166,6 +4204,9 @@ struct FramePlanWidget::Impl {
             return;
         }
         pending_request = 0;
+        // RP-1a2: a read asked for by being shown that failed keeps its
+        // deferred flag; the next show or commit asks again (not in a loop).
+        plan_stale = true;
         // Q-18: the read a commit was waiting behind is gone; the one after
         // it is what the panel shows.
         if (std::exchange(plan_reread, false)) {
@@ -4378,7 +4419,7 @@ struct FramePlanWidget::Impl {
     // front -- for a view nobody had opened.
     void refreshRawJson() {
         if (raw_json == nullptr || !model) return;
-        if (!owner.isVisible() || tabs->currentWidget() != raw_json) return;
+        if (!shown.isShown() || tabs->currentWidget() != raw_json) return;
         if (!raw_json_stale) return;
         raw_json_stale = false;
         try {
@@ -5460,23 +5501,16 @@ FramePlanWidget::~FramePlanWidget() = default;
 
 void FramePlanWidget::showEvent(QShowEvent *event) {
     QWidget::showEvent(event);
-    // Coming back into view is a moment the numbers are stale, so ask once
-    // now and let the clock take over.
-    impl_->requestGpuTiming();
-    impl_->updateGpuTimingPoll();
-    // Now that it is in front, it may ask. Nothing is lost by having waited:
-    // both reads are cheap and the canvas draws its bands the moment they land.
-    impl_->requestAuthoringContext();
-    impl_->requestTaskAuthoring();
-    impl_->refreshRawJson();
-    if (impl_->model) impl_->loadPlacement();
-    // Q-18: a commit elsewhere while out of view left the plan behind.
-    if (impl_->plan_stale && impl_->planReadable()) impl_->readPlanAgain();
+    // RP-1a2: a tabified dock's non-selected page gets no showEvent, and its
+    // visibilityChanged may arrive instead; one transition, one catch-up.
+    impl_->shown.becameShown();
 }
 
 void FramePlanWidget::hideEvent(QHideEvent *event) {
     QWidget::hideEvent(event);
-    impl_->updateGpuTimingPoll();
+    // The Hide event may already have ended the transition; this is the same
+    // once-per-transition path.
+    impl_->shown.becameHidden();
 }
 
 void FramePlanWidget::receiveResult(const QByteArray &result_json) {
@@ -5831,9 +5865,13 @@ void FramePlanWidget::setRenderConfigDigest(
     std::shared_ptr<RenderConfigDigest> digest) {
     impl_->digest_hub = std::move(digest);
     if (impl_->digest_hub)
-        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
-            impl->documentMoved(moved);
-        });
+        // The subscription is tied to the Impl's PanelShown, declared last,
+        // so its QPointer is cleared as the Impl is destroyed: a publish in
+        // that window cannot reach the dead Impl.
+        impl_->digest_hub->subscribe(&impl_->shown,
+                                     [impl = impl_.get()](const std::string &moved) {
+                                         impl->documentMoved(moved);
+                                     });
 }
 
 void FramePlanWidget::refreshAuthoringContext() {

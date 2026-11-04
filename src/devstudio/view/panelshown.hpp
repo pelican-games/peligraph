@@ -26,15 +26,20 @@ namespace PelicanStudio {
 class PanelShown final : public QObject {
   public:
     using BecameShown = std::function<void()>;
+    using BecameHidden = std::function<void()>;
 
-    PanelShown(QWidget &owner, BecameShown became_shown)
-        : owner_{owner}, became_shown_{std::move(became_shown)} {
+    PanelShown(QWidget &owner, BecameShown became_shown,
+               BecameHidden became_hidden = {})
+        : owner_{owner},
+          became_shown_{std::move(became_shown)},
+          became_hidden_{std::move(became_hidden)} {
         // A panel hidden directly (no dock) does not get a visibilityChanged
         // false; its own Hide event is the transition's end.
         owner_.installEventFilter(this);
     }
 
-    // Rule 1. Finds the enclosing dock on the first call.
+    // Rule 1. Finds the enclosing dock on the first call. A dock assigned
+    // after the panel was shown makes the remembered state catch up at once.
     [[nodiscard]] bool isShown() const {
         const_cast<PanelShown *>(this)->findDock();
         return owner_.isVisible() && (!dock_ || dock_visible_);
@@ -53,17 +58,32 @@ class PanelShown final : public QObject {
             was_shown_ = true;
             if (became_shown_) became_shown_();
         } else if (!shown) {
-            was_shown_ = false;
+            transitionToHidden();
         }
+    }
+
+    // The "became hidden" path. hideEvent, the owner's Hide event and
+    // visibilityChanged(false) may all arrive for one hide; this calls
+    // `became_hidden_` once per shown -> hidden transition.
+    void becameHidden() {
+        findDock();
+        transitionToHidden();
     }
 
   protected:
     bool eventFilter(QObject *watched, QEvent *event) override {
-        if (watched == &owner_ && event->type() == QEvent::Hide) was_shown_ = false;
+        if (watched == &owner_ && event->type() == QEvent::Hide)
+            transitionToHidden();
         return QObject::eventFilter(watched, event);
     }
 
   private:
+    void transitionToHidden() {
+        if (!was_shown_) return;
+        was_shown_ = false;
+        if (became_hidden_) became_hidden_();
+    }
+
     void findDock() {
         if (dock_) return;
         for (QWidget *widget = owner_.parentWidget(); widget != nullptr;
@@ -77,14 +97,28 @@ class PanelShown final : public QObject {
             QObject::connect(dock, &QDockWidget::visibilityChanged, this,
                              [this](bool visible) {
                                  dock_visible_ = visible;
-                                 becameShown();
+                                 if (visible) {
+                                     becameShown();
+                                 } else {
+                                     transitionToHidden();
+                                 }
                              });
+            // The dock may have been assigned after the panel was shown (or
+            // hidden): the remembered state must not stay out of step.
+            const bool shown = owner_.isVisible() && dock_visible_;
+            if (shown && !was_shown_) {
+                was_shown_ = true;
+                if (became_shown_) became_shown_();
+            } else if (!shown) {
+                transitionToHidden();
+            }
             return;
         }
     }
 
     QWidget &owner_;
     BecameShown became_shown_;
+    BecameHidden became_hidden_;
     QPointer<QDockWidget> dock_;
     bool dock_visible_ = false;
     bool was_shown_ = false;

@@ -10,6 +10,7 @@
 #include "fullscreenshadertemplate.hpp"
 #include "presetpassedit.hpp"
 #include "panelhelp.hpp"
+#include "panelshown.hpp"
 #include "renderconfigdigest.hpp"
 #include "rendereditcompletion.hpp"
 #include "shadercompilelogpanel.hpp"
@@ -51,6 +52,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSignalBlocker>
+#include <QShowEvent>
 #include <QSpinBox>
 #include <QStringList>
 #include <QTimer>
@@ -363,13 +365,25 @@ struct FullscreenPassWidget::Impl {
     bool retrying = false;
     bool retry_pending = false;
     QPushButton *reload_authoring = nullptr;
+    // RP-1a2: what a tabified dock shows, and what a plain widget shows.
+    // Declared last so it is destroyed first: its callback uses the members
+    // above it.
+    PanelShown shown;
 
     Impl(FullscreenPassWidget &widget, FramePlanReadCapability capability,
          RenderPassAuthoringCapability authoring_capability,
          const Pelican::PassShapePolicy &policy)
-        : owner{widget}, frame_plan{std::move(capability)},
+        : owner{widget},
+          frame_plan{std::move(capability)},
           authoring{std::move(authoring_capability)},
-          shape_policy{policy} {
+          shape_policy{policy},
+          shown{widget, [this] {
+                    if (context_reread && pending_authoring_request == 0 &&
+                        pending_ticket.isEmpty()) {
+                        context_reread = false;
+                        requestAuthoringContext(true);
+                    }
+                }} {
         if (!frame_plan.ready || !frame_plan.requestFramePlan ||
             !frame_plan.result || !frame_plan.failure) {
             throw std::invalid_argument(
@@ -2417,6 +2431,10 @@ struct FullscreenPassWidget::Impl {
             pending_authoring_kind == AuthoringRequest::context && !keep_draft)
             keep_draft_on_context = false;
         if (!authoring_rpc_available || pending_authoring_request != 0) {
+            // RP-1a2: a required read that cannot be sent keeps its deferred
+            // flag; the next show (or the RPC becoming available) asks again,
+            // not a loop.
+            if (!authoring_rpc_available) context_reread = true;
             return;
         }
         QString error;
@@ -2424,9 +2442,13 @@ struct FullscreenPassWidget::Impl {
         pending_authoring_request = authoring.requestContext(&error);
         if (pending_authoring_request == 0) {
             pending_authoring_kind = AuthoringRequest::none;
+            context_reread = true;
             authoringError(error);
             return;
         }
+        // The read is on its way: what it was waiting for is now satisfied.
+        // A move after this point sets the flag again.
+        context_reread = false;
         keep_draft_on_context = keep_draft;
         authoring_status->setStyleSheet({});
         setPanelNotice(
@@ -2884,7 +2906,7 @@ struct FullscreenPassWidget::Impl {
                 : -1);
 
         source_digest = next_digest;
-        if (digest_hub) digest_hub->publish(source_digest, &owner);
+        if (digest_hub) digest_hub->publish(source_digest, &shown); // the subscription's context (RP-1a2): not told its own news
         authored_passes = std::move(next_passes);
         authored_pass_counts = std::move(next_counts);
         anchors = std::move(next_anchors);
@@ -2999,6 +3021,13 @@ struct FullscreenPassWidget::Impl {
         if (!authoring_available || source_digest.empty() ||
             source_digest == digest)
             return;
+        // RP-1a2: a dock may have been assigned since the last look; a panel
+        // behind another tab reads when it is next shown.
+        shown.locateDock();
+        if (!shown.isShown()) {
+            context_reread = true;
+            return;
+        }
         if (pending_authoring_request != 0 || !pending_ticket.isEmpty()) {
             context_reread = true;
             return;
@@ -3063,7 +3092,11 @@ struct FullscreenPassWidget::Impl {
     // After any answer: a move seen while busy is followed once idle.
     void afterAuthoringAnswer(AuthoringRequest completed) {
         if (pending_authoring_request != 0 || !pending_ticket.isEmpty()) return;
-        if (std::exchange(context_reread, false)) {
+        // RP-1a2: a hidden panel keeps the flag for its next show unless the
+        // flag is serving a refused edit's required re-read, which runs
+        // whether shown or not.
+        if (context_reread && (shown.isShown() || retry_pending)) {
+            context_reread = false;
             requestAuthoringContext(true);
             return;
         }
@@ -3184,11 +3217,15 @@ struct FullscreenPassWidget::Impl {
         pending_authoring_kind = AuthoringRequest::none;
         pending_ticket.clear();
         keep_draft_on_context = false;
+        // RP-1a2: a mandatory read that failed is asked for again on the next
+        // show (or when the RPC comes back), not in a loop now.
+        if (completed == AuthoringRequest::context) context_reread = true;
         if (std::exchange(retry_pending, false)) {
             offerReload(message);
             return;
         }
         authoringError(message);
+        if (completed == AuthoringRequest::context) return;
         afterAuthoringAnswer(completed);
     }
 
@@ -3771,6 +3808,11 @@ FullscreenPassWidget::~FullscreenPassWidget() {
     removeEngineShaderListObserver(impl_->engine_list_observer);
 }
 
+void FullscreenPassWidget::showEvent(QShowEvent *event) {
+    QWidget::showEvent(event);
+    impl_->shown.becameShown();
+}
+
 void FullscreenPassWidget::setCommittedAction(std::function<void()> action) {
     impl_->committed_action = std::move(action);
 }
@@ -3844,7 +3886,7 @@ void FullscreenPassWidget::showShaderReloadLog(const QString &message) {
         return;
     }
     // Only an open Pass Editor takes the log; the canvas marks are the rest.
-    if (!isVisible()) return;
+    if (!impl.shown.isShown()) return;
     if (impl.compile_log->showMessage(message))
         impl.reload_log_text = impl.compile_log->logText();
 }
@@ -3867,9 +3909,13 @@ void FullscreenPassWidget::setRenderConfigDigest(
     std::shared_ptr<RenderConfigDigest> digest) {
     impl_->digest_hub = std::move(digest);
     if (impl_->digest_hub)
-        impl_->digest_hub->subscribe(this, [impl = impl_.get()](const std::string &moved) {
-            impl->documentMoved(moved);
-        });
+        // The subscription is tied to the Impl's PanelShown, declared last,
+        // so its QPointer is cleared as the Impl is destroyed: a publish in
+        // that window cannot reach the dead Impl.
+        impl_->digest_hub->subscribe(&impl_->shown,
+                                     [impl = impl_.get()](const std::string &moved) {
+                                         impl->documentMoved(moved);
+                                     });
 }
 
 } // namespace PelicanStudio

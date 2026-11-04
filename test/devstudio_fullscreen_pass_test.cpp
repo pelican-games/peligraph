@@ -47,10 +47,12 @@
 #include <QEventLoop>
 #include <QTimer>
 #include <QDir>
+#include <QDockWidget>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
+#include <QMainWindow>
 #include <QListWidget>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -4214,6 +4216,9 @@ TEST_CASE("Q-13 the Pass Editor reads the document again when another panel "
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    // RP-1a2: reading a moved document is the work of a shown panel; this
+    // case exercises the shown path.
+    form.show();
     const auto digest = std::make_shared<RenderConfigDigest>();
     form.setRenderConfigDigest(digest);
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
@@ -5673,4 +5678,395 @@ TEST_CASE("RC-3c2b2 Studio no push constants preserves omission through load app
         CHECK(params.at("uses_light_data").is_null());
     }
 }
+} // namespace PelicanStudio
+
+namespace PelicanStudio {
+namespace {
+
+Json rp1a2Context(char digit) {
+    auto context = f3AuthoringContext();
+    context["source_digest"]["hex"] = std::string(64, digit);
+    return context;
+}
+
+void rp1a2AnswerScene(AuthoringHarness &authoring) {
+    REQUIRE_FALSE(authoring.scene_structure_requests.empty());
+    authoring.succeed(authoring.scene_structure_requests.back(),
+                      {{"definitions", Json::array()}});
+    QApplication::processEvents();
+}
+
+std::size_t rp1a2ContextCount(const AuthoringHarness &authoring) {
+    return static_cast<std::size_t>(std::count_if(
+        authoring.requests.begin(), authoring.requests.end(),
+        [](const AuthoringHarness::Request &request) {
+            return request.method ==
+                   QStringLiteral("get_render_authoring_context");
+        }));
+}
+
+std::size_t rp1a2MethodCount(const AuthoringHarness &authoring,
+                             const QString &method) {
+    return static_cast<std::size_t>(std::count_if(
+        authoring.requests.begin(), authoring.requests.end(),
+        [&](const AuthoringHarness::Request &request) {
+            return request.method == method;
+        }));
+}
+
+} // namespace
+
+TEST_CASE("RP-1a2 c1 a hidden Pass Editor publishes nothing and reads once when shown",
+          "[devstudio][fullscreen-pass][rp1a2][hidden]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.show();
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(digest->current() == std::string(64, 'a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    const auto contexts = rp1a2ContextCount(authoring);
+    const auto scenes = authoring.scene_structure_requests.size();
+
+    // Plain hide: three commits elsewhere make no request at all.
+    form.hide();
+    QApplication::processEvents();
+    for (const char digit : {'b', 'c', 'd'})
+        digest->publish(std::string(64, digit));
+    QApplication::processEvents();
+    CHECK(rp1a2ContextCount(authoring) == contexts);
+    CHECK(authoring.scene_structure_requests.size() == scenes);
+    CHECK(authoring.requests.size() == 1);
+
+    // Shown: exactly one read, of the newest document, then one structures
+    // read for the context it produced.
+    form.show();
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('d'));
+    CHECK(digest->current() == std::string(64, 'd'));
+    CHECK(authoring.scene_structure_requests.size() == scenes + 1);
+    rp1a2AnswerScene(authoring);
+    CHECK(authoring.requests.size() == 2);
+}
+
+TEST_CASE("RP-1a2 c2 a Pass Editor behind a dock tab publishes nothing and reads once when selected",
+          "[devstudio][fullscreen-pass][rp1a2][hidden][dock]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    QMainWindow window;
+    window.setCentralWidget(new QWidget(&window));
+    auto *plan_dock = new QDockWidget(QStringLiteral("Pass Editor"), &window);
+    auto *other_dock = new QDockWidget(QStringLiteral("Other"), &window);
+    auto *form = new FullscreenPassWidget(refresh.driver(), authoring.driver());
+    plan_dock->setWidget(form);
+    other_dock->setWidget(new QWidget(other_dock));
+    window.addDockWidget(Qt::RightDockWidgetArea, plan_dock);
+    window.addDockWidget(Qt::RightDockWidgetArea, other_dock);
+    window.tabifyDockWidget(plan_dock, other_dock);
+    other_dock->raise();
+    window.resize(900, 600);
+    window.show();
+    QApplication::processEvents();
+    REQUIRE(plan_dock->isVisible());
+    REQUIRE(other_dock->isVisible());
+
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form->setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    const auto contexts = rp1a2ContextCount(authoring);
+    const auto scenes = authoring.scene_structure_requests.size();
+
+    for (const char digit : {'b', 'c', 'd'})
+        digest->publish(std::string(64, digit));
+    QApplication::processEvents();
+    CHECK(rp1a2ContextCount(authoring) == contexts);
+    CHECK(authoring.scene_structure_requests.size() == scenes);
+    CHECK(authoring.requests.size() == 1);
+
+    plan_dock->raise();
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('d'));
+    CHECK(digest->current() == std::string(64, 'd'));
+    CHECK(authoring.scene_structure_requests.size() == scenes + 1);
+    rp1a2AnswerScene(authoring);
+    CHECK(authoring.requests.size() == 2);
+}
+
+TEST_CASE("RP-1a2 d a shown Pass Editor reads the document once for a commit elsewhere",
+          "[devstudio][fullscreen-pass][rp1a2][shown]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.show();
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    const auto contexts = rp1a2ContextCount(authoring);
+    const auto scenes = authoring.scene_structure_requests.size();
+
+    digest->publish(std::string(64, 'b'));
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('b'));
+    CHECK(digest->current() == std::string(64, 'b'));
+    CHECK(authoring.scene_structure_requests.size() == scenes + 1);
+    rp1a2AnswerScene(authoring);
+    // One context read and one structures read; no authored-pass request.
+    CHECK(authoring.requests.size() == 2);
+    CHECK(rp1a2MethodCount(authoring, QStringLiteral("add_authored_pass")) == 0);
+    CHECK(rp1a2MethodCount(authoring, QStringLiteral("get_edit_result")) == 0);
+}
+
+TEST_CASE("RP-1a2 e a reply landing while the Pass Editor is hidden waits for its show",
+          "[devstudio][fullscreen-pass][rp1a2][hidden][in-flight]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.show();
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    const auto contexts = rp1a2ContextCount(authoring);
+
+    // A read is in flight when the panel hides; a commit then moves the
+    // document on, and the old read answers only after it is out of view.
+    digest->publish(std::string(64, 'b'));
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    const auto in_flight = authoring.requests.back().id;
+    form.hide();
+    QApplication::processEvents();
+    digest->publish(std::string(64, 'c'));
+    QApplication::processEvents();
+    authoring.succeed(in_flight, rp1a2Context('b'));
+    QApplication::processEvents();
+    // The old answer is consumed, but no context read follows while hidden.
+    CHECK(rp1a2ContextCount(authoring) == contexts + 1);
+    rp1a2AnswerScene(authoring);
+
+    form.show();
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 2);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('c'));
+    CHECK(digest->current() == std::string(64, 'c'));
+    CHECK(authoring.scene_structure_requests.size() == 3);
+    rp1a2AnswerScene(authoring);
+    // The deferred flag was spent by that one read.
+    CHECK(rp1a2ContextCount(authoring) == contexts + 2);
+}
+
+TEST_CASE("RP-1a2 f a refused hidden edit re-reads the moved document and commits once from the newest",
+          "[devstudio][fullscreen-pass][rp1a2][hidden][external-modification]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.show();
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+    auto &save = required<QPushButton>(form, "pelican.fullscreenPass.save");
+    REQUIRE(save.isEnabled());
+    const Json moved_refusal{
+        {"status", "rejected"},
+        {"committed", false},
+        {"error",
+         {{"code", "external_modification"},
+          {"message", "render config base digest no longer matches the "
+                      "engine-owned document"}}}};
+
+    form.hide();
+    QApplication::processEvents();
+    digest->publish(std::string(64, 'b'));
+    QApplication::processEvents();
+    const auto contexts = rp1a2ContextCount(authoring);
+    CHECK(contexts == 1);
+
+    // The edit is built from the stale context and refused.
+    save.click();
+    QApplication::processEvents();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    CHECK(authoring.requests.back()
+              .params.value(QStringLiteral("base_source_digest"))
+              .toString() == QString::fromStdString(std::string(64, 'a')));
+    authoring.succeed(authoring.requests.back().id, moved_refusal);
+    QApplication::processEvents();
+    // The required re-read runs while hidden.
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+
+    // A newer document appears before that read answers. It must not be
+    // forgotten: read C, then rebuild the edit from C once.
+    digest->publish(std::string(64, 'c'));
+    QApplication::processEvents();
+    CHECK(rp1a2ContextCount(authoring) == contexts + 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('b'));
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 2);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('c'));
+    QApplication::processEvents();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("add_authored_pass"));
+    CHECK(authoring.requests.back()
+              .params.value(QStringLiteral("base_source_digest"))
+              .toString() == QString::fromStdString(std::string(64, 'c')));
+    CHECK(authoring.requests.back()
+              .params.value(QStringLiteral("pass"))
+              .toObject()
+              .value(QStringLiteral("name"))
+              .toString() == QStringLiteral("tint"));
+    CHECK(required<QLineEdit>(form, "pelican.fullscreenPass.name").text() ==
+          QStringLiteral("tint"));
+    const auto adds = rp1a2MethodCount(authoring, QStringLiteral("add_authored_pass"));
+    CHECK(adds == 2);
+
+    // That rebuilt edit commits without a third try.
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "accepted"}, {"ticket", "rp1a2-f"}});
+    QApplication::processEvents();
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_edit_result"));
+    const auto refreshes = refresh.requests.size();
+    authoring.succeed(authoring.requests.back().id,
+                      {{"status", "committed"},
+                       {"committed", true},
+                       {"source_digest", {{"hex", std::string(64, 'c')}}}});
+    QApplication::processEvents();
+    CHECK(rp1a2MethodCount(authoring, QStringLiteral("add_authored_pass")) == adds);
+    // The commit path reads the context and the plan again; its follow-up
+    // notice is the live one, so the fact to check is that both went out.
+    CHECK(refresh.requests.size() == refreshes + 1);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    CHECK(required<QLabel>(form, "pelican.fullscreenPass.authoringStatus")
+              .text()
+              .contains(QStringLiteral("requesting context")));
+}
+
+TEST_CASE("RP-1a2 g a failed mandatory read keeps the Pass Editor's deferred flag",
+          "[devstudio][fullscreen-pass][rp1a2][hidden][failure]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.show();
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    const auto contexts = rp1a2ContextCount(authoring);
+
+    form.hide();
+    QApplication::processEvents();
+    digest->publish(std::string(64, 'b'));
+    QApplication::processEvents();
+    form.show();
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    const auto failed = authoring.requests.back().id;
+    REQUIRE(authoring.failure_handler);
+    authoring.failure_handler(failed, QStringLiteral("the engine went away"));
+    QApplication::processEvents();
+    // No immediate retry loop.
+    CHECK(rp1a2ContextCount(authoring) == contexts + 1);
+
+    // The next show asks again, and this read succeeds.
+    form.hide();
+    form.show();
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 2);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('b'));
+    CHECK(digest->current() == std::string(64, 'b'));
+    rp1a2AnswerScene(authoring);
+    CHECK(rp1a2ContextCount(authoring) == contexts + 2);
+}
+
+TEST_CASE("RP-1a2 h a read in flight at show starts the next needed read when it answers",
+          "[devstudio][fullscreen-pass][rp1a2][shown][pending]") {
+    (void)application();
+    RefreshHarness refresh;
+    AuthoringHarness authoring;
+    FullscreenPassWidget form{refresh.driver(), authoring.driver()};
+    form.show();
+    const auto digest = std::make_shared<RenderConfigDigest>();
+    form.setRenderConfigDigest(digest);
+    REQUIRE(authoring.requests.size() == 1);
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('a'));
+    REQUIRE(authoring.scene_structure_requests.size() == 1);
+    rp1a2AnswerScene(authoring);
+    form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
+    driveMinimalDraft(form, "tint", "project://shaders/tint", "lit_color",
+                      "tint_out");
+    auto &name = required<QLineEdit>(form, "pelican.fullscreenPass.name");
+    const auto contexts = rp1a2ContextCount(authoring);
+
+    // B is being read, the author's draft is the form's, and the panel hides.
+    digest->publish(std::string(64, 'b'));
+    QApplication::processEvents();
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 1);
+    const auto in_flight = authoring.requests.back().id;
+    form.hide();
+    QApplication::processEvents();
+    // C moves the document while B is in flight.
+    digest->publish(std::string(64, 'c'));
+    QApplication::processEvents();
+
+    // The panel is shown while B is still in flight: the flag waits for B.
+    form.show();
+    QApplication::processEvents();
+    CHECK(rp1a2ContextCount(authoring) == contexts + 1);
+    authoring.succeed(in_flight, rp1a2Context('b'));
+    QApplication::processEvents();
+    // B's completion starts the one read C needs, and keeps the draft.
+    REQUIRE(rp1a2ContextCount(authoring) == contexts + 2);
+    REQUIRE(authoring.requests.back().method ==
+            QStringLiteral("get_render_authoring_context"));
+    authoring.succeed(authoring.requests.back().id, rp1a2Context('c'));
+    QApplication::processEvents();
+    CHECK(name.text() == QStringLiteral("tint"));
+    CHECK(digest->current() == std::string(64, 'c'));
+    CHECK(rp1a2ContextCount(authoring) == contexts + 2);
+}
+
 } // namespace PelicanStudio
