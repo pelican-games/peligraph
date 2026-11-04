@@ -2371,7 +2371,7 @@ RC-6b1 の時点では `vulkan_plan_pins` / `vulkan_physical_fragments` を書�
 
 **RPC の緩め**: `edit_target_planning` は、合成の結果に無い名前でも、root の文書に保存してある葉を `null` で消す要求を受けます。名前の値が object で、その field がどれも `null`、どれも保存済みの entry にある場合だけです([受ける所](../../src/core/communication/renderconfigeditor.cpp#L5467))。それ以外の、無い名前への書き込みは今までどおり `target_planning_name_unknown` です。
 
-**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5183))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
+**表示**: Studio の Frame Plan の Physical plan のタブに **Policy** の節が出て、dump の `policy` の行を `<target>.<key>` と行の JSON で並べます([節を作る所](../../src/devstudio/view/frameplanwidget.cpp#L5187))。ImGui の Pelican Compiled Passes も、物理計画の facts に `policy <target>.<key>` の行を足します([足す所](../../src/core/imgui/compiledplanviewer.cpp#L157))。
 
 #### 3 つの representation と、その選ばれ方
 
@@ -2852,7 +2852,7 @@ RC-7b で外れた理由は次の節の decision に出ます。
 - VMA の allocation と VkDeviceMemory の block は別の単位です。`device_memory_block_count` は参照する block の数で、block の予約量は数えません。
 - ✅RC-7e の `unallocated_resources`: 登録しなかった render target と、その登録の時の extent での payload の見積もり。上の 3 つの量のどれにも入りません(上の「[メモリの計測](#physical-plan-memory)」と下の「[使われない render target を確保しない](#unallocated-render-targets)」)。
 
-Studio の Frame Plan は、計画の region / offset と Freeze の意味をそのまま使い、実際の region / offset / memory type・共有の VMA の bytes・payload を並べて出します。status 行の合計は実際の VMA の総量で、measured / unmeasured を出し分けます(実装者の報告。表示の文言は [その所](../../src/devstudio/view/frameplanwidget.cpp#L4328))。
+Studio の Frame Plan は、計画の region / offset と Freeze の意味をそのまま使い、実際の region / offset / memory type・共有の VMA の bytes・payload を並べて出します。status 行の合計は実際の VMA の総量で、measured / unmeasured を出し分けます(実装者の報告。表示の文言は [その所](../../src/devstudio/view/frameplanwidget.cpp#L4332))。
 
 <a id="memory-kinds"></a>
 

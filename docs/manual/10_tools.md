@@ -947,7 +947,7 @@ pelican_studio --project <dir> --tab graph     # その render tool の dock を
 pelican_studio --automation <名前>             # test 用の自動化チャネルを開く(Q-1)
 ```
 
-`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([render tool の id の一覧](../../src/devstudio/view/mainwindow.cpp#L2443))。✅UI-2 から 4 つはそれぞれ自分の dock で、`--tab` はその dock を出して前に出します(`MainWindow::showRenderTool()`。名前は前のまま。[第15章](15_studio.md) §15.6 の「render tool の 4 つの dock」)。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([render tool の名前の検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった dock」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L92)) —— project を開くとその project のツール配置が復元され、 どの dock が前かが変わるからです。
+`--tab` が取るのは `frame_plan` / `render_features` / `rendering_settings` / `graph` の 4 つ(`rendering_settings` は RSX から。[第13章](13_editor.md)「Studio の Rendering settings タブ」) ([render tool の id の一覧](../../src/devstudio/view/mainwindow.cpp#L2439))。✅UI-2 から 4 つはそれぞれ自分の dock で、`--tab` はその dock を出して前に出します(`MainWindow::showRenderTool()`。名前は前のまま。[第15章](15_studio.md) §15.6 の「render tool の 4 つの dock」)。**未知の名前は window を作る前に console へ 理由を出して終了コード 2** です([render tool の名前の検査](../../src/devstudio/main.cpp#L40)) —— window を開いて「たまたま前にあった dock」を見せると、綴り間違いが成功に見えるためです。`--tab` は `openProject` の**後**に適用されます ([順序](../../src/devstudio/view/uimain.cpp#L92)) —— project を開くとその project のツール配置が復元され、 どの dock が前かが変わるからです。
 
 見た目は **View ▸ Theme ▸ Light / Dark** で切り替えます(N-5。CLI の引数ではありません)。選択は QSettings の `studio/theme` に残り、**再起動なしで**窓と 2 つのノードキャンバスに当たります([第13章 §13.5](13_editor.md))。
 
@@ -989,7 +989,7 @@ viewport の左クリックは child client の物理 pixel 座標を `pick_obje
 現在は選択と toolbar の Move / Rotate / Scale モードを `set_gizmo` で player へ送ります。
 
 Inspector の `Add component...` / `Ray geometry...` の下、properties の一覧より**上**には **Attached graphs** グループが
-あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L312))。選択オブジェクトを owner とする
+あります([置き場](../../src/devstudio/view/inspectorwidget.cpp#L313))。選択オブジェクトを owner とする
 `graph.instance` の一覧と **Attach...** / **Detach** / **Refresh**、選択した instance の **Instance inputs**
 (port ごとに mode / 著作された値 / 実際に使われた値の 3 列)、そして port ごとの 4 導線 ——
 **Control with a curve** / **Connect to another output** / **Open the source** / **Disconnect** です。
@@ -1024,7 +1024,7 @@ overlay が用意しますが、overlay の feature 一覧を scene や project 
 
 **Graph・Frame Plan・Features・Rendering settings は、それぞれ自分の dock です(✅UI-2)** —— `pelican.graphDock` /
 `pelican.framePlanDock`(Frame Plan だけ)/ `pelican.renderFeaturesDock` / `pelican.renderingSettingsDock`
-([4 つの dock を作る所](../../src/devstudio/view/mainwindow.cpp#L713))。前は Frame Plan の dock の中の `QTabWidget`(`pelican.renderTools`)の
+([4 つの dock を作る所](../../src/devstudio/view/mainwindow.cpp#L714))。前は Frame Plan の dock の中の `QTabWidget`(`pelican.renderTools`)の
 4 つのタブでしたが、Graph はほかの panel へ移る入口なので自分の dock になり、tab widget は隠れた page を含む全 page の下限を
 自分の下限にするので、それも無くなりました。既定の配置は下の段の左に Graph だけ、右に Output・Engine Log・Problems・Frame Plan・
 Pass Editor・Features・Rendering settings のタブの束です(置き方・前に保存した配置・窓の最小の幅は [第15章](15_studio.md) §15.6 の
@@ -1039,7 +1039,7 @@ Passes の先頭行を上から読むと実行順が分かり、同じ行に入�
 行の **Execution** の節(dialect・implementation・endpoint・capability・resource use)、Physical plan のタブの
 **Physical target plan** の木の **Execution plan unavailable** / **Execution dependencies** の節、Logical graph の
 「Logical graph unavailable」の panel です。status 行の tooltip は依存の数ではなく
-`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4294))。
+`N barriers` を言い、status 行の色は physical plan だけで決まります([status 行を組む所](../../src/devstudio/view/frameplanwidget.cpp#L4298))。
 Logical graph の辺については [第13章](13_editor.md) の「Frame Plan のノード表示と順序」。
 Resources、Barriers、Materials では writer/reader、hazard edge、公開された material route を逆引きでき、 上部 filter は折りたたみ配下も検索します。
 
@@ -1057,7 +1057,7 @@ Resources、Barriers、Materials では writer/reader、hazard edge、公開さ�
 ボタンは 3 段です。著作一覧の下の行が **Remove selected** / **Parameters...** / **Make editable...**、
 カタログの下が **Add selected**、最下段が **Refresh** / **Procedural assets...** / **Tasks...** /
 **Fork preset...** / **Region replacements...** / **Callable Records...** / **Scene AS...** / **Apply**
-([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2415))。
+([構築](../../src/devstudio/view/renderfeatureswidget.cpp#L2440))。
 
 **Parameters...** は選択 feature の
 scalar パラメータを編集し、**Make editable...** は materialize(具体値へ展開した派生を新しい
@@ -1257,6 +1257,7 @@ uv run tools/studio_latency.py --aggregate <run の directory>...  # 複数の r
   断った回数 `scene_redraw_refused_count` と理由の bit ごとの `scene_redraw_refused_bit<n>_count`(0 node 以外の何か、1 node の数か並び、2 線、3 値以外の欄、4 loop の zone、5 絵を描く node が読む、6 pass の線、7 node が単独で描かれていない、8 寸法、9 ほかの node の帯、10 folded node の避ける範囲、11 folded view)、
   手や editor が離れるのを待った回数 `scene_redraw_deferred_count`。
   ✅GS-3b2 から bit 4 の中の理由 `scene_redraw_refused_zone_why<n>_count`(1 zone の描く物も一緒に動いた、2 動いた node が loop、4 動いた node から線を辿ると loop に届く)。
+  ⚠ ✅GS-3b3 で Graph が足した zone の body の部分の描き直しを、この script は root の部分の描き直しと分けていません。`scene_redraw_node_count` などは両方を数えます(trace の detail2 が 0 root / 1 body ですが、script は読みません)。body の道の検査は span `graph_redraw_check` の外なので、`scene_redraw_check_ms_sum` に入りません。body の道が断る bit 12 は、bit の列が 0〜11 だけなので `scene_redraw_refused_bit12_count` は出ず、`scene_redraw_refused_count` にだけ入ります。その理由(detail2 の 2〜6)の列もありません([bit を数える所](../../tools/studio_latency.py#L898))。
 - **比べた欄の列**(✅GS-3b1): Graph が返事を受けて前の描画と比べた回数 `follow_diff_count`、何も動かなかった回数 `follow_diff_same_count`、動いた欄の bit ごとの `follow_diff_bit<n>_count`(0〜21。bit の意味は source guide 第7章 §7.6)、
   比べずに全体を描いた理由ごとの `follow_unchecked_why<n>_count`(1 / 2 / 4 / 16 / 32)、描いた元を読む時間 `drawn_from_count` / `drawn_from_ms_sum` / `drawn_from_ms_max`。
 - **制限**: 標本の値は Studio の wait(25 ms ごと)や driver の再試行の間隔で量子化されます。共有の機械の他の process は統制しません。

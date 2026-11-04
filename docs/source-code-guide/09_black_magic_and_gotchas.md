@@ -1381,33 +1381,33 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **素朴に読むと**: 子の widget の signal から親の lambda への接続は、QObject が破棄のときに自動で外すので、destructor は `= default` でよい、と読めます。
 
-**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2725)。event filter も外す)。
+**実際は**: `std::unique_ptr<Impl>` のメンバは、派生クラスの destructor の本体が終わった直後、`QWidget::~QWidget()` より先に消えます。その後の `QWidget::~QWidget()` が窓を閉じて焦点を外すので、焦点を持っていた欄(`QLineEdit` など)が `editingFinished` を出し、消えた Impl や binding を捕まえた lambda が走ります。QObject の自動の切断はその後なので間に合いません。Inspector では、数値・文字の欄の binding(`NumericBinding` / `TextBinding`)を Impl が持っています。対策は destructor の最初で、子から自分への接続を全部外すことです([`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2731)。event filter も外す)。
 
 [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)(入力 port の欄)と [`MaterialAssignWidget::~MaterialAssignWidget()`](../../src/devstudio/view/materialassignwidget.cpp#L356) も同じ形です。test は `test/devstudio_inspector_widget_test.cpp` にあり、焦点のある欄・書きかけの欄・書きかけの入力 port を持つ widget を壊して、遅れた編集が送られないことを見ます。
 
 **不変条件**: 子の欄の signal を、Impl やその中の binding を捕まえた lambda に繋ぐ widget は、destructor を `= default` にしないこと。destructor の最初で `findChildren<QObject *>()` の各子から `this` への接続を外します。
 
-**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2725) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
+**読む場所**: [`InspectorWidget::~InspectorWidget()`](../../src/devstudio/view/inspectorwidget.cpp#L2731) → [`GraphAttachmentWidget::~GraphAttachmentWidget()`](../../src/devstudio/view/graphattachmentwidget.cpp#L392)。
 
 ### 難所 — `setItemWidget` で行に置いた widget を `delete` で直接消すと、view の editor に残る(FX-8)
 
 **素朴に読むと**: `QTreeWidget::setItemWidget()` で行に置いた widget は普通の子 widget なので、`delete` すれば view からも外れる、と読めます。
 
-**実際は**: `setItemWidget` は view の index widget(view が editor として持つ一覧)に登録します。widget を `delete` しても、その一覧の項目は残ります。次に木を `clear()` すると選択が変わって view が layout をやり直し、一覧に残った解放済みの widget を読みます。Frame Plan では、Backends と Physical plan の木の先頭に置く帯(band)がこれに当たり、Pin の後に plan を読み直すと Studio が 0xC0000005 で落ちていました。今は帯ごとに置いた木を覚えておき([帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3542))、消す前に `removeItemWidget()` で木に手放させてから `delete` します([`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L612))。木を作り直す前に帯を消す順([`populate()` の中で呼ぶ所](../../src/devstudio/view/frameplanwidget.cpp#L4214))は今までどおりです。
+**実際は**: `setItemWidget` は view の index widget(view が editor として持つ一覧)に登録します。widget を `delete` しても、その一覧の項目は残ります。次に木を `clear()` すると選択が変わって view が layout をやり直し、一覧に残った解放済みの widget を読みます。Frame Plan では、Backends と Physical plan の木の先頭に置く帯(band)がこれに当たり、Pin の後に plan を読み直すと Studio が 0xC0000005 で落ちていました。今は帯ごとに置いた木を覚えておき([帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3546))、消す前に `removeItemWidget()` で木に手放させてから `delete` します([`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L613))。木を作り直す前に帯を消す順([`populate()` の中で呼ぶ所](../../src/devstudio/view/frameplanwidget.cpp#L4218))は今までどおりです。
 
 **不変条件**: `setItemWidget` で置いた widget は、`removeItemWidget()` で view に外させてから消すこと。木を `clear()` するより前に外しておくこと。
 
-**読む場所**: [`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L612) → [帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3542)。利用者から見た Frame Plan の帯は manual 第15章 §15.6 の「backend の pin と物理計画・再起動」。
+**読む場所**: [`dropBands()`](../../src/devstudio/view/frameplanwidget.cpp#L613) → [帯を覚える所](../../src/devstudio/view/frameplanwidget.cpp#L3546)。利用者から見た Frame Plan の帯は manual 第15章 §15.6 の「backend の pin と物理計画・再起動」。
 
 ### 難所 — Graph の作り直しの中では routing index が無く、線ごとの探索が全 item をなめる(GS-1、`e87c63c7b`)
 
 **素朴に読むと**: socket や node の探索は routing index を引くので、作り直しの中で線を 1 本足すたびに route しても、1 本あたり定数の手間で済む、と読めます。
 
-**実際は**: [`GraphCanvasScene::repopulate()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2304) は最初に `clear()` し、index はそこで無効になって、作り直しの最後の `rebuildRoutingIndex()` まで戻りません。その間の [`nodeGraphItems()`](../../src/devstudio/view/nodegraphics.cpp#L724) は scene の全 item を返すので、線の両端の探索ごとに全 item をなめます。GS-1 の前はこれで作り直しが O(線 × item) になり、LT-1 の計測では 163 node の作り直し 1 回 677 ms のうち 608 ms が線の段でした。
+**実際は**: [`GraphCanvasScene::repopulate()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2333) は最初に `clear()` し、index はそこで無効になって、作り直しの最後の `rebuildRoutingIndex()` まで戻りません。その間の [`nodeGraphItems()`](../../src/devstudio/view/nodegraphics.cpp#L725) は scene の全 item を返すので、線の両端の探索ごとに全 item をなめます。GS-1 の前はこれで作り直しが O(線 × item) になり、LT-1 の計測では 163 node の作り直し 1 回 677 ms のうち 608 ms が線の段でした。
 
-**不変条件**: 作り直しの中では線を足すだけにし、route は全 item を足して index を作った後に [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L490) で 1 回ずつ行うこと。途中で socket が要る物(domain stub)は、その時点の item で仮の index を作ってから引き、足し終えたら無効に戻すこと。
+**不変条件**: 作り直しの中では線を足すだけにし、route は全 item を足して index を作った後に [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L491) で 1 回ずつ行うこと。途中で socket が要る物(domain stub)は、その時点の item で仮の index を作ってから引き、足し終えたら無効に戻すこと。
 
-**読む場所**: [`NodeGraphLookupScope`](../../src/devstudio/view/nodegraphics.hpp#L162) → [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L490) → [仮の index を作る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2811)。test は `devstudio_graphcanvas_scene_test` の `[gs1]` で、`nodeGraphUnindexedLookups()` の差が作り直し 1 回で 2 以下であることを見ます。
+**読む場所**: [`NodeGraphLookupScope`](../../src/devstudio/view/nodegraphics.hpp#L162) → [`routeGraphCanvasLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L491) → [仮の index を作る所](../../src/devstudio/view/graphcanvaswidget.cpp#L2835)。test は `devstudio_graphcanvas_scene_test` の `[gs1]` で、`nodeGraphUnindexedLookups()` の差が作り直し 1 回で 2 以下であることを見ます。
 
 ### 難所 — scene が描かないのに文書ごとに動く欄を比べると、確定のたびに全体を作り直す(GS-2、`5626470ba`)
 
@@ -1415,13 +1415,13 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **実際は**: 確定の後には `get_graph_instances`・`get_frame_plan`・`get_render_authoring_context` の返事が順に届き、それぞれで比べます。plan の pass の `drawn_materials`(最後に描いた frame)と context の `planning_root` / `planning_catalog` は文書が変わるたびに動くのに scene はどれも描かないので、GS-2 の前は確定 1 回で 2〜3 回の全体の作り直しになっていました(163 node では 1 回 70 ms 台)。
 
-**不変条件**: plan や authoring context に scene が描かない欄を足したら、[`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5317) で外すこと。逆に、scene が描く欄を外すと、その欄が変わっても描き直されません(GS-2 の test は偽の engine の plan と context に本当の違いを持たせ、追加した pass の socket と線があることを直接見ています)。GS-2 の時点では zone があるときや描く scope が 1 つでないときは比べずに全体を描く道で、この直しは効きませんでした(✅GS-3b1 から zone のある root も比べます。下の GS-3b1 の難所)。
+**不変条件**: plan や authoring context に scene が描かない欄を足したら、[`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5366) で外すこと。逆に、scene が描く欄を外すと、その欄が変わっても描き直されません(GS-2 の test は偽の engine の plan と context に本当の違いを持たせ、追加した pass の socket と線があることを直接見ています)。GS-2 の時点では zone があるときや描く scope が 1 つでないときは比べずに全体を描く道で、この直しは効きませんでした(✅GS-3b1 から zone のある root も比べます。下の GS-3b1 の難所)。
 
-**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5523) → [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5317)。どの欄が動いたかは trace `graph_follow_diff` の bit で見えます(source guide 第7章 §7.6)。
+**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5572) → [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5366)。どの欄が動いたかは trace `graph_follow_diff` の bit で見えます(source guide 第7章 §7.6)。
 
 ### 難所 — 部分の描き直しの条件は、どれを弱めても全体の作り直しと違う絵が残る(GS-3a、`ec2a869e7`)
 
-**素朴に読むと**: 値だけが動いた node は中身を描き直せば済むので、[`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5916) の長い条件の列は保守的すぎ、いくつか外しても同じ絵になる、と読めます。
+**素朴に読むと**: 値だけが動いた node は中身を描き直せば済むので、[`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5965) の長い条件の列は保守的すぎ、いくつか外しても同じ絵になる、と読めます。
 
 **実際は**: 条件はそれぞれ、部分の道では描き直されない物を守っています。動いた node の下流の `canvas.stack` や card は、上流の値で行や thumbnail が変わるのに部分の道では描き直されません(bit 5)。寸法が変わると placement の位置と合わなくなります(bit 8)。folded node のある scope で、前の全体の描画の後に node を drag した場合は、drag の後の placement の読みが scene をそのまま残すので、folded node の置き直しは次の全体の描画まで起きません。GS-3a の報告では、この検査(bit 10、`drawn_rooms_`)の無い版で 163 node の multi drag の 10 回目に folded node が node に重なったまま残り、press が folded node に当たって計測が落ちました。光った socket は大きく描かれるので、延期の検査を寸法と範囲の検査の後ろに置くと、押している間は範囲の検査が必ず落ちて全体の作り直しが押している item を壊します。
 
@@ -1429,24 +1429,24 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 - 条件は item に触る前に全部検査し、外れたら何も描かずに断ること。途中まで描いてから全体に落ちてよいのは、描いた後でしか分からない範囲の検査(bit 10)だけです。
 - `drawn_from_`・`drawn_pass_lines_`・`drawn_linked_` は描き直しが全部通った後で最後に進めること。stack の道も同じで、`redrawStackNode()` が 1 つでも false なら `repopulate()` すること(GS-3a の前は先に `drawn_from_` を進めて失敗を捨てていた)。
 - 延期の検査は寸法・範囲の検査より前に置くこと。延期のときは `drawn_from_` を進めないこと。
-- pass の線と linked outputs は `repopulate()` と同じ [`passLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1947) / [`scopeLinkedOutputs()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2083) で計算して比べること。
+- pass の線と linked outputs は `repopulate()` と同じ [`passLines()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1955) / [`scopeLinkedOutputs()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2091) で計算して比べること。
 - `graph_scene_redraw_node` は成功の後に出すこと(後の検査で全体に落ちた回を部分に数えない)。
 
-**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5523) → [`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5916) → [延期する所](../../src/devstudio/view/graphcanvaswidget.cpp#L6094) → [`drawn_rooms_` を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2679)。test は `devstudio_graphcanvas_scene_test` の `[gs3a]` で、部分の描き直しの後の scene を同じ model で `repopulate()` した scene と論理 item で比べます(`gs3aSameAsRebuilt`)。GS-3a の報告では、線の引き直し・強調・index の早めの無効化の 3 つは外しても test が緑のまま(条件の下では結果が変わらない保険)です。
+**読む場所**: [`GraphCanvasScene::followDocument()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5572) → [`GraphCanvasScene::redrawChangedNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5965) → [延期する所](../../src/devstudio/view/graphcanvaswidget.cpp#L6208) → [`drawn_rooms_` を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2704)。test は `devstudio_graphcanvas_scene_test` の `[gs3a]` で、部分の描き直しの後の scene を同じ model で `repopulate()` した scene と論理 item で比べます(`gs3aSameAsRebuilt`)。GS-3a の報告では、線の引き直し・強調・index の早めの無効化の 3 つは外しても test が緑のまま(条件の下では結果が変わらない保険)です。
 
 ### 難所 — zone の比べる値は、`repopulate()` が描くのと同じ関数で作らないと、描いた物と比べた物がずれる(GS-3b1、`59677a98c`)
 
 **素朴に読むと**: zone の frame の飾り(stage・tab・行・carry・×N copies など)を比べるなら、`drawnFromNow()` の中で同じ値を読み直せば足りる、と読めます。
 
-**実際は**: 飾りは frame plan の report・root の node・placement から、`repopulate()` の中で多くの規則を通って作られていました。GS-3b1 は zone の選定を [`pickZones()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2095)、飾りを [`zoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2118) に 1 行も変えずに移し、`repopulate()` と `drawnFromNow()` の両方がこれを呼びます。別に書くと、片方だけを直したときに「描いた物は変わったのに比べる値は同じ」になり、古い絵が残ります(GS-3b1 の変異で、axis label・tab の文字・stage を比較から外すと全体 0 回で論理 item が不一致)。
+**実際は**: 飾りは frame plan の report・root の node・placement から、`repopulate()` の中で多くの規則を通って作られていました。GS-3b1 は zone の選定を [`pickZones()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2103)、飾りを [`zoneChrome()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2126) に 1 行も変えずに移し、`repopulate()` と `drawnFromNow()` の両方がこれを呼びます。別に書くと、片方だけを直したときに「描いた物は変わったのに比べる値は同じ」になり、古い絵が残ります(GS-3b1 の変異で、axis label・tab の文字・stage を比較から外すと全体 0 回で論理 item が不一致)。
 
 **不変条件**:
 - zone の飾りや選定の規則を変えるときは `pickZones()` / `zoneChrome()` の中で変えること。比べる値(`ZoneChrome`)は所有した値だけにすること(`Zone::node` のような生ポインタ入りの値は入れない)。
-- 比べない scene を残すこと: 描いた body の並びが今の `pickZones` と違う(detail2 16)、今か前の zone の body に `canvas.stack` か card がある(detail2 32。shape in the air と絵はどの欄にも無い)ときは、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5505) で比べずに全体を描く。zone があって stacks が動いたら `redrawStackNode()` に入らずに全体を描く。
-- 描いた item をその場で書き換えたら、`drawn_from_` も揃えること。`refreshLayerBands()` の帯([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L1864))、`selectCarry()` の carry の pen([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L3165))がそうで、揃えないと GPU 時間が動くたび・carry を選んだ後の何でもない返事のたびに全体を作り直します。逆に選択が外れる側(`selectNode` など)は pen を戻さず、次の返事で全体になる(安全な側)。
-- body の placement は definition の中の member なので、[`followDocumentPlacement()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1204) で zone の layout を進めるときは `drawn_from_->document` の `definitions[body].layout` も進めること([その所](../../src/devstudio/view/graphcanvaswidget.cpp#L1244))。進めないと body の drag の後の返事が document の差(bit 1)で必ず全体に落ちます。
+- 比べない scene を残すこと: 描いた body の並びが今の `pickZones` と違う(detail2 16)、今か前の zone の body に `canvas.stack` か card がある(detail2 32。shape in the air と絵はどの欄にも無い)ときは、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5554) で比べずに全体を描く。zone があって stacks が動いたら `redrawStackNode()` に入らずに全体を描く。
+- 描いた item をその場で書き換えたら、`drawn_from_` も揃えること。`refreshLayerBands()` の帯([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L1872))、`selectCarry()` の carry の pen([揃える所](../../src/devstudio/view/graphcanvaswidget.cpp#L3205))がそうで、揃えないと GPU 時間が動くたび・carry を選んだ後の何でもない返事のたびに全体を作り直します。逆に選択が外れる側(`selectNode` など)は pen を戻さず、次の返事で全体になる(安全な側)。
+- body の placement は definition の中の member なので、[`followDocumentPlacement()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1205) で zone の layout を進めるときは `drawn_from_->document` の `definitions[body].layout` も進めること([その所](../../src/devstudio/view/graphcanvaswidget.cpp#L1245))。進めないと body の drag の後の返事が document の差(bit 1)で必ず全体に落ちます。
 
-**読む場所**: [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5317) → [`GraphCanvasScene::zonesMoved()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5486) → [`ZoneDrawn`](../../src/devstudio/view/graphcanvaswidget.hpp#L1143)。test は `[gs3b1]` で、目的の欄だけが動く返事では `graph_follow_diff` の bit がそれ 1 つだけであることを見ます。
+**読む場所**: [`GraphCanvasScene::drawnFromNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5366) → [`GraphCanvasScene::zonesMoved()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5535) → [`ZoneDrawn`](../../src/devstudio/view/graphcanvaswidget.hpp#L1154)。test は `[gs3b1]` で、目的の欄だけが動く返事では `graph_follow_diff` の bit がそれ 1 つだけであることを見ます。
 
 ### 難所 — frame の room は、body を描き終えた後でないと部分の道と食い違う(GS-3b2、`94de43902`)
 
@@ -1454,10 +1454,66 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **実際は**: zone の body の node・線・制御点・帯は folded node を置いた後に描かれ、body の線は `routeGraphCanvasLines()` まで経路が空です。frame は body の node の箱を囲んで作られるので、body の線の制御点が frame の外にあると、全体の描画の終わりの frame の範囲が記録と違い、zone の横の root の値の部分の描き直しが**毎回** bit 10 で断っていました(GS-3b2 の報告の変異で再現)。body の長い pill や帯だけでは食い違いませんでした。
 
-**不変条件**: zone の frame の room は `repopulate()` の最後(線の route と inline editor の復元の後、`repopulated` の前)で記録し直すこと([記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3046))。folded node の置き場所を決める `graph_boxes` はこれと別で、変えないこと。部分の道は frame と body に触らないので、全体の描画の後に frame や body が動けば(drag・refit)room が変わり、今までどおり断ります。条件 3(zone の欄・loop が動いた・loop に届く)も弱めないこと: zone の欄の比較は `followDocument()` から [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6015) の中へ移したので、ここを外すと部分の道に入って古い飾りが残ります(GS-3b2 の変異 m3_1 で `3 materials` が残った)。
+**不変条件**: zone の frame の room は `repopulate()` の最後(線の route と inline editor の復元の後、`repopulated` の前)で記録し直すこと([記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086))。folded node の置き場所を決める `graph_boxes` はこれと別で、変えないこと。部分の道は frame と body に触らないので、全体の描画の後に frame や body が動けば(drag・refit)room が変わり、今までどおり断ります。条件 3(zone の欄・loop が動いた・loop に届く)も弱めないこと: zone の欄の比較は `followDocument()` から [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6331) の中へ移したので、ここを外すと部分の道に入って古い飾りが残ります(GS-3b2 の変異 m3_1 で `3 materials` が残った)。
 
-**読む場所**: [記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3046) → [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6015)。⚠ domain stub の付く graph node は stub が folded node を置いた後に付くので、folded node のある scope では範囲が記録と食い違い、部分の道は bit 10 で断り続けます(GS-3a からの性質で、直していません)。
+**読む場所**: [記録し直す所](../../src/devstudio/view/graphcanvaswidget.cpp#L3086) → [条件 3](../../src/devstudio/view/graphcanvaswidget.cpp#L6331)。⚠ domain stub の付く graph node は stub が folded node を置いた後に付くので、folded node のある scope では範囲が記録と食い違い、部分の道は bit 10 で断り続けます(GS-3a からの性質で、直していません)。
 
+### 難所 — zone の body の値をその場で描き直すには、全体の描画が置く場所と同じだと先に示す(GS-3b3b、`07d7aed91`)
+
+**素朴に読むと**: body の node の値だけが動いたなら、root の node と同じく、その node の中身を描き直して線を引き直せば済む、と読めます。
+
+**実際は**: body の node は frame の中に置かれ、frame は body の node の準備した大きさと置いた位置から全体の描画が計算します。body の道は frame・carry・制御点を描き直さないので、値で node の大きさが変わる・前の全体の描画の後に node や frame が動いた・frame の描き直しが予約されている、のどれかがあると、全体の描画とは違う絵が残ります。node の準備も root と body で linked outputs が違います(body は body の線と body の出力から作る。GS-3b3b の test の d は、root と body に同じ名前の node を置き、高さが違うことを確かめています)。
+
+**不変条件**:
+- body の道は、全体の描画が記録した値(`zone_drawn_`。body の node の位置と path の範囲、frame、frame の path の範囲)と今の item が同じで、動いた node を準備した大きさが今の item と同じときだけ描くこと。値は全体の描画が body を描き終えた所で記録すること([body の形を記録する所](../../src/devstudio/view/graphcanvaswidget.cpp#L2958))。
+- body の node の準備は [`prepareBodyNodes()`](../../src/devstudio/view/graphcanvaswidget.cpp#L2312)、帯は [`loopElementBandForItem()`](../../src/devstudio/view/graphcanvaswidget.cpp#L1725) を、全体の描画と body の道の両方で使うこと。別に書くと、片方だけを直したときに絵がずれます。
+- 条件は item に触る前に全部検べること(検べる順は 4 → 2 → 3 → 5 → 6、押さえた node の延期はその後)。
+- `canvas.stack` か card を持つ body は body の道に来ません。zone の `pictures` が立ち、[`zonesUncomparable()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5554) が比べずに全体を描くためです。body の道の条件 3 にある stack と card の検査は、この前提が崩れたときの保険です。body の中の loop は条件 3 で断ります。
+
+**読む場所**: [`GraphCanvasScene::classifyRedraw()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5706) → [body の道](../../src/devstudio/view/graphcanvaswidget.cpp#L5994)。test は `[gs3b3b]` で、部分の描き直しの後の scene を作り直した scene と比べます。
+
+### 難所 — 部分の描き直しは paint を予約するだけでは、同じ event loop の次の返事の後に画面に出る(GS-3z、`476d9b33d`)
+
+**素朴に読むと**: 部分の描き直しで item を変えれば、Qt が次の paint で画面に出すので、描き直し自体が速ければ画面に出るのも速い、と読めます。
+
+**実際は**: item を変えると paint は予約されるだけです。確定の後は Graph の文書の返事と Frame Plan の `get_frame_plan` の返事が続けて届き、同じ event loop の 1 回の中で処理されると、plan の返事(読むのに約 40 ms)が予約された paint より先に走ります。部分の描き直しが 1.5 ms でも、画面に出るのはその後でした。
+
+**不変条件**: 部分の描き直しが成功したら、`nodesRedrawn` の前に [`paintPartialRedrawNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5204) で見えている view をその場で描くこと(root の道と body の道の両方)。
+
+**読む場所**: [`paintPartialRedrawNow()`](../../src/devstudio/view/graphcanvaswidget.cpp#L5204)。test は `[gs3z]` で、返事が描き直しに届いてから `nodesRedrawn` までの paint の数を数えます(repaint が無いと 0)。
+
+### 難所 — tab の束の dock の中身は、選ばれていなくても isVisible() が真で、選んでも showEvent が来ない(RP-1a1、`152acef21`)
+
+**素朴に読むと**: panel が見えているかは `QWidget::isVisible()` で分かり、tab を選んで前に出れば `showEvent` が来るので、そこで読み直せばよい、と読めます。
+
+**実際は**: Qt 6.10.3 では、`tabifyDockWidget` で束ねた dock の、選ばれていない tab の中身も `isVisible()` が真のままで、その tab を選んでも中身に `showEvent` が来ません。RP-1a1 の前の Rendering settings は見えているかを見ずに digest が動くたびに読み、Ray layout は `isVisible()` か一度読んだ後なら読んでいたので、既定の配置で後ろの tab にあっても Graph の確定のたびに読んでいました。この Qt の挙動の下では、`isVisible()` で見えていないと決めることも、`showEvent` で tab の選択を拾うこともできません(`showEvent` で読み直す Ray layout が tab を選んだときに読まなかったかは、画面では確かめていません)。dock の `visibilityChanged(bool)` は tab の選択も含めて追います。
+
+**不変条件**: dock に入る panel の「見えている」は、`isVisible()` と、入っている dock の最後の `visibilityChanged` の値の両方で決めること([`PanelShown`](../../src/devstudio/view/panelshown.hpp#L26))。dock は panel を作った後に入るので、最初に聞かれたときに親を辿って探すこと。`showEvent` と `visibilityChanged(true)` は同じ表示で両方来るので、見えていない → 見えている の 1 回だけ読むこと。test(`RP-1a1 e`)はこの Qt の挙動も assert しているので、Qt が変われば赤で分かります。
+
+**読む場所**: [`PanelShown`](../../src/devstudio/view/panelshown.hpp#L26) → [`RayLayoutWidget::showEvent()`](../../src/devstudio/view/raylayoutwidget.cpp#L1102) → [Rendering settings の `followWhenIdle()`](../../src/devstudio/view/renderingsettingswidget.cpp#L1628)。
+
+### 難所 — widget の子を消すのは base の destructor なので、Impl を読む connection は Impl より先に切る(GS-UAF1、`78acc3fae`)
+
+**素朴に読むと**: connection の context を widget 自身(`&owner`)にしておけば、widget が消えるときに Qt が connection も切るので、lambda が消えた Impl を読むことはない、と読めます。
+
+**実際は**: `~GraphCanvasWidget()` の本体が終わると `impl_`(`std::unique_ptr`)が消え、その後で `QWidget` の base の destructor が子の widget(詳細欄の editor、Features の Parameters の dialog)を消します。子が消えるときの `closeEditor` や `destroyed` は、context の widget の `QObject` 部分がまだ生きているので届き、lambda が解放済みの Impl を読みます(GS-ASAN1 が見つけた 2 件)。上の FX-4 の難所(Impl が `QWidget` の base より先に消える)と同じ順の問題です。FX-4 の Inspector は destructor の最初で子から自分への接続を外す形で、GS-UAF1 の 2 つの panel は接続の context を guard にする形です。
+
+**不変条件**:
+- lambda が Impl を読み、送り手が Impl より長く生きうる(widget 自身・その子・delegate・viewport)connection と queued call は、Impl の `QObject guard` を context にすること([Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8076)、[Features の guard](../../src/devstudio/view/renderfeatureswidget.cpp#L2374))。
+- guard は Impl の最後のメンバに置くこと。メンバは宣言の逆の順に消えるので、最後のメンバは最初に消え、ほかのメンバを消している間にはもう connection がありません。
+- その結果、Features の Parameters の dialog の、まだ送っていない(150 ms でまとめている)変更は、panel ごと消すときは捨てられます。dialog だけを閉じたときは今までどおり送ります。
+
+**読む場所**: [Graph の guard](../../src/devstudio/view/graphcanvaswidget.cpp#L8076) → [詳細欄の `closeEditor`](../../src/devstudio/view/graphcanvaswidget.cpp#L9060) → [Features の dialog の `destroyed`](../../src/devstudio/view/renderfeatureswidget.cpp#L3608)。test は `[uaf1]` の 2 本で、destructor が始まった後に走った callback を test 用の数え口で数えます(ASan が無くても赤になる)。
+
+### 難所 — test で `#define private public` をして private なメンバ関数を呼ぶと、MSVC では link できない
+
+**素朴に読むと**: Studio の test はいくつも `#define private public` で header を読んでいるので(`devstudio_automation_input_test` の `mainwindow.hpp` など)、新しい test も private なメンバ関数を同じやり方で呼べばよい、と読めます。
+
+**実際は**: MSVC は C++ のメンバ関数の装飾名に public / private などのアクセスを入れます。`#define private public` で読んだ側は public の名前で呼び、定義の側は private の名前で作るので、名前が合わずに link できません。Itanium ABI(GCC / clang)の名前はアクセスを含まないので、Linux の build では通ってしまいます。データメンバや inline の関数を読むだけなら、この食い違いは起きません。実際に KM-1a の着地の gate で起きました: Linux の GCC では通った test が、Windows の MSVC では `MainWindow::showKeyboardShortcuts` の LNK2019(未解決の外部シンボル)で落ち、統合側が Help の action を trigger する形に直しました(KM-1a の squash 7f05c09d3 に入っている)。
+
+**不変条件**: 新しい test から private なメンバ関数を呼ばないこと。public な関数、action、既にある test 用の読み口を使うか、GS-UAF1 の数え口のような test 用の free function を header に足すこと。
+
+**読む場所**: [KM-1a の test の Help の action](../../test/devstudio_automation_input_test.cpp#L3081)、[Graph の数え口](../../src/devstudio/view/graphcanvaswidget.hpp#L1692)。
 ### 難所 — tab の束の下限は、隠れた page を含む全 page の最大になる(LT-1 / UI-2、`a800dfc3a`)
 
 **素朴に読むと**: dock や tab widget の最小の大きさは、今見えている page の中身で決まる、と読めます。
@@ -1466,7 +1522,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 下限の大きい panel を、小さい panel と同じ tab widget や dock の束に入れないこと。下限を調べるときは自動化の `size_hints`(見えている子だけを数え、stacked widget は page ごとの下限を並べる)で、何が下限を決めているかを先に見ること。
 
-**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L679) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
+**読む場所**: [理由のコメント](../../src/devstudio/view/mainwindow.cpp#L680) → [`commandSizeHints()`](../../src/devstudio/automation/automationcommands.cpp#L1319)。
 
 ### 難所 — 既定の配置で dock を横に並べてから束ねると、表示中の窓が広がったまま戻らない(UI-2)
 
@@ -1476,7 +1532,7 @@ live の material を見るのは authored の経路だけです。[`Renderer::a
 
 **不変条件**: 束に入れる dock は `addDockWidget` せずに、直接 `tabifyDockWidget` の鎖で入れること。
 
-**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4244)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
+**読む場所**: [`MainWindow::applyDefaultLayout()`](../../src/devstudio/view/mainwindow.cpp#L4240)(下の段の `tabifyDockWidget` の前のコメント)。test は `devstudio_layoutpreset_test` の「UI-2 the Graph, the Frame Plan, …」で、既定の配置の形を見ます(窓の幅そのものは見ていません)。
 
 ### 難所 — 利用者のデータの例外は Play を止めるが、DLL の reload 中の onInit の例外は reload の失敗のまま(RX-1、`faf9a484b`)
 
