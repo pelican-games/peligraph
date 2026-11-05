@@ -34,14 +34,18 @@
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCheckBox>
 #include <QCursor>
+#include <QDialog>
 #include <QElapsedTimer>
+#include <QGraphicsProxyWidget>
 #include <QGraphicsScene>
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsView>
 #include <QHash>
 #include <QJsonValue>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -72,6 +76,7 @@
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -127,6 +132,9 @@ class FakeEngine {
     // HUB-1a: a definition body the Graph can descend into, for the scope
     // change that must not move the shared selection either.
     bool graph_body_scope = false;
+    bool teardown_graph = false;
+    QSet<QString> held_methods;
+    QSet<QString> held_seen;
     // Every request the window sent, in order, and the size in bytes of each
     // scene_outline / scene_tree answer.
     std::vector<std::pair<std::string, Json>> asked;
@@ -141,6 +149,10 @@ class FakeEngine {
             const auto method = request.at("method").get<std::string>();
             const Json params = request.value("params", Json::object());
             asked.emplace_back(method, params);
+            if (held_methods.contains(QString::fromStdString(method))) {
+                held_seen.insert(QString::fromStdString(method));
+                continue;
+            }
             if (method == "scene_outline" && !knows_scene_outline) {
                 // As the viewport reports a JSON-RPC error: the code, then
                 // the one-line failure.
@@ -330,16 +342,41 @@ class FakeEngine {
         // rest of the engine's graph surface is irrelevant here.
         if (method == "get_graph_instances") {
             auto nodes = Json::array();
-            if (graph_node_exists) {
-                nodes.push_back({{"id", "blur"},
-                                 {"op", "value.add"},
+            Json layout = Json::object();
+            if (teardown_graph) {
+                nodes = Json::array({
+                    {{"id", "live_phase"}, {"op", "value.input"},
+                     {"parameters", {{"name", "live:phase"}}}, {"outputs", {"value"}}},
+                    {{"id", "source"}, {"op", "value.input"},
+                     {"parameters", {{"name", "scene_time"}}}, {"outputs", {"value"}}},
+                    {{"id", "blur"}, {"op", "value.add"}, {"parameters", Json::object()},
+                     {"inputs", {{"a", {{"node", "source"}, {"port", "value"}}},
+                                 {"b", {{"node", "source"}, {"port", "value"}}}}},
+                     {"outputs", {"value"}}},
+                    {{"id", "sharpen"}, {"op", "value.multiply"},
+                     {"parameters", Json::object()},
+                     {"inputs", {{"a", {{"node", "blur"}, {"port", "value"}}}}},
+                     {"outputs", {"value"}}},
+                    {{"id", "curve"}, {"op", "value.curve"},
+                     {"parameters", {{"keys", Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                                            {{"time", 1.0}, {"value", 1.0}}})}}},
+                     {"inputs", {{"time", {{"node", "source"}, {"port", "value"}}}}},
+                     {"outputs", {"value"}}}});
+                layout["nodes"] = {{"live_phase", {{"x", 0.0}, {"y", 0.0}}},
+                                   {"source", {{"x", 0.0}, {"y", 240.0}}},
+                                   {"blur", {{"x", 300.0}, {"y", 240.0}}},
+                                   {"sharpen", {{"x", 600.0}, {"y", 240.0}}},
+                                   {"curve", {{"x", 300.0}, {"y", 500.0}}}};
+            } else {
+                if (graph_node_exists) {
+                    nodes.push_back({{"id", "blur"}, {"op", "value.add"},
+                                     {"parameters", Json::object()}});
+                }
+                // HUB-1a: a second node the page must not follow. It is what the
+                // Graph tab has selected while the hub still names blur.
+                nodes.push_back({{"id", "sharpen"}, {"op", "value.multiply"},
                                  {"parameters", Json::object()}});
             }
-            // HUB-1a: a second node the page must not follow. It is what the
-            // Graph tab has selected while the hub still names blur.
-            nodes.push_back({{"id", "sharpen"},
-                             {"op", "value.multiply"},
-                             {"parameters", Json::object()}});
             Json definitions = Json::object();
             if (graph_body_scope) {
                 definitions["gain_curve"] = {
@@ -352,11 +389,55 @@ class FakeEngine {
                         {"instances", Json::array()},
                         {"nodes", std::move(nodes)},
                         {"definitions", std::move(definitions)},
-                        {"layout", Json::object()}};
+                        {"layout", std::move(layout)}};
         }
-        if (method == "get_graph_catalog")
+        if (method == "get_graph_catalog") {
+            if (!teardown_graph)
+                return Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
+                            {"modules", Json::array()}};
+            const auto input = [](const char *name) {
+                return Json{{"port", name}, {"required", true},
+                            {"accepted_type", {{"semantic", "pelican.value.scalar@1"},
+                                               {"required_traits", Json::array()},
+                                               {"predicates", Json::array()}}}};
+            };
+            const auto operation = [&](const char *name, Json inputs) {
+                const Json type{{"schema", "pelican.logical_type"}, {"version", 1},
+                                {"constructor", "value"},
+                                {"semantic", "pelican.value.scalar@1"},
+                                {"arguments", Json::array()}};
+                return Json{{"op", name}, {"domain", "values"}, {"evaluation", "direct"},
+                            {"sink", false}, {"ports", "declared"}, {"inputs", std::move(inputs)},
+                            {"outputs", Json::array({{{"port", "value"}, {"type", type}}})}};
+            };
             return Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
-                        {"modules", Json::array()}};
+                        {"modules", Json::array({{{"namespace", "pelican.value"}, {"version", 1},
+                         {"description", ""}, {"sinks", Json::array()},
+                         {"types", Json::array({{{"id", "pelican.value.scalar@1"},
+                                                  {"constructor", "value"},
+                                                  {"traits", {"numeric"}},
+                                                  {"parameters", Json::array()}}})},
+                         {"operations", Json::array({operation("value.input", Json::array()),
+                            operation("value.curve", Json::array({input("time")})),
+                            operation("value.add", Json::array({input("a"), input("b")})),
+                            operation("value.multiply", Json::array({input("a"), input("b")}))})}}})}};
+        }
+        if (teardown_graph && method == "get_live_inputs")
+            return Json{{"inputs", Json::array({{{"name", "phase"}, {"type", "float"},
+                {"value", 2.0}, {"default", 0.0}, {"min", 0.0}, {"max", 4.0},
+                {"source", "rpc"}}})}};
+        if (teardown_graph && method == "get_graph_node_values")
+            return Json{{"instance", ""}, {"generation", 9}, {"frame", 30},
+                        {"published", true}, {"source", "rendering"},
+                        {"nodes", Json::array({{{"node", "live_phase"}, {"expanded", "live_phase"},
+                                                {"outputs", {{"value", 2.0}}}}})}};
+        if (teardown_graph && method == "get_status")
+            return Json{{"time", 0.25}, {"frame", 3}, {"animation", {{"available", false}}}};
+        if (teardown_graph && method == "get_graph_filters")
+            return Json{{"digest", nullptr}, {"document", nullptr}, {"error", nullptr}};
+        if (teardown_graph && method == "set_live_input") return Json{{"accepted", 1}};
+        if (teardown_graph && (method == "set_time" || method == "render_frame"))
+            return Json::object();
         if (method == "get_graph_templates")
             return Json{{"templates", Json::array()}};
         if (method == "get_components") {
@@ -457,9 +538,10 @@ struct Rig {
                                                             {2, "Cube", ""},
                                                             {3, "Floor", ""},
                                                             {4, "Leg", "Floor"}},
-                 bool knows_scene_outline = true) {
+                 bool knows_scene_outline = true, bool teardown_graph = false) {
         engine.objects = std::move(objects);
         engine.knows_scene_outline = knows_scene_outline;
+        engine.teardown_graph = teardown_graph;
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -604,6 +686,102 @@ struct Rig {
         return window.findChild<QLabel *>(QStringLiteral("pelican.outlinerNotice"))->toolTip();
     }
 };
+
+QGraphicsItem *teardownItem(Rig &rig, const char *kind, const char *node,
+                            const char *port = nullptr, const char *direction = nullptr) {
+    for (QGraphicsItem *item : rig.window.graph_canvas_->scene().items()) {
+        if (item->data(NodeGraphItemKindRole).toString() != QLatin1String{kind} ||
+            item->data(NodeGraphNameRole).toString() != QLatin1String{node} ||
+            !item->data(GraphCanvasScopeRole).toString().isEmpty())
+            continue;
+        if (port != nullptr && item->data(GraphCanvasPortRole).toString() != QLatin1String{port})
+            continue;
+        if (direction != nullptr &&
+            item->data(GraphCanvasSocketDirectionRole).toString() != QLatin1String{direction})
+            continue;
+        return item;
+    }
+    return nullptr;
+}
+
+QPointF teardownCentre(QGraphicsItem *item) {
+    REQUIRE(item != nullptr);
+    return item->sceneBoundingRect().center();
+}
+
+void teardownSceneMouse(Rig &rig, QEvent::Type type, const QPointF &at,
+                        Qt::MouseButton button = Qt::LeftButton,
+                        Qt::MouseButtons buttons = Qt::LeftButton) {
+    QGraphicsSceneMouseEvent event{type};
+    event.setScenePos(at);
+    event.setButton(button);
+    event.setButtons(type == QEvent::GraphicsSceneMouseRelease ? Qt::NoButton : buttons);
+    QApplication::sendEvent(&rig.window.graph_canvas_->scene(), &event);
+}
+
+void teardownViewMouse(Rig &rig, QEvent::Type type, const QPointF &at,
+                       Qt::MouseButton button, Qt::MouseButtons buttons,
+                       Qt::KeyboardModifiers modifiers) {
+    auto *view = rig.window.graph_canvas_->findChild<QGraphicsView *>();
+    REQUIRE(view != nullptr);
+    const QPoint local = view->mapFromScene(at);
+    QMouseEvent event{type, QPointF{local}, view->viewport()->mapToGlobal(local),
+                      button, buttons, modifiers};
+    QApplication::sendEvent(view->viewport(), &event);
+}
+
+void teardownOpenDocks(Rig &rig) {
+    for (QDockWidget *dock : rig.window.docks_) {
+        REQUIRE(dock != nullptr);
+        dock->show();
+        dock->raise();
+    }
+    QApplication::processEvents();
+}
+
+QDialog *teardownOpenFilters(Rig &rig, bool dirty) {
+    auto *edit = rig.window.graph_canvas_->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.edit"));
+    REQUIRE(edit != nullptr);
+    edit->trigger();
+    QApplication::processEvents();
+    rig.pumpFor(50);
+    auto *dialog = rig.window.graph_canvas_->findChild<QDialog *>(
+        QStringLiteral("pelican.graphFiltersDialog"));
+    REQUIRE(dialog != nullptr);
+    REQUIRE(dialog->isVisible());
+    if (dirty) {
+        auto *add = dialog->findChild<QPushButton *>(
+            QStringLiteral("pelican.graphFiltersDialog.addFilter"));
+        auto *label = dialog->findChild<QLineEdit *>(
+            QStringLiteral("pelican.graphFiltersDialog.label"));
+        REQUIRE((add != nullptr && label != nullptr));
+        add->click();
+        label->setText(QStringLiteral("Teardown draft"));
+        Q_EMIT label->textEdited(label->text());
+    }
+    return dialog;
+}
+
+void teardownOpenShortcuts(Rig &rig) {
+    auto *action = rig.window.findChild<QAction *>(QStringLiteral("pelican.help.shortcuts"));
+    REQUIRE(action != nullptr);
+    action->trigger();
+    QApplication::processEvents();
+    REQUIRE(rig.window.findChild<QDialog *>(
+                QStringLiteral("pelican.help.shortcutsDialog")) != nullptr);
+}
+
+void teardownSwitchProject(Rig &rig) {
+    ProjectSandbox other;
+    rig.window.openProject(QString::fromStdWString(other.root.wstring()));
+    REQUIRE(rig.pumpUntil([&] {
+        std::error_code error;
+        return rig.window.project_model_ &&
+               std::filesystem::equivalent(rig.window.project_model_->projectRoot(),
+                                           other.root, error) && !error;
+    }, 10000));
+}
 
 } // namespace
 
@@ -1218,6 +1396,137 @@ TEST_CASE("HUB-1a a project switch drops the Graph page and an in-flight pick",
     }));
     CHECK_FALSE(rig.window.inspector_->showsGraphNode());
     CHECK(rig.window.pending_pick_intents_.isEmpty());
+}
+
+TEST_CASE("Studio owners die with Graph gestures and child UI still active",
+          "[devstudio][outliner][teardown]") {
+    constexpr std::array states{
+        "all docks and dialogs",
+        "dirty graph filter draft",
+        "pending panel RPCs",
+        "live knob held",
+        "tie gesture",
+        "lifted line",
+        "curve editor",
+        "Live Inputs listening",
+        "shortcut dialog",
+        "Timeline strip",
+        "node editor proxy",
+    };
+    for (bool switch_project : {false, true}) {
+        for (const char *state : states) {
+            DYNAMIC_SECTION(state << (switch_project ? "; switch project" : "; direct destruction")) {
+                Rig rig{{{1, "Camera", ""}, {2, "Cube", ""}}, true, true};
+                auto *canvas = rig.window.graph_canvas_;
+                auto &scene = canvas->scene();
+                canvas->setProjectRoot(rig.sandbox.root);
+                canvas->model().setDomainShown("value", true);
+                auto *live = canvas->findChild<QCheckBox *>(QStringLiteral("pelican.graphCanvasLive"));
+                REQUIRE(live != nullptr);
+                live->setChecked(true);
+                teardownOpenDocks(rig);
+                rig.loadGraphDocument();
+                REQUIRE(rig.pumpUntil([&] {
+                    return canvas->nodeView(rig.graphNode("curve")).found &&
+                           teardownItem(rig, GraphCanvasValueBandItem, "live_phase", "value") != nullptr;
+                }));
+
+                if (std::string_view{state} == "all docks and dialogs") {
+                    teardownOpenFilters(rig, false);
+                    teardownOpenShortcuts(rig);
+                } else if (std::string_view{state} == "dirty graph filter draft") {
+                    teardownOpenFilters(rig, true);
+                } else if (std::string_view{state} == "pending panel RPCs") {
+                    for (const char *method : {"get_components"})
+                        rig.engine.held_methods.insert(QString::fromLatin1(method));
+                    rig.select("Cube");
+                    for (const char *method : {"get_components"}) {
+                        INFO("No pending request from panel: " << method);
+                        REQUIRE(rig.pumpUntil([&] {
+                            return rig.engine.held_seen.contains(QString::fromLatin1(method));
+                        }));
+                    }
+                    for (const char *method : {"scene_outline", "get_status",
+                                               "get_frame_plan", "list_materials",
+                                               "get_graph_instances", "get_graph_catalog",
+                                               "get_graph_node_values", "get_live_inputs"})
+                        rig.engine.held_methods.insert(QString::fromLatin1(method));
+                    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("rpc-hold reconnect"));
+                    emit rig.viewport.engineRpcBecameAvailable();
+                    teardownOpenFilters(rig, false);
+                    teardownOpenShortcuts(rig);
+                    canvas->refresh();
+                    for (const char *method : {"scene_outline", "get_status",
+                                               "get_frame_plan", "list_materials",
+                                               "get_graph_instances", "get_graph_catalog",
+                                               "get_graph_node_values", "get_live_inputs"}) {
+                        INFO("No pending request from panel: " << method);
+                        REQUIRE(rig.pumpUntil([&] {
+                            return rig.engine.held_seen.contains(QString::fromLatin1(method));
+                        }));
+                    }
+                } else if (std::string_view{state} == "live knob held") {
+                    rig.engine.held_methods.insert(QStringLiteral("set_live_input"));
+                    const QPointF from = teardownCentre(teardownItem(
+                        rig, GraphCanvasValueBandItem, "live_phase", "value"));
+                    teardownSceneMouse(rig, QEvent::GraphicsSceneMousePress, from);
+                    teardownSceneMouse(rig, QEvent::GraphicsSceneMouseMove, from + QPointF{5.0, 0.0});
+                    REQUIRE(scene.liveKnobActive());
+                } else if (std::string_view{state} == "tie gesture") {
+                    QRectF edges;
+                    for (QGraphicsItem *item : scene.items())
+                        if (item->data(NodeGraphItemKindRole).toString() ==
+                            QLatin1String{GraphCanvasEdgeItem})
+                            edges = edges.isNull() ? item->sceneBoundingRect()
+                                                   : edges.united(item->sceneBoundingRect());
+                    REQUIRE(!edges.isNull());
+                    teardownViewMouse(rig, QEvent::MouseButtonPress,
+                                      {edges.center().x(), edges.top() - 50.0},
+                                      Qt::RightButton, Qt::RightButton, Qt::ShiftModifier);
+                    teardownViewMouse(rig, QEvent::MouseMove,
+                                      {edges.center().x(), edges.bottom() + 50.0},
+                                      Qt::NoButton, Qt::RightButton, Qt::ShiftModifier);
+                    REQUIRE(scene.dragging());
+                } else if (std::string_view{state} == "lifted line") {
+                    const QPointF from = teardownCentre(teardownItem(
+                        rig, GraphCanvasSocketItem, "blur", "a", "input"));
+                    teardownSceneMouse(rig, QEvent::GraphicsSceneMousePress, from);
+                    teardownSceneMouse(rig, QEvent::GraphicsSceneMouseMove, from + QPointF{40.0, 0.0});
+                    REQUIRE(scene.dragging());
+                } else if (std::string_view{state} == "curve editor") {
+                    scene.selectNode("curve");
+                    QApplication::processEvents();
+                    REQUIRE(canvas->findChild<QWidget *>(
+                                QStringLiteral("pelican.graphCanvasCurve.graph"))->isVisible());
+                } else if (std::string_view{state} == "Live Inputs listening") {
+                    auto *live = canvas->findChild<QCheckBox *>(QStringLiteral("pelican.graphCanvasLive"));
+                    REQUIRE(live != nullptr);
+                    live->setChecked(true);
+                    REQUIRE(live->isChecked());
+                } else if (std::string_view{state} == "shortcut dialog") {
+                    teardownOpenShortcuts(rig);
+                } else if (std::string_view{state} == "Timeline strip") {
+                    scene.selectNode("curve");
+                    auto *toggle = canvas->findChild<QPushButton *>(
+                        QStringLiteral("pelican.graphTimelineToggle"));
+                    REQUIRE(toggle != nullptr);
+                    toggle->click();
+                    QApplication::processEvents();
+                    REQUIRE(canvas->findChild<QWidget *>(
+                                QStringLiteral("pelican.graphTimeline"))->isVisible());
+                } else if (std::string_view{state} == "node editor proxy") {
+                    REQUIRE(scene.beginLabelEdit("blur"));
+                    QApplication::processEvents();
+                    REQUIRE(scene.editingInline());
+                    REQUIRE(std::ranges::any_of(scene.items(), [](QGraphicsItem *item) {
+                        return qgraphicsitem_cast<QGraphicsProxyWidget *>(item) != nullptr;
+                    }));
+                }
+
+                if (switch_project) teardownSwitchProject(rig);
+            }
+        }
+    }
 }
 
 } // namespace PelicanStudio
