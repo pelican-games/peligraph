@@ -1967,6 +1967,7 @@ pelican_define_test(liveinputs_test pelican_core)
 if(PELICAN_WITH_OSC)
 # OSC-2a: packet parsing, profile live bindings, and the receive/freeze path.
 pelican_define_test(osc_input_test pelican_core)
+pelican_define_test(osc_fuzz_test pelican_core)
 # OSC-2b: UDP transport. The cases use loopback sockets and a 30 s poll
 # bound; the CTest timeout is deliberately larger than the in-test bounds.
 pelican_define_test(osc_listener_test NO_DISCOVERY pelican_core)
