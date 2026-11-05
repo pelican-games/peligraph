@@ -12,6 +12,7 @@ add_library(pelican_project
     graphfold.cpp
     graphfiltersdocument.cpp
     graphfiltersdocument.hpp
+    graphincomplete.cpp
     graphloopexpression.cpp
     graphmodule.cpp
     graphparameterschema.cpp

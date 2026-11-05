@@ -2,6 +2,7 @@
 #include "canonicalanchorremoved.hpp"
 #include "featurecompose.hpp"
 #include "graphloopexpression.hpp"
+#include "graphincomplete.hpp"
 #include "renderpipeline.hpp"
 
 #include <algorithm>
@@ -2536,8 +2537,10 @@ nlohmann::json editGraphDocument(const Json &document, const Json &ops) {
     }
     for (const auto &check : deferred) runDeferredCheck(candidate, check);
     // One expansion at the end: every op landed, or the document is refused
-    // whole and the caller's document is untouched.
-    (void)expandGraphDocument(candidate);
+    // whole and the caller's document is untouched. Scalar placeholders belong
+    // only to this compile-time check; the candidate returned below is authored.
+    const auto completed = completeUnconnectedInputs(candidate, builtinGraphModuleRegistry());
+    (void)expandGraphDocument(completed.document);
     return candidate;
 }
 

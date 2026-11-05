@@ -1,5 +1,7 @@
 #include "../shader/raygrouplayout.hpp"
 #include "renderconfigeditor.hpp"
+
+#include "../../project/graphincomplete.hpp"
 #include "rpctrace.hpp"
 #include "../../project/viewselect.hpp"
 #include "../../project/authoringlowering.hpp"
@@ -2328,6 +2330,12 @@ OrderedJson RenderConfigEditorService::queueRootEdit(
         .edits_additional_documents = !additional_documents.empty(),
         .source_only = source_only,
     });
+    if (operation == "edit_graph_document") {
+        const auto completed = completeUnconnectedInputs(
+            Json::parse(pending_.back().candidate.bytes()), builtinGraphModuleRegistry());
+        pending_.back().result_extras["incomplete_inputs"] =
+            graphIncompleteInputsJson(completed.inputs);
+    }
     auto accepted = OrderedJson{
         {"ticket", ticket_id},
         {"status", "accepted"},
@@ -7852,12 +7860,8 @@ void RenderConfigEditorService::noteProblems(
     bool reload, bool source_only, const OrderedJson &result) const {
     const auto status = result.value("status", std::string{});
     if (status == "committed") {
-        // A reload takes in what is on disk; an edit that published a new
-        // generation composed every render document it reads. An edit that
-        // published nothing (no_change, or only authored bytes the engine
-        // never reads) composed nothing.
-        if (reload || (!source_only && !result.value("no_change", false)))
-            clearRenderPipelineProblems();
+        // Publication has already cleared old problems and installed the
+        // incomplete-input warnings tied to the successful generation.
         return;
     }
     if (!reload || !refusesDocuments(result)) return;

@@ -1067,6 +1067,43 @@ TEST_CASE("CP1 compute descriptor limits apply to each layout not the pool aggre
     }
 }
 
+TEST_CASE("GC-2a1 incomplete-input Problems replace only their own rows", "[gc2a1][problems][cpu]") {
+    FastModuleContainer modules;
+    auto &problems = GET_MODULE(ProblemList);
+    nlohmann::json unrelated{{"severity", "error"}, {"source", "test"},
+        {"code", "test.unrelated@1"}, {"message", "keep this row"}};
+    problems.replace(renderPipelineProblemDomain, {unrelated});
+    const nlohmann::json inputs{
+        {{"scope", ""}, {"node", "sum"}, {"port", "a"}, {"substitute", "zero_value"}},
+        {{"scope", "body"}, {"node", "gain"}, {"port", "b"}, {"substitute", "zero_value"}}};
+    syncRenderPipelineIncompleteProblems(problemSourceEditRpc, inputs, "pipeline.json");
+    auto rows = problems.problemsOf(renderPipelineProblemDomain);
+    REQUIRE(rows.size() == 3);
+    CHECK(rows.front().at("code") == "test.unrelated@1");
+    const auto revision = problems.revision();
+    syncRenderPipelineIncompleteProblems(problemSourceHotReload, inputs, "pipeline.json");
+    CHECK(problems.revision() > revision);
+    rows = problems.problemsOf(renderPipelineProblemDomain);
+    REQUIRE(rows.size() == 3);
+    CHECK(rows[1].at("severity") == "warning");
+    CHECK(rows[1].at("node") == "sum");
+    CHECK(rows[1].at("port") == "a");
+    CHECK(rows[1].at("fields").at("substitute") == "zero_value");
+    CHECK(rows[1].at("source") == problemSourceHotReload);
+    CHECK(rows[2].at("definition") == "body");
+    CHECK(rows[2].at("message").get<std::string>().find("body.gain.b") != std::string::npos);
+    const auto stable_revision = problems.revision();
+    syncRenderPipelineIncompleteProblems(problemSourceHotReload, inputs, "pipeline.json");
+    CHECK(problems.revision() == stable_revision);
+    CHECK(problems.problemsOf(renderPipelineProblemDomain).size() == 3);
+    syncRenderPipelineIncompleteProblems(problemSourceEditRpc, nlohmann::json::array(), "pipeline.json");
+    rows = problems.problemsOf(renderPipelineProblemDomain);
+    REQUIRE(rows.size() == 1);
+    CHECK(rows.front().at("code") == unrelated.at("code"));
+    CHECK(rows.front().at("severity") == unrelated.at("severity"));
+    CHECK(rows.front().at("message") == unrelated.at("message"));
+}
+
 TEST_CASE("CP1 compute apply problems replace one row and clear after repair", "[compute][problems][cp1]") {
     FastModuleContainer modules;
     auto &problems = GET_MODULE(ProblemList);

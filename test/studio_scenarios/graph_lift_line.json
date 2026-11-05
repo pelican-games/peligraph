@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_lift_line",
-  "description": "GC-1: inside the definition body, a line from an output is connected normally, then two connected inputs are lifted and let go on empty canvas. Each lift is a cut sent as one graph edit, and one Undo brings the line back. The same document is read back after every step.",
+  "description": "GC-2a1: cutting a required scalar inside a definition saves without storing a synthetic node, reports the zero substitute, removes the drawn line, and Undo restores it. Only the scalar fixture's value ports are exercised; the separate GC-1 scene test keeps a required storage-buffer cut refused.",
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
@@ -16,21 +16,23 @@
     {"label": "the definition names its three nodes", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.layout.nodes.$len", "value": 3},
     {"label": "fit, so both ends of the drag are on screen", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
 
+    {"label": "the connected line is drawn before the lift", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "visible": true, "timeout_ms": 30000},
     {"label": "lift the connected a by its socket and let it go on empty canvas", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a", "point": [2, 2]}, "steps": 12},
-    {"label": "the engine refuses: a is a required input", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "unconnected graph input", "timeout_ms": 60000},
+    {"label": "the empty scalar input is accepted and saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
+    {"label": "a is absent and only b remains authored", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.$len", "value": 1},
+    {"label": "no compile-only synthetic node is stored", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes.$len", "value": 3},
+    {"label": "the lifted line is not drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "missing": true, "timeout_ms": 30000},
+    {"label": "Problems names the compile-only zero", "expect": "rpc_equals", "method": "get_problems", "params": {}, "path": "problems[0].code", "value": "graph.input_unconnected@1"},
+    {"label": "a picture of the saved empty input", "expect": "screenshot", "path": "graph_lift_line_unconnected.png"},
+    {"label": "Undo restores the edge", "cmd": "action", "name": "pelican.graphCanvas.undo"},
+    {"label": "the undo is saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
     {"label": "the document still says a is gain", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "gain"},
-    {"label": "the canvas is not stuck: fit works", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
-    {"label": "the lifted line is drawn again", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "visible": true, "timeout_ms": 30000},
-    {"label": "a picture of the body after the refusal", "expect": "screenshot", "path": "graph_lift_line_refused.png"},
-    {"label": "a line from bias's value onto sum's a, which already has gain's line", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#bias/out:value"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "steps": 8},
+    {"label": "the restored line is drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_edge#gain->sum", "visible": true, "timeout_ms": 30000},
+
+    {"label": "reconnect a to bias", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#bias/out:value"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "steps": 8},
     {"label": "the ordinary connection was saved", "cmd": "wait", "name": "pelican.graphCanvasNotice", "text": "Graph change saved.", "timeout_ms": 60000},
     {"label": "the document says a is bias now", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "bias", "retry_ms": 60000},
-
-    {"label": "fit again after the connection", "cmd": "action", "name": "pelican.graphCanvas.fitView"},
-    {"label": "lift a again, now bias's line, and let it go on empty canvas", "cmd": "drag", "from": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a"}, "to": {"name": "pelican.graphCanvasView::graph_socket#sum/in:a", "point": [2, 2]}, "steps": 12},
-    {"label": "refused again", "cmd": "wait", "name": "pelican.graphCanvasNotice", "contains": "unconnected graph input", "timeout_ms": 60000},
-    {"label": "still bias", "expect": "rpc_equals", "method": "get_graph_instances", "params": {}, "path": "definitions.gain_curve.nodes[2].inputs.a.node", "value": "bias"},
-    {"label": "a picture after the second refusal", "expect": "screenshot", "path": "graph_lift_line_refused2.png"},
-    {"label": "a picture of the body", "expect": "screenshot", "path": "graph_lift_line.png"}
+    {"label": "a connected scalar has no incomplete-input warning", "expect": "rpc_equals", "method": "get_problems", "params": {}, "path": "problems.$len", "value": 0},
+    {"label": "a picture of the reconnected body", "expect": "screenshot", "path": "graph_lift_line.png"}
   ]
 }

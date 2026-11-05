@@ -1,5 +1,7 @@
 #include "../watch/userdataguard.hpp"
 #include "renderer.hpp"
+
+#include "../../project/graphincomplete.hpp"
 #include "../communication/rpctrace.hpp"
 #include "../renderingpass/rendertargetnameresolver.hpp"
 #include "../userpublic/valuegraph.hpp"
@@ -115,6 +117,7 @@ struct RenderPipelineReloadState {
     std::uint64_t failed = 0;
     std::uint64_t last_generation = 0;
     std::uint64_t staged_generation = 0;
+    nlohmann::json incomplete_inputs = nlohmann::json::array();
     std::string last_error;
 };
 
@@ -147,6 +150,7 @@ struct RenderPipelinePublicationTransaction {
     std::optional<RenderGraphVariantConfig> variants;
     std::set<watch::AssetKey> watched_sources;
     std::string config_json;
+    nlohmann::json incomplete_inputs = nlohmann::json::array();
     std::string failure;
     // The only per-path wording: each construction site fills it in.
     std::string rollback_failure_message;
@@ -185,14 +189,16 @@ void RenderPipelinePublicationTransaction::publish(
             std::move(config_json));
     // BS-1: a published project configuration ends the fallback.
     renderer.render_pipeline_fallback_refusal.reset();
-    // PB-1: what is on disk composed. An authored candidate's ticket clears
-    // the list in the editor, which knows whether it was a reload or an edit
-    // (a recompile for graph ownership is neither).
-    if (!authored) {
-        try {
-            clearRenderPipelineProblems();
-        } catch (...) {
-        }
+    // Problems describe only the generation that reached this committed
+    // publication; failed candidates never reach this point.
+    try {
+        clearRenderPipelineProblems();
+        if (renderer.render_pipeline_reload_state != nullptr)
+            syncRenderPipelineIncompleteProblems(
+                authored ? problemSourceEditRpc : problemSourceHotReload,
+                incomplete_inputs,
+                renderer.render_pipeline_reload_state->source_reference);
+    } catch (...) {
     }
 
     try {
@@ -222,6 +228,7 @@ void RenderPipelinePublicationTransaction::publish(
             std::move(watched_sources);
         published.last_generation = generation;
         published.staged_generation = 0;
+        published.incomplete_inputs = incomplete_inputs;
         published.last_error.clear();
         ++published.applied;
     }
@@ -3197,6 +3204,19 @@ Renderer::Renderer() {
     current_rendering_pass_id = flat_rendering_pass_id;
     internal_render_extent = GET_MODULE(RenderTarget).getExtent();
     installRenderPipelineReloadParticipant();
+    if (!refusal && render_pipeline_reload_state != nullptr) {
+        try {
+            const auto inputs = graphIncompleteInputsJson(completeUnconnectedInputs(
+                nlohmann::json::parse(config.renderingConfigJson()),
+                builtinGraphModuleRegistry()).inputs);
+            render_pipeline_reload_state->incomplete_inputs = inputs;
+            clearRenderPipelineProblems();
+            syncRenderPipelineIncompleteProblems(
+                problemSourceStartup, inputs,
+                render_pipeline_reload_state->source_reference);
+        } catch (const std::exception &) {
+        }
+    }
     // PB-1 (engine_backlog 23): the project's generation is live; a material
     // this start registers without a pass for its route is written down
     // instead of stopping the launch (enterStartupFallbackForUnservedMaterials).
@@ -3637,6 +3657,8 @@ Renderer::reloadRenderPipelineFromDisk(
             companion_requests.begin(),
             companion_requests.end());
         transaction->config_json = json;
+        transaction->incomplete_inputs = graphIncompleteInputsJson(
+            completeUnconnectedInputs(nlohmann::json::parse(json), builtinGraphModuleRegistry()).inputs);
         transaction->rollback_failure_message =
             "pelican.ray_tracing.generation_rolled_back@1: staged render pipeline generation was not published";
 
@@ -3866,6 +3888,9 @@ Renderer::applyRenderPipelineAuthoringCandidate(
             std::move(completion);
         transaction->config_json =
             candidate_documents.rootDocument().bytes;
+        transaction->incomplete_inputs = graphIncompleteInputsJson(
+            completeUnconnectedInputs(nlohmann::json::parse(transaction->config_json),
+                                      builtinGraphModuleRegistry()).inputs);
         transaction->candidate_documents.emplace(
             std::move(candidate_documents));
         transaction->rollback_failure_message =
@@ -4588,6 +4613,18 @@ nlohmann::json Renderer::currentFramePlanJson() const {
         ++cached.builds;
     }
     auto result = cached.plan;
+    result["incomplete_inputs"] = nlohmann::json::array();
+    if (render_pipeline_reload_state != nullptr) {
+        for (const auto &input : render_pipeline_reload_state->incomplete_inputs) {
+            auto row = input;
+            row["synthetic"] = true;
+            row["label"] = "unconnected: " + input.value("node", std::string{}) + "." + input.value("port", std::string{});
+            row["origin"] = {{"scope", input.value("scope", std::string{})},
+                             {"node", input.value("node", std::string{})},
+                             {"port", input.value("port", std::string{})}};
+            result["incomplete_inputs"].push_back(std::move(row));
+        }
+    }
     // Whether a stage's source file exists is the file system's now.
     appendShaderResolution(
         result, program->rendering_pass,

@@ -3705,6 +3705,7 @@ pelican_define_test(targetplanning_test GROUP project_planning pelican_project)
 pelican_define_test(targetrenderplanning_test GROUP project_planning pelican_project)
 pelican_define_test(samplecountplanning_test GROUP project_planning pelican_project)
 pelican_define_test(graphvariantpolicy_test GROUP project_planning pelican_project)
+pelican_define_test(graph_incomplete_test GROUP project_planning pelican_project)
 # RC-3c2a: the generation's resource description (merge, alias groups, buffers, refusals).
 pelican_define_test(generationresources_test GROUP project_planning pelican_project)
 pelican_define_test(passfieldownership_test GROUP project_planning

@@ -918,7 +918,7 @@ TEST_CASE("owned graph instances attach and detach through source publication", 
 }
 
 TEST_CASE("instance inputs change supply atomically and report what was drawn",
-          "[render-config-editor][graph-instance-inputs]") {
+          "[render-config-editor][graph-instance-inputs][gc2a1]") {
     // No shipped project has a pelican.graph document, so the acceptance is
     // taken on a fixture: a definition with one defaulted and one undefaulted
     // input, and one owned attachment that stores both.
@@ -1057,6 +1057,59 @@ TEST_CASE("instance inputs change supply atomically and report what was drawn",
         REQUIRE(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
             {"port", "bias"}, {"source", nullptr}}}))).at("committed") == true);
         REQUIRE(instance().at("parameters").at("bias") == 5);
+    }
+
+    SECTION("GC-2a1 scalar cuts are compile-only and reconnect clears their report") {
+        const auto scoped = [](Json op) {
+            op["scope"] = "gain_curve";
+            return Json::array({std::move(op)});
+        };
+        const auto noSyntheticNodes = [&](const Json &body) {
+            for (const auto &node : body.at("nodes"))
+                CHECK(node.at("id").get<std::string>().find("gc2_unconnected_") != 0);
+        };
+        const auto portIsEmpty = [&](const char *node, const char *port) {
+            const auto instances = service->getGraphInstances(Json::object());
+            for (const auto &entry : instances.at("definitions").at("gain_curve").at("nodes"))
+                if (entry.at("id") == node)
+                    return !entry.value("inputs", Json::object()).contains(port);
+            FAIL("missing definition node");
+            return false;
+        };
+
+        const auto definition_cut = commit(edit(scoped({{"op", "set_input"},
+            {"node", "sum"}, {"port", "a"}, {"source", nullptr}})));
+        REQUIRE(definition_cut.at("committed") == true);
+        REQUIRE(definition_cut.at("incomplete_inputs").size() == 1);
+        CHECK(definition_cut.at("incomplete_inputs").at(0).at("scope") == "gain_curve");
+        CHECK(definition_cut.at("incomplete_inputs").at(0).at("node") == "sum");
+        CHECK(definition_cut.at("incomplete_inputs").at(0).at("port") == "a");
+        CHECK(definition_cut.at("incomplete_inputs").at(0).at("substitute") == "zero_value");
+        auto stored = Json::parse(readBytes(source.path));
+        noSyntheticNodes(stored);
+        noSyntheticNodes(stored.at("definitions").at("gain_curve"));
+        CHECK(portIsEmpty("sum", "a"));
+        const auto definition_reconnected = commit(edit(scoped({{"op", "set_input"},
+            {"node", "sum"}, {"port", "a"},
+            {"source", {{"node", "gain"}, {"port", "value"}}}})));
+        CHECK(definition_reconnected.at("incomplete_inputs").empty());
+
+        const auto instance_result = commit(edit(Json::array({
+            Json{{"op", "set_node_parameters"}, {"node", "left"},
+                 {"parameters", {{"gain", 2.5}}}},
+            Json{{"op", "set_input"}, {"node", "left"}, {"port", "bias"}, {"source", nullptr}}})));
+        REQUIRE(instance_result.at("committed") == true);
+        REQUIRE(instance_result.at("incomplete_inputs").size() == 1);
+        CHECK(instance_result.at("incomplete_inputs").at(0).at("scope") == "");
+        CHECK(instance_result.at("incomplete_inputs").at(0).at("node") == "left");
+        CHECK(instance_result.at("incomplete_inputs").at(0).at("port") == "bias");
+        stored = Json::parse(readBytes(source.path));
+        noSyntheticNodes(stored);
+        CHECK(instance().at("parameters") == Json{{"gain", 2.5}});
+        CHECK_FALSE(instance().value("inputs", Json::object()).contains("bias"));
+        CHECK(commit(edit(Json::array({Json{{"op", "set_input"}, {"node", "left"},
+            {"port", "bias"}, {"source", {{"node", "clock"}, {"port", "value"}}}}})))
+            .at("incomplete_inputs").empty());
     }
 
     SECTION("a rejected op writes nothing and is named") {

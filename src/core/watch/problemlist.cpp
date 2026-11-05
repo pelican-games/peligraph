@@ -398,6 +398,46 @@ void clearRenderPipelineProblems() {
         problems->clear(renderPipelineProblemDomain);
 }
 
+void syncRenderPipelineIncompleteProblems(std::string_view source,
+                                          const Json &incomplete_inputs,
+                                          std::string_view root_reference) {
+    auto *problems = FastModuleContainer::tryGet<ProblemList>();
+    if (problems == nullptr) return;
+    const auto *paths = FastModuleContainer::tryGet<PathResolver>();
+    const auto load = [paths](const std::string &reference) -> std::optional<std::string> {
+        if (paths == nullptr) return std::nullopt;
+        try {
+            return paths->loadText(reference);
+        } catch (const std::exception &) {
+            return std::nullopt;
+        }
+    };
+    const auto root_bytes = load(std::string{root_reference});
+    const auto roles = renderDocumentRoles(root_bytes.value_or(std::string{}), root_reference, load);
+    std::vector<Json> next;
+    for (const auto &problem : problems->problemsOf(renderPipelineProblemDomain))
+        if (problem.value("code", std::string{}) != "graph.input_unconnected@1")
+            next.push_back(problem);
+    if (incomplete_inputs.is_array()) {
+        for (const auto &input : incomplete_inputs) {
+            const auto scope = input.value("scope", std::string{});
+            const auto node = input.value("node", std::string{});
+            const auto port = input.value("port", std::string{});
+            const auto substitute = input.value("substitute", std::string{});
+            const auto location = (scope.empty() ? std::string{} : scope + ".") + node + "." + port;
+            Json refusal{{"code", "graph.input_unconnected@1"},
+                {"message", "Unconnected scalar input " + location + " uses zero_value (value 0)."},
+                {"document", graphDocumentReference(root_reference).value_or(std::string{root_reference})},
+                {"scope", scope}, {"node", node}, {"port", port}, {"substitute", substitute}};
+            if (!scope.empty()) refusal["definition"] = scope;
+            auto problem = renderPipelineProblem(source, refusal, roles, currentFrame());
+            problem["severity"] = std::string{problemSeverityWarning};
+            next.push_back(std::move(problem));
+        }
+    }
+    problems->replace(renderPipelineProblemDomain, std::move(next));
+}
+
 void syncShaderProblems(std::string_view source,
                         const std::vector<std::string> &failed_documents,
                         std::string_view error_text) {

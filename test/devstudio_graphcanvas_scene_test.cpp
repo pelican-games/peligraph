@@ -4066,7 +4066,10 @@ Json zoneDocument(bool else_only = false) {
     };
     const auto curve = [](const char *id, double time) {
         return Json{{"id", id}, {"op", "value.curve"},
-                    {"parameters", {{"time", time}}}, {"outputs", Json::array({"value"})}};
+                    {"parameters", {{"time", time},
+                                    {"keys", Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                                          {{"time", 1.0}, {"value", 1.0}}})}}},
+                    {"outputs", Json::array({"value"})}};
     };
     const Json boundary{{"id", "target"}, {"op", "graph.input"}, {"default", 0.0}};
     const Json first{
@@ -4095,6 +4098,15 @@ Json zoneDocument(bool else_only = false) {
 // One model and one scene over a document the engine's own edit function
 // keeps: every committed op list is applied to it, and every commit moves the
 // digest, so Undo and Redo run against what the engine would hold.
+Json zoneEditDocument(const Json &document, Json ops) {
+    for (auto &op : ops) {
+        if (op.value("op", std::string{}) != "add_node" ||
+            op.at("node").value("op", std::string{}) != "value.constant") continue;
+        op["node"]["parameters"].emplace("value", 0.0);
+    }
+    return Pelican::editGraphDocument(document, ops);
+}
+
 struct ZoneHarness {
     GraphCanvasModel model;
     GraphCanvasScene scene;
@@ -4161,7 +4173,7 @@ struct ZoneHarness {
         REQUIRE(submit.params.at("base_source_digest") == digest());
         const Json ops = submit.params.at("ops");
         Json edited = document;
-        if (apply) edited = Pelican::editGraphDocument(document, ops);
+        if (apply) edited = zoneEditDocument(document, ops);
         model.receiveRpcResult(submit.request_id,
                                Json{{"status", "accepted"}, {"ticket", "zone-edit"}}.dump());
         for (const auto &request : model.takeRpcRequests()) {
@@ -4235,7 +4247,7 @@ struct ZoneHarness {
         const auto &submit = edits.front();
         REQUIRE(submit.params.at("base_source_digest") == digest());
         const Json ops = submit.params.at("ops");
-        Json edited = Pelican::editGraphDocument(document, ops);
+        Json edited = zoneEditDocument(document, ops);
         model.receiveRpcResult(submit.request_id,
                                Json{{"status", "accepted"}, {"ticket", "zone-edit"}}.dump());
         for (const auto &request : model.takeRpcRequests()) {
@@ -4567,13 +4579,15 @@ TEST_CASE("LP-4d1 a root node and a body node with one id are picked, edited and
     };
     ops = editPill(QStringLiteral("rest"), QStringLiteral("0.75"));
     REQUIRE(ops.size() == 1);
+    const Json keys = Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                   {{"time", 1.0}, {"value", 1.0}}});
     CHECK(ops[0] == Json{{"op", "set_node_parameters"}, {"scope", "rest"}, {"node", "curve"},
-                         {"parameters", {{"time", 0.75}}}});
+                         {"parameters", {{"time", 0.75}, {"keys", keys}}}});
     CHECK(scene.selectedScope() == "rest");
     ops = editPill(QString{}, QStringLiteral("0.125"));
     REQUIRE(ops.size() == 1);
     CHECK(ops[0] == Json{{"op", "set_node_parameters"}, {"scope", "root"}, {"node", "curve"},
-                         {"parameters", {{"time", 0.125}}}});
+                         {"parameters", {{"time", 0.125}, {"keys", keys}}}});
     CHECK(scene.selectedScope().empty());
 }
 
@@ -5183,11 +5197,15 @@ Json lp4f1Plan() {
 // `counted_body`, both bodies one fullscreen pass, and a fullscreen pass in
 // the root the frame plan lists in the cube's family.
 Json lp4f1Document() {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
     const Json pass{{"id", "pass"},
                     {"op", "render.fullscreen"},
                     {"parameters",
                      {{"shader", {{"vertex", "engine://fullscreen"},
-                                  {"fragment", "engine://passthrough"}}}}},
+                                  {"fragment", "engine://passthrough"}}},
+                      {"ports", {{"color", {{"kind", "image"}, {"type", type}, {"access", "write"},
+                                             {"attachment", "color"}, {"location", 0}}}}}}},
                     {"outputs", Json::array({"color"})}};
     Json outside = pass;
     outside["id"] = "outside";
@@ -6863,13 +6881,19 @@ namespace {
 
 // The root: an image and the graph's fullscreen pass drawing into it.
 Json gl1eRead() {
+    const Json type{{"semantic", "pelican.render.color_signal@1"},
+                    {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
     Json document{
         {"nodes",
          Json::array({{{"id", "shade__color"}, {"op", "render.image"},
-                       {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                       {"parameters", {{"format", "R8G8B8A8_UNORM"}, {"type", type}}},
                        {"outputs", Json::array({"resource"})}},
                       {{"id", "shade"}, {"op", "render.fullscreen"},
-                       {"parameters", Json::object()},
+                       {"parameters", {{"shader", {{"vertex", "engine://fullscreen"},
+                                                   {"fragment", "engine://passthrough"}}},
+                                       {"ports", {{"color", {{"kind", "image"}, {"type", type},
+                                                              {"access", "write"}, {"attachment", "color"},
+                                                              {"location", 0}}}}}}},
                        {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
                        {"outputs", Json::array({"color"})}}})},
         {"definitions", Json::object()},
@@ -7032,7 +7056,7 @@ struct RtdTab {
                     {"nodes", read.at("nodes")}, {"definitions", read.at("definitions")},
                     {"layout", Json::object()}, {"outputs", Json::object()},
                     {"rendering", {{"present", gl1ePresent({})}}}};
-        document["nodes"][1]["parameters"] = {{"shader", {{"fragment", "engine://passthrough"}}}};
+        document["nodes"][1]["parameters"]["shader"].erase("vertex");
         auto capability = transport.capability();
         capability.ready = [this](QObject *, auto handler) {
             ready_changed = handler;
@@ -18943,30 +18967,22 @@ namespace {
 // the context lists that pass in its graph and the image among its render
 // targets, and present's `input` names the image.
 struct Gs2Engine {
-    Json graph{{"schema", "pelican.graph"},
-               {"version", 1},
-               {"definitions", Json::object()},
-               {"outputs", Json::object()},
-               {"rendering", Json::object()},
-               {"layout", Json::object()},
-               {"nodes",
-                Json::array({{{"id", "shade__color"}, {"op", "render.image"},
-                              {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
-                              {"outputs", Json::array({"resource"})}},
-                             {{"id", "shade"}, {"op", "render.fullscreen"},
-                              {"parameters", Json::object()},
-                              {"inputs", {{"color", {{"node", "shade__color"}, {"port", "resource"}}}}},
-                              {"outputs", Json::array({"color"})}},
-                             {{"id", "k1"}, {"op", "value.constant"},
-                              {"parameters", {{"value", 1.0}}},
-                              {"outputs", Json::array({"value"})}},
-                             {{"id", "k2"}, {"op", "value.constant"},
-                              {"parameters", {{"value", 2.0}}},
-                              {"outputs", Json::array({"value"})}},
-                             {{"id", "sum"}, {"op", "value.add"},
-                              {"inputs", {{"a", {{"node", "k1"}, {"port", "value"}}},
-                                          {"b", {{"node", "k1"}, {"port", "value"}}}}},
-                              {"outputs", Json::array({"value"})}}})}};
+    Json graph = [] {
+        auto document = gl1eRead();
+        document["schema"] = "pelican.graph";
+        document["version"] = 1;
+        document["outputs"] = Json::object();
+        document["rendering"] = Json::object();
+        document["nodes"].push_back({{"id", "k1"}, {"op", "value.constant"},
+                                     {"parameters", {{"value", 1.0}}}, {"outputs", Json::array({"value"})}});
+        document["nodes"].push_back({{"id", "k2"}, {"op", "value.constant"},
+                                     {"parameters", {{"value", 2.0}}}, {"outputs", Json::array({"value"})}});
+        document["nodes"].push_back({{"id", "sum"}, {"op", "value.add"},
+                                     {"inputs", {{"a", {{"node", "k1"}, {"port", "value"}}},
+                                                 {"b", {{"node", "k1"}, {"port", "value"}}}}},
+                                     {"outputs", Json::array({"value"})}});
+        return document;
+    }();
     int revision = 0;
     std::uint64_t frame = 100;
     int generation = 1;
@@ -19459,7 +19475,12 @@ void gs2bCommit(Gs2Tab &tab) {
 
 // Another panel's change: the engine's document moves, and the tab reads it.
 void gs2bElsewhere(Gs2Tab &tab, const std::function<void(Json &nodes)> &change) {
-    change(tab.engine.graph["nodes"]);
+    auto &nodes = tab.engine.graph["nodes"];
+    const auto required = nodes[1].at("parameters");
+    change(nodes);
+    auto &parameters = nodes[1]["parameters"];
+    for (const auto &key : {"shader", "ports"})
+        if (!parameters.contains(key)) parameters[key] = required.at(key);
     ++tab.engine.revision;
     tab.widget->refresh();
     gs2bSettle(tab);
@@ -26397,7 +26418,7 @@ TEST_CASE("SDK-1a a stack beside a pass line no graph edge carries redraws in pl
     }
     document["nodes"].push_back({{"id", "shade__source"},
                                  {"op", "render.image"},
-                                 {"parameters", {{"format", "R8G8B8A8_UNORM"}}},
+                                 {"parameters", document["nodes"][0].at("parameters")},
                                  {"outputs", Json::array({"resource"})}});
     // The stack and its colour are placed, and the stack's only row is
     // already open: the whole draw gives the row and the pass line, and the
@@ -29194,20 +29215,19 @@ TEST_CASE("GC-1 a reply that arrives while the hand is down waits for the gestur
 TEST_CASE("GC-1 a cut the engine refuses draws its line again",
           "[devstudio][graph-canvas][scene][gc1]") {
     (void)application();
-    ZoneHarness h{gc1BodyDocument()};
+    ZoneHarness h{gc1TypedBodyDocument()};
     gc1OpenBody(h);
     auto &scene = h.scene;
-    QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"), "sum", "a", "input");
+    QGraphicsItem *input = socketOf(scene, QStringLiteral("gain_curve"), "view", "target", "input");
     REQUIRE(input != nullptr);
-    QGraphicsPathItem *old = edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
-                                      QStringLiteral("sum"), QStringLiteral("a"));
+    QGraphicsPathItem *old = edgeItem(scene, QStringLiteral("buffer"), QStringLiteral("resource"),
+                                      QStringLiteral("view"), QStringLiteral("target"));
     REQUIRE(old != nullptr);
     const QPointF at = centreOf(input);
     const QPointF empty = gc1EmptyPoint(scene, at, 60.0);
     sceneMouse(scene, QEvent::GraphicsSceneMousePress, at);
     sceneMouse(scene, QEvent::GraphicsSceneMouseMove, empty);
     sceneMouse(scene, QEvent::GraphicsSceneMouseRelease, empty);
-    // In the air: the line stays hidden, and an early settle changes nothing.
     CHECK_FALSE(old->isVisible());
     REQUIRE(h.model.busy());
     scene.settleLiftedCut();
@@ -29219,15 +29239,15 @@ TEST_CASE("GC-1 a cut the engine refuses draws its line again",
             request.request_id,
             Json{{"status", "rejected"}, {"committed", false},
                  {"error", {{"code", "invalid_graph_document"},
-                            {"message", "unconnected graph input: left/sum.a"}}}}.dump());
+                            {"message", "unconnected graph input: left/view.target"}}}}.dump());
         refused = true;
     }
     REQUIRE(refused);
     h.answerReads();
     REQUIRE_FALSE(h.model.busy());
     scene.settleLiftedCut();
-    QGraphicsPathItem *line = edgeItem(scene, QStringLiteral("gain"), QStringLiteral("value"),
-                                       QStringLiteral("sum"), QStringLiteral("a"));
+    QGraphicsPathItem *line = edgeItem(scene, QStringLiteral("buffer"), QStringLiteral("resource"),
+                                       QStringLiteral("view"), QStringLiteral("target"));
     REQUIRE(line != nullptr);
     CHECK(line->isVisible());
 }

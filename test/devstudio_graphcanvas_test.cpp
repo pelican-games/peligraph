@@ -3476,12 +3476,12 @@ Json gl1fDocument() {
                      {"inputs", {{"depth", {{"node", "scene_depth_ref"}, {"port", "resource"}}}}},
                      {"outputs", Json::array()}});
     nodes.push_back({{"id", "snap"}, {"op", "render.snapshot_copy"},
-                     {"parameters", Json::object()},
+                     {"parameters", {{"snapshot_after", "forward_opaque"}}},
                      {"inputs", {{"source", {{"node", "scene_color_ref"}, {"port", "resource"}}},
                                  {"destination", {{"node", "history_ref"}, {"port", "resource"}}}}},
                      {"outputs", Json::array()}});
     nodes.push_back({{"id", "copy"}, {"op", "render.snapshot_copy"},
-                     {"parameters", Json::object()},
+                     {"parameters", {{"snapshot_after", "forward_opaque"}}},
                      {"inputs", {{"destination", {{"node", "history_ref"}, {"port", "resource"}}}}},
                      {"outputs", Json::array()}});
     return document;

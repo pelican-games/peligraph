@@ -84,6 +84,7 @@
 #include "../src/core/vkcore/renderer_config.hpp"
 #include "../src/core/vkcore/rendertarget.hpp"
 #include "../src/core/vkcore/util.hpp"
+#include "../src/core/watch/problemlist.hpp"
 #include "../src/core/watch/reloadservice.hpp"
 #include "../src/project/targetrendermemory.hpp"
 #include "../src/project/vulkanviewplanning.hpp"
@@ -15489,6 +15490,130 @@ TEST_CASE("RC-3d2 registration rejects custom and complete reordered packages an
         REQUIRE(runtime.activeGeneration() == before->generation + 1);
         REQUIRE(runtime.snapshot() != before);
         REQUIRE(draw() == pixels);
+    }
+#else
+    SKIP("runtime shader compiler required");
+#endif
+}
+
+TEST_CASE("GC-2a1 empty required scalars draw zero through edit, reload and project open", "[gc2a1][headless][render][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const bool open_cut = GENERATE(false, true);
+    CAPTURE(open_cut);
+    setupLogger();
+    FastModuleContainer modules;
+    Rc3d2Project project;
+    project.document["nodes"] = nlohmann::json::array({
+        {{"id", "one"}, {"op", "value.constant"}, {"parameters", {{"value", 1.0}}}, {"outputs", {"value"}}},
+        {{"id", "quarter"}, {"op", "value.constant"}, {"parameters", {{"value", 0.25}}}, {"outputs", {"value"}}},
+        {{"id", "sum"}, {"op", "value.multiply"},
+         {"inputs", {{"a", {{"node", "one"}, {"port", "value"}}}, {"b", {{"node", "quarter"}, {"port", "value"}}}}},
+         {"outputs", {"value"}}},
+        {{"id", "level"}, {"op", "render.buffer"}, {"parameters", {{"element", "float"}}},
+         {"inputs", {{"value", {{"node", "sum"}, {"port", "value"}}}}}, {"outputs", {"resource"}}}});
+    auto &pass = project.document["rendering"]["rendering_passes"][0]["passes"][0];
+    pass["input"] = {"level"};
+    pass["resource_ports"] = {
+        {"level", {{"resource", "level"}, {"kind", "buffer"}, {"access", "storage"}, {"element", "float"}}}};
+    if (open_cut) project.document["nodes"][2]["inputs"].erase("a");
+    writeTextFile(project.root / "pipeline.json", project.document.dump());
+    writeTextFile(project.root / "shaders/physical_scope_base.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_resource_ports.glsl"
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(pelican_load_level(0u), 0.0, 0.0, 1.0); }
+)glsl");
+    writeTextFile(project.root / "shaders/physical_scope_overlay.frag", R"glsl(
+#version 450
+void main() { discard; }
+)glsl");
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    const auto draw = [&] {
+        GET_MODULE(EngineTime).advance();
+        renderer.render();
+        core.waitIdle();
+        const auto pixels = GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() >= 4);
+        return std::array<int, 4>{pixels[0], pixels[1], pixels[2], pixels[3]};
+    };
+    const auto incomplete_problems = [&] {
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto &problem : GET_MODULE(ProblemList).problemsOf(renderPipelineProblemDomain))
+            if (problem.value("code", std::string{}) == "graph.input_unconnected@1") result.push_back(problem);
+        return result;
+    };
+    const auto require_pixels = [&](int red) {
+        const auto expected = std::array<int, 4>{red, 0, 0, 255};
+        CHECK(draw() == expected);
+        CHECK(draw() == expected);
+    };
+    const auto apply = [&](bool fail = false) {
+        const auto reference = GET_MODULE(ProjectBasicConfig).renderingConfigReference();
+        const auto key = GET_MODULE(PathResolver).normalizedReference(reference);
+        const auto bytes = project.document.dump();
+        return renderer.applyRenderPipelineAuthoringCandidate(RenderConfigCandidateDocumentSet{key,
+            {{.reference = reference, .normalized_reference = key, .path = project.root / "pipeline.json",
+              .operation = RenderConfigDocumentOperation::replace,
+              .expected = {RenderConfigDocumentExistence::present,
+                           renderConfigSourceDigest(readTextFile(project.root / "pipeline.json"))},
+              .bytes = bytes}}}, [&, bytes, fail] {
+            if (fail) throw std::runtime_error("gc2a1 injected source failure");
+            writeTextFile(project.root / "pipeline.json", bytes);
+        });
+    };
+    const auto require_applied = [&] {
+        const auto applied = apply();
+        INFO(applied.error);
+        REQUIRE((applied.staged || applied.committed));
+    };
+    if (open_cut) {
+        require_pixels(0);
+        REQUIRE(incomplete_problems().size() == 1);
+        CHECK(incomplete_problems()[0].at("source") == problemSourceStartup);
+        project.document["nodes"][2]["inputs"]["a"] = {{"node", "one"}, {"port", "value"}};
+        require_applied();
+        require_pixels(137);
+        CHECK(incomplete_problems().empty());
+    } else {
+        require_pixels(137);
+        CHECK(incomplete_problems().empty());
+        project.document["nodes"][2]["inputs"].erase("a");
+        const auto failed = apply(true);
+        CHECK_FALSE(failed.staged);
+        CHECK_FALSE(failed.committed);
+        CHECK(failed.error.find("gc2a1 injected source failure") != std::string::npos);
+        CHECK(incomplete_problems().empty());
+        core.waitIdle();
+        CHECK(incomplete_problems().empty());
+        CHECK(nlohmann::json::parse(readTextFile(project.root / "pipeline.json")).at("nodes")[2].at("inputs").contains("a"));
+        require_pixels(137);
+
+        require_applied();
+        require_pixels(0);
+        REQUIRE(incomplete_problems().size() == 1);
+        CHECK(incomplete_problems()[0].at("source") == problemSourceEditRpc);
+        CHECK(incomplete_problems()[0].at("node") == "sum");
+        CHECK(incomplete_problems().size() == 1);
+        CHECK(nlohmann::json::parse(readTextFile(project.root / "pipeline.json")).dump() == project.document.dump());
+        const auto frame = renderer.currentFramePlanJson();
+        REQUIRE(frame.at("incomplete_inputs").size() == 1);
+        CHECK(frame.at("incomplete_inputs")[0].at("synthetic") == true);
+        CHECK(frame.at("incomplete_inputs")[0].at("label") == "unconnected: sum.a");
+        CHECK(frame.at("incomplete_inputs")[0].at("origin").at("port") == "a");
+
+        writeTextFile(project.root / "pipeline.json", project.document.dump());
+        REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(watch::ReloadRequest{
+            watch::makeAssetKey("pipeline.json"), watch::ReloadKind::modified, {}, 1}));
+        require_pixels(0);
+        REQUIRE(incomplete_problems().size() == 1);
+        CHECK(incomplete_problems()[0].at("source") == problemSourceHotReload);
+
+        project.document["nodes"][2]["inputs"]["a"] = {{"node", "one"}, {"port", "value"}};
+        require_applied();
+        require_pixels(137);
+        CHECK(incomplete_problems().empty());
     }
 #else
     SKIP("runtime shader compiler required");

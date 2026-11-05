@@ -174,6 +174,12 @@ void recordRenderPipelineProblem(std::string_view source,
 // The render pipeline's problems cleared (a committed reload or edit).
 void clearRenderPipelineProblems();
 
+// The scalar placeholders of one successfully published graph generation.
+// Only graph.input_unconnected@1 entries are replaced; unrelated problems stay.
+void syncRenderPipelineIncompleteProblems(std::string_view source,
+                                          const nlohmann::json &incomplete_inputs,
+                                          std::string_view root_reference);
+
 // PB-1 stage 4: after a shader reload (the file watch's, source hot_reload,
 // or reload_shaders', source reload_rpc), the shader problems are the shader
 // files the library still holds as failed (`failed_documents`, each
