@@ -315,6 +315,7 @@ class PELICAN_API Graph {
         std::shared_ptr<const SampleTable> table;
         std::string table_asset;
         std::uint32_t table_row{};
+        bool table_hold = false;
         Animation::CurvePlaybackSettings playback;
         std::vector<double Animation::CurvePlaybackSettings::*> playback_inputs;
         bool has_pause{};

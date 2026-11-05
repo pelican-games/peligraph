@@ -450,7 +450,9 @@ Table makeTable() {
              .describe("The baked table (a KTX2 with its .import.json beside it, e.g. bake_audio_analysis's)."),
          union_("row").required().variant(uint32(""))
              .variant(string("").choicesFromAssetManifest("asset", "source.metadata.layout.features"))
-             .describe("The feature row: its index, or its name (\"rms\", \"peak\", \"band:3\").")});
+             .describe("The feature row: its index, or its name (\"rms\", \"peak\", \"band:3\")."),
+         enumeration("interpolation", {"linear", "hold"}).fallback("linear")
+             .describe("Linear between samples, or hold the sample at or before the time.")});
     add(table, "value.playback", true,
         {mapping("source_begin", 0.0), mapping("source_end", 1.0), mapping("duration", 1.0), mapping("speed", 1.0),
          mapping("delay", 0.0), mapping("sample_interval", 0.0), wrap()});

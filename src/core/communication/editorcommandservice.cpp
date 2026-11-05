@@ -1500,6 +1500,11 @@ OrderedJson EditorCommandService::bakeAudioAnalysis(const Json &params) {
     return render_config_editor_->bakeAudioAnalysis(params);
 }
 
+OrderedJson EditorCommandService::bakeLiveRecording(const Json &params) {
+    if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
+    return render_config_editor_->bakeLiveRecording(params);
+}
+
 OrderedJson EditorCommandService::listDerivedAssets(const Json &params) const {
     if (!render_config_editor_) throw std::logic_error("render config editor service is unavailable");
     return render_config_editor_->listDerivedAssets(params);
@@ -2726,6 +2731,11 @@ OrderedJson EditorCommandRpcAdapter::verifyFold(const Json &params) const {
 OrderedJson EditorCommandRpcAdapter::bakeAudioAnalysis(const Json &params) const {
     if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
     return mutable_service_->bakeAudioAnalysis(params);
+}
+
+OrderedJson EditorCommandRpcAdapter::bakeLiveRecording(const Json &params) const {
+    if (!mutable_service_) throw std::logic_error("render config editing requires a mutable editor service");
+    return mutable_service_->bakeLiveRecording(params);
 }
 
 OrderedJson EditorCommandRpcAdapter::listDerivedAssets(const Json &params) const {

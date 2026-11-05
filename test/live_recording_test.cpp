@@ -1,4 +1,7 @@
 #include "../src/core/os/liveinputrecording.hpp"
+#include "../src/core/os/liveinputrecordingbake.hpp"
+#include "../src/core/communication/renderconfigeditor.hpp"
+#include "../src/core/loader/sampletable.hpp"
 #include "../src/core/launchconfig.hpp"
 #include "../src/core/renderingpass/graphinputs.hpp"
 #include "../src/core/watch/problemlist.hpp"
@@ -7,13 +10,18 @@
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
+#include <functional>
+#include <iterator>
 #include <limits>
 #include <nlohmann/json.hpp>
 #include <string>
 #include <string_view>
+#include <thread>
 
 namespace Pelican {
 namespace {
@@ -506,4 +514,390 @@ TEST_CASE("OSC-4a input sequence replay alone does not satisfy offline live read
     runtime.stopReplay();
     launch.input_replay = false;
 }
+} // namespace Pelican
+
+namespace Pelican {
+namespace {
+
+LiveInputRecording bakeRecording() {
+    LiveInputRecording recording;
+    recording.clock = {LiveRecordingClockMode::fixed, 0.25, 1, 10.0, 0};
+    recording.inputs = {{"phase", LiveInputType::floating, 0.25, {}, {}},
+                        {"count", LiveInputType::integer, 2.0, {}, {}},
+                        {"enabled", LiveInputType::boolean, 0.0, {}, {}}};
+    recording.frames = {{1, 10.0, {{"phase", 0.25}, {"count", 2.0}, {"enabled", 0.0}}},
+                        {2, 10.25, {{"phase", 1.0}}},
+                        {3, 10.50, {{"phase", 3.0}}},
+                        {4, 10.50, {{"phase", 5.0}, {"count", 7.0}, {"enabled", 1.0}}},
+                        {5, 11.25, {{"phase", 9.0}}}};
+    recording.end = {6, 11.30, 6};
+    return recording;
+}
+
+float bakedValue(const LiveRecordingTable &table, std::size_t feature, std::uint32_t sample) {
+    const auto row = feature * table.layout.rows_per_feature + sample / table.layout.width;
+    return table.values.at(row * table.layout.width + sample % table.layout.width);
+}
+
+std::string bakeError(const std::function<void()> &action) {
+    try {
+        action();
+    } catch (const GraphRegistryError &error) {
+        return error.code();
+    }
+    return "none";
+}
+
+void writeBakeText(const std::filesystem::path &path, const std::string &text) {
+    std::filesystem::create_directories(path.parent_path());
+    std::ofstream output{path, std::ios::binary | std::ios::trunc};
+    output.write(text.data(), static_cast<std::streamsize>(text.size()));
+    REQUIRE(output.good());
+}
+
+std::string readBakeText(const std::filesystem::path &path) {
+    std::ifstream input{path, std::ios::binary};
+    REQUIRE(input.good());
+    return {std::istreambuf_iterator<char>{input}, std::istreambuf_iterator<char>{}};
+}
+
+Json bakeGraph(const std::string &asset, const Json &interpolation, bool time_edge) {
+    Json nodes = Json::array();
+    Json parameters{{"asset", asset}, {"row", "phase"}};
+    if (!interpolation.is_discarded()) parameters["interpolation"] = interpolation;
+    Json reader{{"id", "reader"}, {"op", "value.sample_table"},
+                {"parameters", parameters}, {"outputs", Json::array({"value"})}};
+    if (time_edge) {
+        nodes.push_back({{"id", "clock"}, {"op", "value.input"},
+                         {"parameters", {{"name", "time"}}}, {"outputs", Json::array({"value"})}});
+        reader["inputs"] = {{"time", {{"node", "clock"}, {"port", "value"}}}};
+    }
+    nodes.push_back(reader);
+    return {{"schema", "pelican.graph"}, {"version", 1}, {"nodes", nodes},
+            {"outputs", {{"level", {{"node", "reader"}, {"port", "value"}}}}}};
+}
+
+double evaluateBakeGraph(const Json &graph, double time, double scene_time) {
+    const ValueGraph::Graph built{graph.dump()};
+    return built.evaluate({{"time", time}, {"scene_time", scene_time}}).at("level").at(0);
+}
+
+} // namespace
+
+TEST_CASE("OSC-4b pure generation uses recording time and declared input order", "[osc4b]") {
+    const auto recording = bakeRecording();
+    const auto table = makeLiveRecordingTable(recording, 4.0);
+    CHECK(table.layout.sample_count == 7);
+    CHECK(table.layout.hop_seconds == Catch::Approx(0.25));
+    CHECK(table.layout.features == std::vector<std::string>{"phase", "count", "enabled"});
+    CHECK(bakedValue(table, 0, 0) == 0.25f);
+    CHECK(bakedValue(table, 0, 1) == 1.0f);
+    CHECK(bakedValue(table, 0, 2) == 5.0f);
+    CHECK(bakedValue(table, 0, 3) == 5.0f);
+    CHECK(bakedValue(table, 0, 4) == 5.0f);
+    CHECK(bakedValue(table, 0, 5) == 9.0f);
+    CHECK(bakedValue(table, 0, 6) == 9.0f);
+    CHECK(bakedValue(table, 1, 2) == 7.0f);
+    CHECK(bakedValue(table, 2, 2) == 1.0f);
+
+    const auto subset = makeLiveRecordingTable(recording, 4.0,
+        std::vector<std::string>{"enabled", "phase"});
+    CHECK(subset.layout.features == std::vector<std::string>{"phase", "enabled"});
+    CHECK(bakedValue(subset, 0, 2) == 5.0f);
+    CHECK(bakedValue(subset, 1, 2) == 1.0f);
+}
+
+TEST_CASE("OSC-4b rates, numeric conversion and table dimensions are refused by name", "[osc4b]") {
+    for (const double rate : {0.0, -1.0, 1001.0,
+                              std::numeric_limits<double>::infinity(),
+                              std::numeric_limits<double>::quiet_NaN()})
+        CHECK(bakeError([&] { (void)makeLiveRecordingTable(bakeRecording(), rate); }) ==
+              "live_input.bake_invalid@1");
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(bakeRecording(), 4.0,
+                            std::vector<std::string>{}); }) == "live_input.bake_invalid@1");
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(bakeRecording(), 4.0,
+                            std::vector<std::string>{"phase", "phase"}); }) == "live_input.bake_invalid@1");
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(bakeRecording(), 4.0,
+                            std::vector<std::string>{"missing"}); }) == "live_input.bake_invalid@1");
+    auto recording = bakeRecording();
+    recording.end.time = 9.0;
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(recording, 4.0); }) ==
+          "live_input.bake_invalid@1");
+    recording = bakeRecording();
+    recording.inputs[1].default_value = 16777217.0;
+    recording.frames[0].values["count"] = 16777217.0;
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(recording, 4.0); }) ==
+          "live_input.bake_invalid@1");
+    recording = bakeRecording();
+    recording.frames[0].values["phase"] = std::numeric_limits<double>::infinity();
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(recording, 4.0); }) ==
+          "live_input.bake_invalid@1");
+    recording = bakeRecording();
+    recording.frames[0].values["phase"] = static_cast<double>(std::numeric_limits<float>::max()) * 2.0;
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(recording, 4.0); }) ==
+          "live_input.bake_invalid@1");
+    recording = bakeRecording();
+    recording.end.time = 1.0e12;
+    CHECK(bakeError([&] { (void)makeLiveRecordingTable(recording, 60.0); }) ==
+          "live_input.bake_invalid@1");
+}
+
+TEST_CASE("OSC-4b ten minutes at 60 Hz has a bounded nine-row table", "[osc4b]") {
+    auto recording = bakeRecording();
+    recording.inputs.resize(1);
+    for (auto &frame : recording.frames) frame.values = {{"phase", frame.time}};
+    recording.end.time = recording.clock.start_time + 600.0;
+    const auto table = makeLiveRecordingTable(recording, 60.0);
+    CHECK(table.layout.sample_count == 36001);
+    CHECK(table.layout.rows_per_feature == 9);
+    CHECK(table.values.size() == 36864);
+    CHECK(table.values.size() * sizeof(float) == 147456);
+}
+
+TEST_CASE("OSC-4b runtime subtracts t0 for hold and linear scene clocks", "[osc4b]") {
+    const auto dir = tempDir();
+    std::filesystem::create_directories(dir.root);
+    const auto source = dir.root / "performance.live_seq";
+    const auto table = dir.root / "phase.ktx2";
+    writeBakeText(source, bakeRecording().toJsonLines());
+    REQUIRE(bakeError([&] { (void)bakeLiveRecording(source, table, 4.0); }) == "none");
+    const auto loaded = loadSampleTable(table);
+    CHECK(loaded->t0_seconds == Catch::Approx(10.0));
+    CHECK(loaded->sample(0, 10.0, SampleTableInterpolation::hold) == 0.25);
+    CHECK(loaded->sample(0, 10.375, SampleTableInterpolation::hold) == 1.0);
+    CHECK(loaded->sample(0, 10.375, SampleTableInterpolation::linear) == 3.0);
+    CHECK(loaded->sample(0, 10.625, SampleTableInterpolation::hold) == 5.0);
+    CHECK(loaded->sample(0, 11.125, SampleTableInterpolation::linear) == Catch::Approx(7.0));
+    CHECK(loaded->sample(0, -100.0, SampleTableInterpolation::hold) == 0.25);
+    CHECK(loaded->sample(0, 100.0, SampleTableInterpolation::hold) == 9.0);
+    CHECK(loaded->sample(0, std::numeric_limits<double>::quiet_NaN(),
+                         SampleTableInterpolation::hold) == 0.25);
+
+    const auto asset = table.generic_string();
+    CHECK(evaluateBakeGraph(bakeGraph(asset, "hold", true), 10.375, 0.0) == 1.0);
+    CHECK(evaluateBakeGraph(bakeGraph(asset, "linear", true), 10.375, 0.0) == 3.0);
+    CHECK(evaluateBakeGraph(bakeGraph(asset, Json::value_t::discarded, true), 10.375, 0.0) == 3.0);
+    CHECK(evaluateBakeGraph(bakeGraph(asset, "hold", false), 0.0, 10.375) == 1.0);
+    CHECK(evaluateBakeGraph(bakeGraph(asset, Json::value_t::discarded, false), 0.0, 10.375) == 3.0);
+    CHECK(bakeError([&] { (void)ValueGraph::Graph{bakeGraph(asset, "cubic", true).dump()}; }) ==
+          "graph.render_node_parameter_invalid@1");
+
+    SampleTableLayout boundaries;
+    boundaries.sample_count = 36001;
+    boundaries.rows_per_feature = 9;
+    boundaries.hop_seconds = 1.0 / 60.0;
+    boundaries.features = {"phase"};
+    std::vector<float> values(9 * sampleTableWidth);
+    for (std::uint32_t frame = 0; frame < boundaries.sample_count; ++frame)
+        values[(frame / sampleTableWidth) * sampleTableWidth + frame % sampleTableWidth] =
+            static_cast<float>(frame);
+    for (std::uint32_t frame = 0; frame < boundaries.sample_count; ++frame) {
+        const double relative = static_cast<double>(frame) / 60.0;
+        CHECK(sampleTableValue(boundaries, values, 0, relative,
+                               SampleTableInterpolation::hold) == frame);
+    }
+}
+
+TEST_CASE("OSC-4b generated manifests load without their recording and track real changes", "[osc4b]") {
+    const auto dir = tempDir();
+    std::filesystem::create_directories(dir.root);
+    const auto source = dir.root / "performance.live_seq";
+    const auto table = dir.root / "phase.ktx2";
+    const auto manifest = derivedAssetManifestPath(table);
+    writeBakeText(source, bakeRecording().toJsonLines());
+    const auto baked = bakeLiveRecording(source, table, 4.0);
+    CHECK(baked.rows == std::vector<std::uint32_t>{0, 1, 2});
+    const auto manifest_json = Json::parse(readBakeText(manifest));
+    CHECK(manifest_json.at("tool").at("name") == "pelican.bake_live_recording");
+    CHECK(manifest_json.at("source").at("metadata").at("t0_seconds") == 10.0);
+    CHECK(manifest_json.at("source").at("metadata").contains("settings") == false);
+    CHECK(manifest_json.at("outputs").at(0).at("schema") == "pelican.live_recording_table");
+    auto status = readDerivedAssetStatus(manifest);
+    CHECK_FALSE(status.stale);
+    CHECK(loadSampleTable(table)->layout.features ==
+          std::vector<std::string>{"phase", "count", "enabled"});
+
+    writeBakeText(source, bakeRecording().toJsonLines() + "\n");
+    status = readDerivedAssetStatus(manifest);
+    CHECK(status.stale);
+    CHECK(std::find(status.stale_reasons.begin(), status.stale_reasons.end(), "source_changed") !=
+          status.stale_reasons.end());
+    std::filesystem::remove(source);
+    status = readDerivedAssetStatus(manifest);
+    CHECK_FALSE(status.stale);
+    CHECK(std::find(status.stale_reasons.begin(), status.stale_reasons.end(), "source_missing") ==
+          status.stale_reasons.end());
+    CHECK(loadSampleTable(table)->layout.features.size() == 3);
+    writeBakeText(table, readBakeText(table) + "changed");
+    status = readDerivedAssetStatus(manifest);
+    CHECK(std::find(status.stale_reasons.begin(), status.stale_reasons.end(), "output_changed") !=
+          status.stale_reasons.end());
+    std::filesystem::remove(table);
+    status = readDerivedAssetStatus(manifest);
+    CHECK(std::find(status.stale_reasons.begin(), status.stale_reasons.end(), "output_missing") !=
+          status.stale_reasons.end());
+    const auto audio_manifest = derivedAssetManifestPath(source);
+    const auto missing_audio_sha = std::string(64, '0');
+    SampleTableLayout audio_layout;
+    audio_layout.sample_count = 1;
+    audio_layout.features = {"rms"};
+    writeBakeText(audio_manifest, audioAnalysisManifest(source, missing_audio_sha, AudioAnalysisSettings{},
+        audio_layout, table, missing_audio_sha).dump(2));
+    const auto audio_status = readDerivedAssetStatus(audio_manifest);
+    CHECK(audio_status.stale);
+    CHECK(std::find(audio_status.stale_reasons.begin(), audio_status.stale_reasons.end(), "source_missing") !=
+          audio_status.stale_reasons.end());
+}
+
+TEST_CASE("OSC-4b two-file commit rolls back after either replacement", "[osc4b]") {
+    const auto dir = tempDir();
+    std::filesystem::create_directories(dir.root);
+    const auto source = dir.root / "performance.live_seq";
+    const auto table = dir.root / "phase.ktx2";
+    const auto manifest = derivedAssetManifestPath(table);
+    auto staged_table = table;
+    staged_table += ".live-bake.tmp";
+    auto staged_manifest = manifest;
+    staged_manifest += ".live-bake.tmp";
+    writeBakeText(source, bakeRecording().toJsonLines());
+
+    for (const auto fault : {LiveRecordingCommitFault::after_table,
+                             LiveRecordingCommitFault::after_manifest}) {
+        CHECK(bakeError([&] { (void)bakeLiveRecording(source, table, 4.0, std::nullopt, fault); }) ==
+              "live_input.bake_failed@1");
+        CHECK_FALSE(std::filesystem::exists(table));
+        CHECK_FALSE(std::filesystem::exists(manifest));
+        CHECK_FALSE(std::filesystem::exists(staged_table));
+        CHECK_FALSE(std::filesystem::exists(staged_manifest));
+    }
+    (void)bakeLiveRecording(source, table, 4.0);
+    const auto old_table = readBakeText(table);
+    const auto old_manifest = readBakeText(manifest);
+    for (const auto fault : {LiveRecordingCommitFault::after_table,
+                             LiveRecordingCommitFault::after_manifest}) {
+        CHECK(bakeError([&] { (void)bakeLiveRecording(source, table, 8.0, std::nullopt, fault); }) ==
+              "live_input.bake_failed@1");
+        CHECK(readBakeText(table) == old_table);
+        CHECK(readBakeText(manifest) == old_manifest);
+        CHECK_FALSE(std::filesystem::exists(staged_table));
+        CHECK_FALSE(std::filesystem::exists(staged_manifest));
+    }
+    const auto held = loadSampleTable(table);
+    std::atomic<bool> writing{true};
+    std::thread reader{[&] {
+        while (writing.load()) {
+            const auto loaded = loadSampleTable(table);
+            CHECK((loaded->layout.sample_count == 7 || loaded->layout.sample_count == 12));
+        }
+    }};
+    std::this_thread::sleep_for(std::chrono::milliseconds{5});
+    CHECK(bakeError([&] { (void)bakeLiveRecording(source, table, 8.0); }) == "none");
+    writing = false;
+    reader.join();
+    CHECK(loadSampleTable(table)->layout.sample_count == 12);
+}
+
+struct BakeService {
+    std::filesystem::path root;
+    RenderConfigEditorService service;
+
+    explicit BakeService(std::filesystem::path directory) : root{std::move(directory)}, service{dependencies()} {}
+    RenderConfigEditorDependencies dependencies() const {
+        return {.source_reference = "passes/main.json",
+                .source_path = root / "passes" / "main.json",
+                .source_bytes = "{}",
+                .project_root = root,
+                .gate = [] { return RenderConfigEditorGateObservation{}; },
+                .runtime_snapshot = [] { return RenderConfigRuntimeSnapshot{}; },
+                .apply_candidate = [](RenderConfigCandidateDocumentSet, RenderConfigSourceCommit,
+                                      RenderConfigRuntimeApplyCompletion) {
+                    return RenderConfigRuntimeApplyResult{};
+                },
+                .feature_catalog = [] { return std::vector<RenderFeatureCatalogEntry>{}; }};
+    }
+    Json await(const nlohmann::ordered_json &accepted) {
+        REQUIRE(accepted.at("status") == "accepted");
+        for (int attempt = 0; attempt != 2000; ++attempt) {
+            service.commitPending();
+            auto result = Json(service.getResult({{"ticket", accepted.at("ticket")}}));
+            if (result.at("status") != "running") return result;
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        FAIL("live recording bake did not finish");
+        return {};
+    }
+};
+
+TEST_CASE("OSC-4b RPC tickets return hold rows and validate requests", "[osc4b]") {
+    const auto dir = tempDir();
+    std::filesystem::create_directories(dir.root);
+    const auto source = dir.root / "takes" / "performance.live_seq";
+    writeBakeText(source, bakeRecording().toJsonLines());
+    writeBakeText(dir.root / "passes" / "main.json", "{}");
+    BakeService bake{dir.root};
+    const auto accepted = bake.service.bakeLiveRecording(
+        {{"recording", "takes/performance.live_seq"}, {"out", "tables/phase.ktx2"}});
+    CHECK(accepted.at("status") == "accepted");
+    const auto result = bake.await(accepted);
+    INFO(result.dump());
+    REQUIRE(result.at("status") == "committed");
+    CHECK(result.at("features") == Json::array({"phase", "count", "enabled"}));
+    CHECK(result.at("rows") == Json::array({0, 1, 2}));
+    CHECK(result.at("sample_count") == 7);
+    CHECK(result.at("hop_seconds") == 0.25);
+    CHECK(result.at("t0_seconds") == 10.0);
+    CHECK(result.at("interpolation") == "hold");
+    CHECK(result.at("approximation").get<std::string>().find("one hop late") != std::string::npos);
+    CHECK(std::filesystem::is_regular_file(dir.root / "tables" / "phase.ktx2"));
+    CHECK(std::filesystem::is_regular_file(dir.root / "tables" / "phase.ktx2.import.json"));
+    CHECK(bake.await(bake.service.bakeLiveRecording(
+              {{"recording", "takes/performance.live_seq"}, {"out", "tables/phase.ktx2"},
+               {"rate", 8}, {"inputs", {"enabled"}}})).at("status") == "committed");
+
+    const auto failure = bake.await(bake.service.bakeLiveRecording(
+        {{"recording", "takes/missing.live_seq"}, {"out", " tables/none.ktx2"}}));
+    CHECK(failure.at("status") == "rejected");
+    CHECK(failure.at("error").at("code") == "live_input.bake_failed@1");
+
+    auto incomplete = bakeRecording().toJsonLines();
+    incomplete.erase(incomplete.rfind("{\"end\":"));
+    writeBakeText(dir.root / "takes" / "incomplete.live_seq", incomplete);
+    const auto rejected = bake.await(bake.service.bakeLiveRecording(
+        {{"recording", "takes/incomplete.live_seq"}, {"out", "tables/incomplete.ktx2"}}));
+    CHECK(rejected.at("error").at("code") == "live_input.recording_incomplete@1");
+    CHECK_FALSE(std::filesystem::exists(dir.root / "tables" / "incomplete.ktx2"));
+    CHECK_FALSE(std::filesystem::exists(dir.root / "tables" / "incomplete.ktx2.import.json"));
+    const auto unknown = bake.await(bake.service.bakeLiveRecording(
+        {{"recording", "takes/performance.live_seq"}, {"out", "tables/unknown.ktx2"},
+         {"inputs", {"unknown"}}}));
+    CHECK(unknown.at("error").at("code") == "live_input.bake_invalid@1");
+    CHECK(unknown.at("error").at("reason") == "unknown_input");
+    const auto duplicate = bake.await(bake.service.bakeLiveRecording(
+        {{"recording", "takes/performance.live_seq"}, {"out", "tables/duplicate.ktx2"},
+         {"inputs", Json::array({"phase", "phase"})}}));
+    CHECK(duplicate.at("error").at("reason") == "duplicate_input");
+    const auto empty = bake.await(bake.service.bakeLiveRecording(
+        {{"recording", "takes/performance.live_seq"}, {"out", "tables/empty.ktx2"},
+         {"inputs", Json::array()}}));
+    CHECK(empty.at("error").at("reason") == "empty_inputs");
+
+    for (const Json bad : {Json{{"recording", "takes/performance.live_seq"}, {"out", "tables/a.ktx2"}, {"rate", 0}},
+                           Json{{"recording", "takes/performance.live_seq"}, {"out", "tables/a.ktx2"}, {"rate", "fast"}},
+                           Json{{"recording", 7}, {"out", "tables/a.ktx2"}},
+                           Json{{"recording", "takes/performance.live_seq"}, {"out", "../a.ktx2"}},
+                           Json{{"recording", "takes/performance.live_seq"}, {"out", "tables/a.txt"}},
+                           Json{{"recording", "takes/performance.live_seq"}, {"out", "tables/a.ktx2"}, {"inputs", {7}}},
+                           Json{{"recording", "takes/performance.live_seq"}, {"out", "tables/a.ktx2"}, {"inputs", {}}}}) {
+        CHECK_THROWS((void)bake.service.bakeLiveRecording(bad));
+        CHECK_FALSE(std::filesystem::exists(dir.root / "tables" / "a.ktx2"));
+    }
+    CHECK_THROWS((void)bake.service.bakeLiveRecording(
+        {{"recording", "tables/a.ktx2.import.json"}, {"out", "tables/a.ktx2"}}));
+#ifndef _WIN32
+    std::filesystem::create_directory_symlink(dir.root / "..", dir.root / "escape");
+    CHECK_THROWS((void)bake.service.bakeLiveRecording(
+        {{"recording", "takes/performance.live_seq"}, {"out", "escape/a.ktx2"}}));
+#endif
+}
+
 } // namespace Pelican

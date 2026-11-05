@@ -67,6 +67,10 @@ OrderedJson RenderConfigEditorService::bakeAudioAnalysis(const Json &params) {
         if (task.out == out_path)
             return rejection(std::string{audioAnalysisBusyCode}, "a bake_audio_analysis writing " + out + " is running",
                              {{"out", out}, {"ticket", task.ticket}});
+    for (const auto &task : live_bakes_)
+        if (task.out == out_path)
+            return rejection(std::string{audioAnalysisBusyCode}, "a live recording bake writing " + out + " is running",
+                             {{"out", out}, {"ticket", task.ticket}});
 
     const auto ticket_id = "render-config-edit-" + std::to_string(next_ticket_++);
     audio_bakes_.push_back(AudioBakeTask{

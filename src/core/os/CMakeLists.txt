@@ -4,6 +4,7 @@ target_sources(pelican_core PRIVATE
     inputstate.cpp
     liveinputs.cpp
     liveinputrecording.cpp
+    liveinputrecordingbake.cpp
 )
 
 # The Window module has one implementation per platform: GLFW on the desktop,

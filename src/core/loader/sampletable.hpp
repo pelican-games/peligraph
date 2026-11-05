@@ -22,11 +22,12 @@ struct SampleTable {
     std::filesystem::path manifest;
     std::string file_sha256;
     std::string manifest_sha256;
+    // Absolute scene time of sample zero. Audio manifests omit it and mean 0.
+    double t0_seconds = 0.0;
 
-    // sampleTableValue: the two samples either side of seconds / hop, linearly;
-    // the end's value outside.
-    double sample(std::uint32_t feature, double seconds) const {
-        return sampleTableValue(layout, values, feature, seconds);
+    double sample(std::uint32_t feature, double seconds,
+                  SampleTableInterpolation interpolation = SampleTableInterpolation::linear) const {
+        return sampleTableValue(layout, values, feature, seconds - t0_seconds, interpolation);
     }
 };
 

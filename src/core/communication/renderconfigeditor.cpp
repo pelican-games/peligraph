@@ -8536,6 +8536,7 @@ void RenderConfigEditorService::commitPending() noexcept {
     // AB-1: a finished bake writes no render document, so it ends whatever
     // ticket is in flight.
     harvestAudioBakes();
+    harvestLiveBakes();
     if (inflight_ticket_) return;
     // FG-2: a verify that passed queues its mark ahead of the queue below.
     harvestFoldVerifies();

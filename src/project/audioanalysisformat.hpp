@@ -4,6 +4,7 @@
 
 #include <cstdint>
 #include <filesystem>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -78,11 +79,17 @@ SampleTableLayout parseSampleTableLayout(const nlohmann::json &layout);
 // The feature a row names: its index (an integer) or its name ("rms",
 // "peak", "band:3"). nullopt when the table has no such row.
 std::optional<std::uint32_t> sampleTableRow(const SampleTableLayout &layout, const nlohmann::json &row);
-// The value of feature `feature` at `seconds`: the two samples either side of
-// seconds / hop_seconds, linearly; before the first or after the last, the
-// end's value. `values` is the whole table, row-major.
+enum class SampleTableInterpolation : std::uint8_t { linear, hold };
+
+// The value of feature `feature` at `seconds`: linear interpolation by default,
+// or the sample at or before seconds for hold. Outside the table, the end's
+// value. `values` is the whole table, row-major.
 double sampleTableValue(const SampleTableLayout &layout, const std::vector<float> &values, std::uint32_t feature,
-                        double seconds);
+                        double seconds,
+                        SampleTableInterpolation interpolation = SampleTableInterpolation::linear);
+
+// Serializes table/manifest reads with a multi-file derived-asset commit.
+std::mutex &derivedAssetIoMutex();
 
 // `<file>.import.json`, beside the file a manifest describes.
 std::filesystem::path derivedAssetManifestPath(const std::filesystem::path &file);
@@ -103,8 +110,10 @@ std::string audioAnalysisSettingsSha256(const AudioAnalysisSettings &settings);
 // A file some tool derived from a source, as its `<file>.import.json` says,
 // and whether it is stale: the source is missing or its bytes are not the
 // recorded sha256 ("source_missing", "source_changed"), the file itself is
-// missing or not its recorded sha256 ("output_missing", "output_changed"),
-// and for pelican.audio_analysis the recorded settings are not the ones baked
+// missing or not its recorded sha256 ("output_missing", "output_changed").
+// A missing pelican.bake_live_recording source is not stale, so completed works
+// can ship without their recording; its source_changed check remains. For
+// pelican.audio_analysis the recorded settings are not the ones baked
 // (settings_sha256; "settings_changed") or another tool version wrote it
 // ("tool_version").
 struct DerivedAssetStatus {

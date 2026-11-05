@@ -226,12 +226,14 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             // AB-1. Without a time edge it reads scene_time, the clock
             // audio.playback's events are stamped on, through a value.input
             // the lowering adds.
-            keys(parameters, {"asset", "row"});
+            keys(parameters, {"asset", "row", "interpolation"});
             const auto id = name(node.at("id"));
             if (!parameters.contains("asset") || !parameters.contains("row"))
                 throw std::invalid_argument("value.sample_table requires an asset and a row: " + id);
             Json lowered{{"id", id}, {"op", "sample_table"}, {"asset", name(parameters.at("asset"))},
                          {"row", parameters.at("row")}};
+            if (parameters.contains("interpolation"))
+                lowered["interpolation"] = name(parameters.at("interpolation"));
             if (inputs.contains("time")) {
                 lowered["time"] = source(inputs.at("time"));
             } else {
@@ -507,8 +509,12 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             }
         } else if (op == "sample_table") {
             // AB-1: the table is read once, here; evaluating reads memory.
-            keys(authored, {"id", "op", "asset", "row", "time"});
+            keys(authored, {"id", "op", "asset", "row", "time", "interpolation"});
             node.op = Op::sample_table;
+            const auto interpolation = authored.value("interpolation", std::string{"linear"});
+            if (interpolation == "hold") node.table_hold = true;
+            else if (interpolation != "linear")
+                throw std::invalid_argument("unknown sample table interpolation: " + interpolation);
             node.dependencies = {resolve(authored.at("time"))};
             const auto asset = name(authored.at("asset"));
             node.table_asset = asset;
@@ -968,7 +974,10 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
             value = node.bezier_curve ? node.bezier_curve->sample(values[node.dependencies[0]])
                                       : node.curve->sample(values[node.dependencies[0]]);
             break;
-        case Op::sample_table: value = node.table->sample(node.table_row, values[node.dependencies[0]]); break;
+        case Op::sample_table:
+            value = node.table->sample(node.table_row, values[node.dependencies[0]],
+                node.table_hold ? SampleTableInterpolation::hold : SampleTableInterpolation::linear);
+            break;
         case Op::event_input: break;
         case Op::audio_playback:
             if (!state) throw statelessEvaluationRejected("audio.playback", node.id);

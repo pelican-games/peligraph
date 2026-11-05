@@ -447,7 +447,9 @@ class RenderConfigEditorService {
         std::make_shared<std::atomic<bool>>(false);
     // AB-1: the running bake_audio_analysis workers.
     std::vector<AudioBakeTask> audio_bakes_;
+    std::vector<AudioBakeTask> live_bakes_;
     void harvestAudioBakes() noexcept;
+    void harvestLiveBakes() noexcept;
 
     struct GateSnapshot {
         bool can_edit = true;
@@ -791,6 +793,10 @@ class RenderConfigEditorService {
     // Nothing runs on import: only this (or `pelican_cli audio analyze`)
     // bakes.
     nlohmann::ordered_json bakeAudioAnalysis(const nlohmann::json &params);
+    // OSC-4b: the same accepted/running/committed ticket lifecycle as audio.
+    // Completion includes features, rows, sample_count, hop_seconds, t0_seconds
+    // and the fixed-grid approximation notice; use interpolation "hold".
+    nlohmann::ordered_json bakeLiveRecording(const nlohmann::json &params);
     // AB-1: list_derived_assets {} -> [{asset, manifest, tool: {name,
     // version}, source, derived_from: {source, tool}, stale, stale_reasons}]:
     // every readable `*.import.json` in the asset stores, in path order

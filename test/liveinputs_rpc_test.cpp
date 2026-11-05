@@ -1074,6 +1074,111 @@ TEST_CASE("OSC-4a CLI replay reproduces frozen values and simple graph pixels",
     replay("replay-one");
     replay("replay-two");
 }
+
+TEST_CASE("OSC-4b baked tables reproduce fixed-step replay pixels without live input",
+          "[osc4b][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc4b_pixels_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    const auto recording_path = root / "show.live_seq";
+    const std::vector<double> phases{0.0, 0.25, 0.75, 0.75, 1.25};
+    std::vector<std::string> replay_pixels;
+    {
+        PlayerProcess player{root, {"--fps", "60", "--record-live",
+                                    recording_path.generic_string()}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        for (const double phase : phases) {
+            (void)player.result("set_live_input", {{"values", {{"phase", phase}}}});
+            (void)player.result("step_frame");
+        }
+    }
+    {
+        PlayerProcess player{root, {"--fps", "60"}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        const auto accepted = player.result("bake_live_recording",
+            {{"recording", "show.live_seq"},
+             {"out", "tables/show.ktx2"}, {"rate", 60}});
+        bool committed = false;
+        for (int attempt = 0; attempt != 2000; ++attempt) {
+            const auto result = player.result("get_edit_result",
+                {{"ticket", accepted.at("ticket")}});
+            if (result.at("status") == "running") {
+                (void)player.result("step_frame");
+                continue;
+            }
+            REQUIRE(result.at("status") == "committed");
+            CHECK(result.at("interpolation") == "hold");
+            REQUIRE(result.at("features").is_array());
+            const auto phase = std::find(result.at("features").begin(),
+                result.at("features").end(), "phase");
+            REQUIRE(phase != result.at("features").end());
+            CHECK(result.at("rows").at(static_cast<std::size_t>(
+                std::distance(result.at("features").begin(), phase))) == 0);
+            committed = true;
+            break;
+        }
+        REQUIRE(committed);
+    }
+    const auto recording = LiveInputRecording::loadFile(recording_path);
+    REQUIRE(recording.clock.fixed_step == Catch::Approx(1.0 / 60.0));
+    CHECK(recording.clock.start_time > 0.0);
+    REQUIRE(recording.end.evaluations == phases.size());
+    {
+        PlayerProcess player{root, {"--fps", "60", "--replay-live",
+                                    recording_path.generic_string()}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        for (std::size_t index = 0; index < phases.size(); ++index) {
+            (void)player.result("step_frame");
+            const auto capture = dir.root / ("table-replay-" + std::to_string(index) + ".png");
+            (void)player.result("capture", {{"path", capture.generic_string()}});
+            replay_pixels.push_back(readFile(capture));
+        }
+    }
+    CHECK(replay_pixels[0] != replay_pixels[1]);
+    CHECK(replay_pixels[1] != replay_pixels[2]);
+    CHECK(replay_pixels[2] == replay_pixels[3]);
+    CHECK(replay_pixels[3] != replay_pixels[4]);
+
+    auto graph = Json::parse(readFile(root / "passes" / "main.json"));
+    const auto replace_clock = [&](Json &nodes) {
+        for (auto &node : nodes) {
+            if (node.at("id") != "clock") continue;
+            REQUIRE(node.at("op") == "value.input");
+            REQUIRE(node.at("parameters").at("name") == "live:phase");
+            node["op"] = "value.sample_table";
+            node["parameters"] = {{"asset", "tables/show.ktx2"}, {"row", "phase"},
+                                  {"interpolation", "hold"}};
+            node.erase("inputs");
+        }
+    };
+    for (auto &[name, definition] : graph.at("definitions").items()) {
+        (void)name;
+        replace_clock(definition.at("nodes"));
+    }
+    replace_clock(graph.at("nodes"));
+    writeFile(root / "passes" / "main.json", graph.dump(2));
+    const auto removed_recording = dir.root / "removed.live_seq";
+    std::filesystem::rename(recording_path, removed_recording);
+    {
+        PlayerProcess player{root, {"--fps", "60"}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        for (std::size_t index = 0; index < phases.size(); ++index) {
+            (void)player.result("step_frame");
+            CHECK(inputNamed(player.result("get_live_inputs"), "phase").at("value") == 0.0);
+            const auto capture = dir.root / ("table-baked-" + std::to_string(index) + ".png");
+            (void)player.result("capture", {{"path", capture.generic_string()}});
+            INFO("scene time stays absolute; the sampler subtracts recorded t0=" <<
+                 recording.clock.start_time << " at step " << index);
+            CHECK(readFile(capture) == replay_pixels[index]);
+        }
+    }
+}
 #endif
 
 } // namespace Pelican

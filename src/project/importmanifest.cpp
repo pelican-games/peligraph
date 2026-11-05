@@ -156,7 +156,8 @@ void validateOutputSchema(const std::string &schema, const std::optional<int> &v
     // (audioanalysisformat.hpp).
     if (schema == "pelican.transform_seq" ||
         schema == "pelican.layout" || schema == "pelican.atlas" ||
-        schema == "pelican.material" || schema == "pelican.audio_analysis_table") {
+        schema == "pelican.material" || schema == "pelican.audio_analysis_table" ||
+        schema == "pelican.live_recording_table") {
         requireOutputVersion(schema, version, 1);
         return;
     }

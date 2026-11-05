@@ -272,6 +272,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("bake_audio_analysis", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.bakeAudioAnalysis(params); });
     });
+    server.setHandler("bake_live_recording", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.bakeLiveRecording(params); });
+    });
     server.setHandler("list_derived_assets", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.listDerivedAssets(params); });
     });

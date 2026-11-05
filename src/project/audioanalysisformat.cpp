@@ -9,6 +9,7 @@
 #include <cmath>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <map>
 #include <mutex>
 #include <set>
@@ -205,20 +206,30 @@ std::optional<std::uint32_t> sampleTableRow(const SampleTableLayout &layout, con
 }
 
 double sampleTableValue(const SampleTableLayout &layout, const std::vector<float> &values, std::uint32_t feature,
-                        double seconds) {
+                        double seconds, SampleTableInterpolation interpolation) {
     if (layout.sample_count == 0 || feature >= layout.features.size()) return 0.0;
     const auto last = static_cast<double>(layout.sample_count - 1);
-    const auto position = std::clamp(std::isfinite(seconds) ? seconds / layout.hop_seconds : 0.0, 0.0, last);
+    auto position = std::clamp(std::isfinite(seconds) ? seconds / layout.hop_seconds : 0.0, 0.0, last);
+    const auto nearest = std::round(position);
+    if (std::abs(position - nearest) <= 4.0 * std::numeric_limits<double>::epsilon() *
+                                            (std::max)(1.0, std::abs(position)))
+        position = nearest;
     const auto first = static_cast<std::uint32_t>(std::floor(position));
-    const auto second = (std::min)(first + 1, layout.sample_count - 1);
     const auto at = [&](std::uint32_t sample) {
         const auto index = (static_cast<std::size_t>(feature) * layout.rows_per_feature + sample / layout.width) *
                                layout.width +
                            sample % layout.width;
         return index < values.size() ? static_cast<double>(values[index]) : 0.0;
     };
+    if (interpolation == SampleTableInterpolation::hold) return at(first);
+    const auto second = (std::min)(first + 1, layout.sample_count - 1);
     const auto fraction = position - static_cast<double>(first);
     return at(first) + (at(second) - at(first)) * fraction;
+}
+
+std::mutex &derivedAssetIoMutex() {
+    static std::mutex mutex;
+    return mutex;
 }
 
 std::filesystem::path derivedAssetManifestPath(const std::filesystem::path &file) {
@@ -248,6 +259,7 @@ OrderedJson audioAnalysisManifest(const std::filesystem::path &source, const std
 }
 
 DerivedAssetStatus readDerivedAssetStatus(const std::filesystem::path &manifest_path) {
+    std::lock_guard lock{derivedAssetIoMutex()};
     // AB-2: the manifest is closed before the source and the outputs are
     // hashed, so a bake replacing it waits on this read alone.
     const auto text = [&] {
@@ -270,8 +282,10 @@ DerivedAssetStatus readDerivedAssetStatus(const std::filesystem::path &manifest_
                                                                           : Json::object();
     std::error_code error;
     if (!manifest.source.file.empty()) {
-        if (!std::filesystem::is_regular_file(status.source, error)) reason("source_missing");
-        else if (const auto sha = metadata.find("sha256"); sha != metadata.end() && sha->is_string() &&
+        if (!std::filesystem::is_regular_file(status.source, error)) {
+            // A finished live-input work ships without its source recording.
+            if (manifest.tool.name != "pelican.bake_live_recording") reason("source_missing");
+        } else if (const auto sha = metadata.find("sha256"); sha != metadata.end() && sha->is_string() &&
                                                              fileSha256(status.source) != sha->get<std::string>())
             reason("source_changed");
     }

@@ -4,6 +4,7 @@
 
 #include "../../project/sha256stream.hpp"
 
+#include <cmath>
 #include <cstring>
 #include <fstream>
 #include <iterator>
@@ -31,7 +32,20 @@ std::shared_ptr<const SampleTable> readSampleTable(SampleTable table, const std:
     const auto &file = table.file;
     try {
         const auto manifest = nlohmann::json::parse(manifest_text);
-        table.layout = parseSampleTableLayout(manifest.at("source").at("metadata").at("layout"));
+        const auto &metadata = manifest.at("source").at("metadata");
+        table.layout = parseSampleTableLayout(metadata.at("layout"));
+        if (const auto t0 = metadata.find("t0_seconds"); t0 != metadata.end()) {
+            if (!t0->is_number() || !std::isfinite(t0->get<double>()))
+                throw std::runtime_error("t0_seconds must be a finite number");
+            table.t0_seconds = t0->get<double>();
+        }
+        // A hand-made table has no tool; only the live bake promises a schema.
+        if (const auto tool = manifest.find("tool");
+            tool != manifest.end() && tool->value("name", std::string{}) == "pelican.bake_live_recording") {
+            const auto &outputs = manifest.at("outputs");
+            if (outputs.size() != 1 || outputs.front().at("schema") != "pelican.live_recording_table")
+                throw std::runtime_error("live recording manifest does not name its table schema");
+        }
     } catch (const std::exception &error) {
         throw std::runtime_error("the manifest " + manifest_path.filename().generic_string() +
                                  " gives no sample table layout (source.metadata.layout): " + error.what());
@@ -53,6 +67,7 @@ std::shared_ptr<const SampleTable> readSampleTable(SampleTable table, const std:
 } // namespace
 
 std::shared_ptr<const SampleTable> loadSampleTable(const std::filesystem::path &file) {
+    std::lock_guard io_lock{derivedAssetIoMutex()};
     const auto manifest = derivedAssetManifestPath(file);
     std::error_code error;
     if (!std::filesystem::is_regular_file(file, error)) throw std::runtime_error("the table file is missing");
