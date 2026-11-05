@@ -299,6 +299,42 @@ GraphFiltersParse parseGraphFilters(const nlohmann::json &root) {
     return result;
 }
 
+GraphFiltersMerge mergeGraphFilters(const GraphFilters &base, const GraphFilters &incoming) {
+    GraphFiltersMerge result{base, {}, {}};
+    std::set<std::string, std::less<>> filter_ids;
+    const auto collect = [&](const auto &self, const GraphFilter &filter) -> void {
+        filter_ids.insert(filter.id);
+        for (const auto &child : filter.children) self(self, child);
+    };
+    for (const auto &filter : base.filters) collect(collect, filter);
+    const auto collides = [&](const auto &self, const GraphFilter &filter) -> bool {
+        if (filter_ids.contains(filter.id)) return true;
+        return std::ranges::any_of(filter.children, [&](const auto &child) { return self(self, child); });
+    };
+    for (const auto &filter : incoming.filters) {
+        if (collides(collides, filter)) result.skipped_filters.push_back(filter.id);
+        else {
+            result.merged.filters.push_back(filter);
+            collect(collect, filter);
+        }
+    }
+    for (const auto &category : incoming.categories) {
+        const auto found = std::ranges::find(base.categories, category.id, &GraphFilterCategory::id);
+        if (found == base.categories.end()) result.merged.categories.push_back(category);
+        else if (found->label != category.label) result.skipped_categories.push_back(category.id);
+    }
+    for (const auto &[feature, incoming_ids] : incoming.feature_categories) {
+        auto found = std::ranges::find_if(result.merged.feature_categories, [&](const auto &entry) {
+            return entry.first == feature;
+        });
+        if (found == result.merged.feature_categories.end())
+            found = result.merged.feature_categories.insert(result.merged.feature_categories.end(), {feature, {}});
+        for (const auto &id : incoming_ids)
+            if (std::ranges::find(found->second, id) == found->second.end()) found->second.push_back(id);
+    }
+    return result;
+}
+
 std::string renderGraphFilters(const GraphFilters &document) {
     OrderedJson root{{"schema", "pelican.graph_filters"}, {"version", 1}, {"categories", OrderedJson::array()},
                      {"feature_categories", OrderedJson::object()}, {"filters", OrderedJson::array()}};

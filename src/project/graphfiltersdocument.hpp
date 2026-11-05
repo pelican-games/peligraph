@@ -43,7 +43,14 @@ struct GraphFiltersParse {
     std::string error;
 };
 
+struct GraphFiltersMerge {
+    GraphFilters merged;
+    std::vector<std::string> skipped_filters;
+    std::vector<std::string> skipped_categories;
+};
+
 // Strict, whole-document parsing. Failure is reported rather than thrown.
+[[nodiscard]] GraphFiltersMerge mergeGraphFilters(const GraphFilters &base, const GraphFilters &incoming);
 [[nodiscard]] GraphFiltersParse parseGraphFilters(const nlohmann::json &root);
 // Canonical two-space JSON, with a trailing newline.
 [[nodiscard]] std::string renderGraphFilters(const GraphFilters &document);

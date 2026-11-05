@@ -61,6 +61,7 @@ class GraphFiltersEdit {
     bool removeCategory(const std::string &id);
     bool setCategoryLabel(const std::string &id, const std::string &label);
     bool setFeatureCategories(const std::string &feature, const std::vector<std::string> &ids);
+    bool importFilters(const Pelican::GraphFilters &incoming);
 
     [[nodiscard]] std::vector<Request> takeRequests();
     bool applyReply(std::int64_t request_id, std::uint64_t project_generation,

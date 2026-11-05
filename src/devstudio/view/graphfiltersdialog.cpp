@@ -3,6 +3,8 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
+#include <QFile>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -10,6 +12,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QPushButton>
+#include <QSaveFile>
 #include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -133,6 +136,8 @@ struct GraphFiltersDialog::Impl {
     QPushButton *undo = nullptr;
     QPushButton *discard = nullptr;
     QPushButton *load = nullptr;
+    QPushButton *import_file = nullptr;
+    QPushButton *export_file = nullptr;
     QPushButton *close = nullptr;
     QString selected_filter;
     QString selected_category;
@@ -265,8 +270,11 @@ GraphFiltersDialog::GraphFiltersDialog(QWidget *parent)
     impl_->save = button(QStringLiteral("save"), tr("Save"), this);
     impl_->undo = button(QStringLiteral("undo"), tr("Undo"), this);
     impl_->discard = button(QStringLiteral("discard"), tr("Discard changes"), this);
+    impl_->import_file = button(QStringLiteral("import"), tr("Import..."), this);
+    impl_->export_file = button(QStringLiteral("export"), tr("Export..."), this);
     impl_->close = button(QStringLiteral("close"), tr("Close"), this);
-    for (auto *control : {impl_->save, impl_->undo, impl_->discard, impl_->close})
+    for (auto *control : {impl_->save, impl_->undo, impl_->discard, impl_->import_file, impl_->export_file,
+                          impl_->close})
         bottom->addWidget(control);
     layout->addLayout(bottom);
 
@@ -344,6 +352,59 @@ GraphFiltersDialog::GraphFiltersDialog(QWidget *parent)
     connect(d.load, &QPushButton::clicked, this, [this] {
         if (impl_->session && impl_->session->loadReplacesDirtyDraft() && requestReady) requestReady();
     });
+    connect(d.import_file, &QPushButton::clicked, this, [this] {
+        if (!impl_->session || !impl_->session->state().editing_enabled) return;
+        const auto importPath = [this](const QString &path) {
+            if (path.isEmpty()) return;
+            QFile file{path};
+            const auto fail = [this, &path](const QString &reason) {
+                impl_->state->setText(tr("Could not import %1: %2").arg(path, reason));
+                impl_->state->setToolTip(impl_->state->text());
+            };
+            if (!file.open(QIODevice::ReadOnly)) { fail(file.errorString()); return; }
+            if (file.size() > 1024 * 1024) { fail(tr("the file exceeds 1 MiB")); return; }
+            const auto parsed = Pelican::parseGraphFilters(nlohmann::json::parse(file.readAll(), nullptr, false));
+            if (!parsed.document) { fail(qtext(parsed.error)); return; }
+            impl_->session->importFilters(*parsed.document);
+        };
+        if (chooseFile) { importPath(chooseFile(false)); return; }
+        auto *dialog = new QFileDialog(this, tr("Import graph filters"));
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName(graphFiltersObjectName(QStringLiteral("importDialog")));
+        dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+        dialog->setFileMode(QFileDialog::ExistingFile);
+        dialog->setNameFilter(tr("Graph filters (*.json)"));
+        if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+            name->setObjectName(QStringLiteral("pelican.graphFiltersDialog.importDialog.fileName"));
+        connect(dialog, &QFileDialog::fileSelected, this, importPath);
+        dialog->open();
+    });
+    connect(d.export_file, &QPushButton::clicked, this, [this] {
+        if (!impl_->session || !impl_->export_file->isEnabled()) return;
+        const auto exportPath = [this](const QString &path) {
+            if (path.isEmpty()) return;
+            const auto bytes = Pelican::renderGraphFilters(impl_->session->saved());
+            QSaveFile file{path};
+            if (!file.open(QIODevice::WriteOnly) ||
+                file.write(bytes.data(), static_cast<qint64>(bytes.size())) != static_cast<qint64>(bytes.size()) ||
+                !file.commit()) {
+                impl_->state->setText(tr("Could not export %1: %2").arg(path, file.errorString()));
+                impl_->state->setToolTip(impl_->state->text());
+            }
+        };
+        if (chooseFile) { exportPath(chooseFile(true)); return; }
+        auto *dialog = new QFileDialog(this, tr("Export graph filters"));
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->setObjectName(graphFiltersObjectName(QStringLiteral("exportDialog")));
+        dialog->setOption(QFileDialog::DontUseNativeDialog, true);
+        dialog->setFileMode(QFileDialog::AnyFile);
+        dialog->setAcceptMode(QFileDialog::AcceptSave);
+        dialog->setNameFilter(tr("Graph filters (*.json)"));
+        if (auto *name = dialog->findChild<QLineEdit *>(QStringLiteral("fileNameEdit")))
+            name->setObjectName(QStringLiteral("pelican.graphFiltersDialog.exportDialog.fileName"));
+        connect(dialog, &QFileDialog::fileSelected, this, exportPath);
+        dialog->open();
+    });
     connect(d.close, &QPushButton::clicked, this, &QDialog::hide);
     sync();
 }
@@ -386,11 +447,15 @@ void GraphFiltersDialog::Impl::sync() {
     syncMatch();
     const auto status = session != nullptr ? session->state() : GraphFiltersEdit::State{};
     state->setText(qtext(status.text));
+    state->setToolTip(qtext(status.text));
     save->setEnabled(status.save_enabled);
     undo->setEnabled(status.undo_enabled);
     discard->setEnabled(status.discard_enabled);
     load->setEnabled(status.load_enabled);
     load->setVisible(status.external_modification || status.dirty);
+    import_file->setEnabled(status.editing_enabled);
+    export_file->setEnabled(status.editing_enabled && session != nullptr && session->digest().has_value() && !status.dirty);
+    export_file->setToolTip(export_file->isEnabled() ? QString{} : tr("Save the document before exporting."));
     for (QWidget *control : {static_cast<QWidget *>(add_filter), static_cast<QWidget *>(label),
                              static_cast<QWidget *>(ops), static_cast<QWidget *>(node_ids),
                              static_cast<QWidget *>(features), static_cast<QWidget *>(categories),

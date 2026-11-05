@@ -440,6 +440,33 @@ GraphFiltersEdit::State GraphFiltersEdit::state() const {
     return result;
 }
 
+bool GraphFiltersEdit::importFilters(const GraphFilters &incoming) {
+    if (!editable()) return false;
+    auto merged = mergeGraphFilters(draft_, incoming);
+    const auto validated = Pelican::parseGraphFilters(Json::parse(Pelican::renderGraphFilters(merged.merged)));
+    if (!validated.document) {
+        state_text_ = "Import refused: " + validated.error;
+        syncState();
+        return false;
+    }
+    const auto imported = merged.merged.filters.size() - draft_.filters.size();
+    draft_ = std::move(merged.merged);
+    std::vector<std::string> skipped = std::move(merged.skipped_filters);
+    skipped.insert(skipped.end(), merged.skipped_categories.begin(), merged.skipped_categories.end());
+    state_text_ = "Imported " + std::to_string(imported) + " filters, skipped " + std::to_string(skipped.size());
+    if (!skipped.empty()) {
+        state_text_ += ": ";
+        for (std::size_t i = 0; i < skipped.size(); ++i) {
+            if (i != 0) state_text_ += ", ";
+            state_text_ += skipped[i];
+        }
+    }
+    external_modification_ = false;
+    confirm_load_ = false;
+    syncState();
+    return true;
+}
+
 const GraphFilter *GraphFiltersEdit::findFilter(const std::string &id) const {
     const auto found = std::ranges::find_if(draft_.filters, [&](const auto &filter) { return filter.id == id; });
     return found == draft_.filters.end() ? nullptr : &*found;

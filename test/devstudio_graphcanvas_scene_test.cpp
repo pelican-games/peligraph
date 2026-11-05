@@ -16,6 +16,7 @@
 #include "graphcanvasrenderfields.hpp"
 #include "graphcanvasvaluefields.hpp"
 #include "graphcanvaswidget.hpp"
+#include "graphfiltersdialog.hpp"
 #include "graphcanvaslayerspanel.hpp"
 #include "../guitrace.hpp"
 #include "graphcanvasdrawing.hpp"
@@ -31446,4 +31447,117 @@ TEST_CASE("GF-1b a dirty dialog draft belongs to its project across a switch",
     const auto sent = Json::parse(tab.transport.calls.back().body.toStdString());
     CHECK(sent.at("base_digest").is_null());
     CHECK(sent.at("document").at("filters").at(0).at("label") == "Keep me");
+}
+
+
+TEST_CASE("GF-1c export uses the saved document and refuses dirty or missing documents",
+          "[devstudio][graph-canvas][scene][gf1c]") {
+    (void)application();
+    QTemporaryDir root;
+    REQUIRE(root.isValid());
+    Ux2Tab tab{false, true, false, true};
+    tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
+    const Json saved{{"schema", "pelican.graph_filters"}, {"version", 1},
+                     {"categories", Json::array()}, {"feature_categories", Json::object()},
+                     {"filters", Json::array({Json{{"id", "saved"}, {"label", "Saved"},
+                                                   {"match", Json::object()}}})}};
+    GraphFiltersDialog empty_dialog;
+    CHECK_FALSE(empty_dialog.findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.export"))->isEnabled());
+    tab.answer("get_graph_filters", Json{{"digest", "base"}, {"document", saved}, {"error", nullptr}});
+    tab.read(gf1aRead(), "gf1c-export");
+    tab.answer("get_frame_plan", gf1aPlan());
+    tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"))->trigger();
+    QCoreApplication::processEvents();
+    auto *filter_dialog = static_cast<GraphFiltersDialog *>(
+        tab.widget->findChild<QDialog *>(QStringLiteral("pelican.graphFiltersDialog")));
+    REQUIRE(filter_dialog != nullptr);
+    auto *button = filter_dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.export"));
+    REQUIRE(button != nullptr);
+    REQUIRE(button->isEnabled());
+    const QString path = root.filePath(QStringLiteral("filters.json"));
+    filter_dialog->chooseFile = [&](bool saving) { CHECK(saving); return path; };
+    button->click();
+    QFile written{path};
+    REQUIRE(written.open(QIODevice::ReadOnly));
+    CHECK(written.readAll().toStdString() == Pelican::renderGraphFilters(Pelican::parseGraphFilters(saved).document.value()));
+    filter_dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.addFilter"))->click();
+    CHECK_FALSE(button->isEnabled());
+    CHECK(button->toolTip().contains(QStringLiteral("Save")));
+    written.remove();
+    button->click();
+    CHECK_FALSE(written.exists());
+}
+
+TEST_CASE("GF-1c import is a reviewable draft edit and export reports write failures",
+          "[devstudio][graph-canvas][scene][gf1c]") {
+    (void)application();
+    QTemporaryDir root;
+    REQUIRE(root.isValid());
+    Ux2Tab tab{false, true, false, true};
+    tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
+    const Json empty_filters{{"schema", "pelican.graph_filters"}, {"version", 1},
+                             {"categories", Json::array()}, {"feature_categories", Json::object()},
+                             {"filters", Json::array()}};
+    tab.answer("get_graph_filters", Json{{"digest", "base"}, {"document", empty_filters}, {"error", nullptr}});
+    tab.read(gf1aRead(), "gf1c-import");
+    tab.answer("get_frame_plan", gf1aPlan());
+    tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"))->trigger();
+    QCoreApplication::processEvents();
+    auto *dialog = static_cast<GraphFiltersDialog *>(
+        tab.widget->findChild<QDialog *>(QStringLiteral("pelican.graphFiltersDialog")));
+    REQUIRE(dialog != nullptr);
+    auto *import_button = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.import"));
+    auto *export_button = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.export"));
+    auto *state = dialog->findChild<QLabel *>(QStringLiteral("pelican.graphFiltersDialog.state"));
+    REQUIRE((import_button && export_button && state));
+    CHECK(export_button->isEnabled());
+    QFile incoming{root.filePath(QStringLiteral("incoming.json"))};
+    REQUIRE(incoming.open(QIODevice::WriteOnly));
+    const Json document{{"schema", "pelican.graph_filters"}, {"version", 1},
+                        {"categories", Json::array()}, {"feature_categories", Json::object()},
+                        {"filters", Json::array({Json{{"id", "imported"}, {"label", "Imported"},
+                                                      {"match", Json::object()}}})}};
+    incoming.write(QByteArray::fromStdString(document.dump()));
+    incoming.close();
+    dialog->chooseFile = [&](bool saving) {
+        return saving ? root.filePath(QStringLiteral("missing/out.json")) : incoming.fileName();
+    };
+    export_button->click();
+    CHECK(state->text().contains(QStringLiteral("Could not export")));
+    import_button->click();
+    CHECK(state->text() == QStringLiteral("Imported 1 filters, skipped 0"));
+    CHECK(state->toolTip() == state->text());
+    CHECK(dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.save"))->isEnabled());
+    CHECK(tab.reads("edit_graph_filters") == 0);
+
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.discard"))->click();
+    CHECK(state->text() == QStringLiteral("Saved"));
+    import_button->click();
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.save"))->click();
+    REQUIRE(tab.reads("edit_graph_filters") == 1);
+    CHECK_FALSE(import_button->isEnabled());
+    const auto sent = Json::parse(tab.transport.calls.back().body.toStdString());
+    CHECK(sent.at("document").at("filters").at(0).at("id") == "imported");
+    tab.answer("edit_graph_filters", Json{{"committed", true}, {"changed", true}, {"digest", "next"},
+                    {"previous_digest", "base"}, {"previous", empty_filters}, {"document", sent.at("document")}});
+    auto *undo = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.undo"));
+    REQUIRE(undo->isEnabled());
+    undo->click();
+    REQUIRE(tab.reads("edit_graph_filters") == 2);
+
+    QFile invalid{root.filePath(QStringLiteral("invalid.json"))};
+    REQUIRE(invalid.open(QIODevice::WriteOnly));
+    invalid.write("{");
+    invalid.close();
+    dialog->chooseFile = [&](bool) { return invalid.fileName(); };
+    tab.answer("edit_graph_filters", Json{{"committed", true}, {"changed", true}, {"digest", "empty"},
+                    {"previous_digest", "next"}, {"previous", sent.at("document")},
+                    {"document", Json{{"schema", "pelican.graph_filters"}, {"version", 1},
+                                      {"categories", Json::array()}, {"feature_categories", Json::object()},
+                                      {"filters", Json::array()}}}});
+    const auto before = tab.transport.calls.size();
+    import_button->click();
+    CHECK(state->text().contains(invalid.fileName()));
+    CHECK(state->text().contains(QStringLiteral("Could not import")));
+    CHECK(tab.transport.calls.size() == before);
 }

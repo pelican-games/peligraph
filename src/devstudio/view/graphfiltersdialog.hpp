@@ -28,6 +28,7 @@ class GraphFiltersDialog : public QDialog {
     std::function<std::vector<GraphFilterFacts>()> rootFacts;
     std::function<Selection()> selection;
     std::function<void()> requestReady;
+    std::function<QString(bool saving)> chooseFile;
 
   private:
     struct Impl;
