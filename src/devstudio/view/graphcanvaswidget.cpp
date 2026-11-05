@@ -14833,6 +14833,10 @@ GraphCanvasWidget::~GraphCanvasWidget() {
     setEngineShaderListRequester({});
     // QWidget's destructor sends focus-out after impl_ is gone.
     impl_->canvas->focusLossAction = {};
+    // The dialog is a child of the view, and QWidget's destructor would delete
+    // it after impl_ and the sessions it's bound to are gone.
+    delete impl_->graph_filter_dialog;
+    impl_->graph_filter_dialog = nullptr;
 }
 
 void GraphCanvasWidget::setPerfLines(const QString &summary, const QString &delta) {
