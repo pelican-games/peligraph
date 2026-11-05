@@ -3354,6 +3354,91 @@ TEST_CASE("GL-2b the plan's origin says which graph node made a pass; bands, Lay
           GraphCanvasPlanTarget{"loop", "depth", "", "", "cascades", 2, false});
 }
 
+TEST_CASE("FP-1 maps Graph references to one plan without losing scope", "[fp1]") {
+    using PelicanStudio::GraphNodeRef;
+    using Names = std::set<std::string>;
+    GraphCanvasModel empty;
+    const auto unread = empty.planNodesOfRef(GraphNodeRef{"", "tint", ""});
+    CHECK_FALSE(unread.known);
+    CHECK(unread.names.empty());
+    CHECK_FALSE(unread.runtime_generation);
+
+    Harness h;
+    h.open(gl2bDocument());
+    auto plan = gl2bPlan();
+    plan["runtime_generation"] = 41;
+    plan["graph_variant"] = {{"name", "preview"}};
+    plan["nodes"].push_back(gl2bPass("anchor", 10, "project", Json::array(), Json::array()));
+    plan["nodes"].back()["kind"] = "anchor";
+    h.reply(h.take("get_frame_plan"), plan);
+    auto &model = h.model;
+
+    const auto instance = model.planNodesOfRef(GraphNodeRef{"", "left", ""});
+    REQUIRE(instance.known);
+    CHECK(instance.names == Names{"left/fill"});
+    CHECK(instance.runtime_generation == std::optional<std::uint64_t>{41});
+    CHECK(instance.graph_variant == std::optional<std::string>{"preview"});
+    CHECK(instance.graph == std::optional<std::string>{"main_render"});
+    const auto loop = model.planNodesOfRef(GraphNodeRef{"", "cascades", ""});
+    CHECK(loop.known);
+    CHECK(loop.names == Names{"cascades/0/depth", "cascades/1/depth", "cascades/2/depth"});
+    const auto folded = model.planNodesOfRef(GraphNodeRef{"", "feature:shadow_directional", ""});
+    CHECK(folded.known);
+    CHECK(folded.names == Names{"shadow_resolve"});
+    const auto anchor = model.planNodesOfRef(GraphNodeRef{"", "anchor", ""});
+    CHECK(anchor.known);
+    CHECK(anchor.names.empty());
+    const auto value = model.planNodesOfRef(GraphNodeRef{"", "does_not_compile", ""});
+    CHECK(value.known);
+    CHECK(value.names.empty());
+
+    const auto all_instances = model.planNodesOfRef(GraphNodeRef{"near", "fill", ""});
+    CHECK(all_instances.known);
+    CHECK(all_instances.names.empty());
+    const auto body = model.planNodesOfRef(GraphNodeRef{"paint", "fill", "left"});
+    CHECK(body.known);
+    CHECK(body.names == Names{"left/fill"});
+    const auto all_copies = model.planNodesOfRef(GraphNodeRef{"cascade", "depth", ""});
+    CHECK(all_copies.names == Names{"cascades/1/depth", "cascades/2/depth"});
+    const auto one_copy_context = model.planNodesOfRef(GraphNodeRef{"cascade", "depth", "left"});
+    CHECK(one_copy_context.known);
+    CHECK(one_copy_context.names.empty());
+
+    auto document = gl2bDocument();
+    document["nodes"].push_back({{"id", "right"}, {"op", "graph.instance"}, {"definition", "paint"}});
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), document);
+    auto two_instances = plan;
+    auto right_fill = two_instances["nodes"][7];
+    right_fill["name"] = "right/fill";
+    right_fill["origin"]["instance_path"] = "right";
+    two_instances["nodes"].push_back(right_fill);
+    h.reply(h.take("get_frame_plan"), two_instances);
+    CHECK(model.planNodesOfRef(GraphNodeRef{"paint", "fill", "left"}).names == Names{"left/fill"});
+    CHECK(model.planNodesOfRef(GraphNodeRef{"paint", "fill", "right"}).names == Names{"right/fill"});
+    CHECK(model.planNodesOfRef(GraphNodeRef{"paint", "fill", ""}).names ==
+          Names{"left/fill", "right/fill"});
+
+    auto colliding = plan;
+    auto other_feature = colliding["nodes"][4];
+    other_feature["name"] = "other_shadow_resolve";
+    other_feature["provider_feature"] = "project://other/shadow_directional.json";
+    colliding["nodes"].push_back(other_feature);
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), gl2bDocument());
+    h.reply(h.take("get_frame_plan"), colliding);
+    const auto ambiguous = model.planNodesOfRef(GraphNodeRef{"", "feature:shadow_directional", ""});
+    CHECK_FALSE(ambiguous.known);
+    CHECK(ambiguous.names.empty());
+
+    auto duplicate = plan;
+    duplicate["nodes"].push_back(duplicate["nodes"][6]);
+    model.refresh();
+    h.reply(h.take("get_graph_instances"), gl2bDocument());
+    h.reply(h.take("get_frame_plan"), duplicate);
+    CHECK_FALSE(model.planNodesOfRef(GraphNodeRef{"", "tint", ""}).known);
+}
+
 // UX-15b, decision 5 (GL-2b's hole): a feature whose passes graph nodes took
 // the place of, every one, has no folded node to say "is replaced by" on; the
 // graph's own Layers rows (nothing picked) say it instead.

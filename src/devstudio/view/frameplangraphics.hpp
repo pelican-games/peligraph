@@ -237,6 +237,8 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     // read it are on one canvas and a drag can join them. populate() leaves
     // this view again.
     void populateWholeFrame(const FramePlanModel &model);
+    void populateFollowing(const FramePlanModel &model,
+                           const std::set<std::string> &names);
     [[nodiscard]] bool wholeFrame() const noexcept { return whole_frame_; }
     void resetGraph();
     bool cancelConnectionGesture();
@@ -478,6 +480,7 @@ class FramePlanGraphicsScene final : public QGraphicsScene {
     std::optional<FramePlanModel> current_model_;
     std::optional<FramePlanNodeKey> current_target_;
     bool whole_frame_ = false;
+    std::optional<std::set<std::string>> following_names_;
     FramePlanGpuTimingSnapshot gpu_timing_;
     bool gpu_timing_compact_ = false;
     std::map<std::string, QString> shader_error_marks_;

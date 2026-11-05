@@ -36,6 +36,9 @@ struct InspectorGraphOutput {
 struct InspectorGraphNodeView {
     GraphNodeRef ref;
     bool found = false;
+    // A pass the rendering setup supplies: the Graph draws it folded, and the
+    // Graph document has no node for it. It isn't gone.
+    bool from_rendering_setup = false;
     std::string heading;
     std::string op;
     std::string domain;

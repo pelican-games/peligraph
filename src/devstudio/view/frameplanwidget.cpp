@@ -43,6 +43,7 @@
 #include <QKeySequence>
 #include <QLabel>
 #include <QLineEdit>
+#include <QCheckBox>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPointer>
@@ -367,12 +368,36 @@ bool itemMatches(QTreeWidgetItem *item, const QString &needle,
     return false;
 }
 
-void applyFilter(QTreeWidget &tree, const QString &needle) {
-    for (int index = 0; index < tree.topLevelItemCount(); ++index) {
-        QTreeWidgetItem *item = tree.topLevelItem(index);
-        item->setHidden(!needle.isEmpty() &&
-                        !itemMatches(item, needle, tree.columnCount()));
+bool applyFilterItem(QTreeWidgetItem *item, int columns, const QString &needle,
+                     const std::set<std::string> *names,
+                     const std::optional<QStringList> &inherited_names = std::nullopt) {
+    std::optional<QStringList> row_names;
+    if (names) {
+        const auto attributed = item->data(0, Qt::UserRole + 71);
+        row_names = attributed.isValid() ? std::optional<QStringList>{attributed.toStringList()}
+                                         : inherited_names;
     }
+    bool child_visible = false;
+    for (int index = 0; index < item->childCount(); ++index)
+        child_visible |= applyFilterItem(item->child(index), columns, needle, names, row_names);
+    bool text_visible = needle.isEmpty();
+    for (int column = 0; text_visible == false && column < columns; ++column)
+        text_visible = item->text(column).contains(needle, Qt::CaseInsensitive);
+    bool follow_visible = !names || row_names.has_value();
+    if (names && row_names) {
+        follow_visible = row_names->isEmpty();
+        for (const auto &name : *row_names)
+            follow_visible |= names->contains(name.toStdString());
+    }
+    const bool visible = (text_visible && follow_visible) || child_visible;
+    item->setHidden(!visible);
+    return visible;
+}
+
+void applyFilter(QTreeWidget &tree, const QString &needle,
+                 const std::set<std::string> *names = nullptr) {
+    for (int index = 0; index < tree.topLevelItemCount(); ++index)
+        applyFilterItem(tree.topLevelItem(index), tree.columnCount(), needle, names);
 }
 
 const FramePlanResource *findResource(const FramePlanModel &model,
@@ -406,6 +431,9 @@ struct FramePlanWidget::Impl {
     FramePlanWidget &owner;
     EmbeddedViewport &viewport;
     QLabel *status = nullptr;
+    QCheckBox *follow_graph = nullptr;
+    std::function<void(bool)> follow_graph_changed_action;
+    QLabel *follow_status = nullptr;
     QLineEdit *filter = nullptr;
     QPushButton *refresh = nullptr;
     // RU-1: the row Undo / Redo join, after Refresh.
@@ -434,6 +462,116 @@ struct FramePlanWidget::Impl {
     // The text box does not hold the reply that is on screen.
     bool raw_json_stale = true;
     std::optional<FramePlanModel> model;
+    std::function<FramePlanExternalNodeFilter()> external_node_filter;
+    FramePlanExternalNodeFilter follow_filter;
+    std::optional<std::set<std::string>> narrowed_names;
+    std::map<std::string, double, std::less<>> external_node_times;
+    std::optional<std::uint64_t> external_times_generation;
+    std::function<void()> follow_disabled_action;
+    std::function<void()> plan_synchronization_action;
+    using FollowSyncIdentity = std::tuple<
+        std::optional<std::uint64_t>, std::optional<std::string>, std::optional<std::string>,
+        std::optional<std::uint64_t>, std::string, std::string>;
+    std::optional<FollowSyncIdentity> follow_sync_requested;
+    bool follow_dirty = false;
+
+    void updateFollowControls() {
+        const bool on = follow_graph->isChecked();
+        follow_status->setVisible(on);
+        target->setEnabled(!on);
+        depth->setEnabled(!on);
+        const QString reason = owner.tr("Follow Graph is on");
+        if (on) {
+            target->setToolTip(reason);
+            depth->setToolTip(reason);
+        } else {
+            target->setToolTip(owner.tr("Choose a logical render target, or the whole frame."));
+            depth->setToolTip(owner.tr("Choose how far the target's dependencies are followed."));
+        }
+    }
+    bool followIdentityMatches() const {
+        return model && follow_filter.runtime_generation && model->runtime_generation &&
+               *follow_filter.runtime_generation == *model->runtime_generation &&
+               follow_filter.graph_variant && *follow_filter.graph_variant == model->graph_variant &&
+               follow_filter.graph && *follow_filter.graph == model->graph;
+    }
+    void updateFollowStatus() {
+        if (!follow_graph->isChecked()) return;
+        QString line;
+        if (!follow_filter.names) {
+            line = follow_filter.label.isEmpty() ? owner.tr("No Graph node picked")
+                                                 : follow_filter.label;
+        } else if (!followIdentityMatches()) {
+            line = owner.tr("Plan not synchronized, showing whole frame");
+        } else if (!narrowed_names) {
+            line = follow_filter.label.isEmpty()
+                       ? owner.tr("Graph plan mapping unavailable, showing whole frame")
+                       : owner.tr("%1: plan mapping unavailable, showing whole frame")
+                             .arg(follow_filter.label);
+        } else if (narrowed_names->empty()) {
+            line = owner.tr("%1: 0 passes, showing whole frame").arg(follow_filter.label);
+        } else {
+            double sum = 0.0;
+            int missing = 0;
+            for (const auto &name : *narrowed_names) {
+                const auto found = external_node_times.find(name);
+                if (external_times_generation != model->runtime_generation ||
+                    found == external_node_times.end() || !std::isfinite(found->second))
+                    ++missing;
+                else
+                    sum += found->second;
+            }
+            const QString timing = missing
+                                       ? owner.tr("-- ms (%1 missing)").arg(missing)
+                                       : owner.tr("%1 ms").arg(sum, 0, 'f', 1);
+            line = narrowed_names->size() == 1
+                       ? owner.tr("%1: 1 pass, %2 Σ GPU").arg(follow_filter.label, timing)
+                       : owner.tr("%1: %2 passes, %3 Σ GPU")
+                             .arg(follow_filter.label)
+                             .arg(static_cast<qulonglong>(narrowed_names->size()))
+                             .arg(timing);
+        }
+        const int available = follow_status->width();
+        setClippedLabelText(follow_status, available > 0
+                                               ? follow_status->fontMetrics().elidedText(
+                                                     line, Qt::ElideRight, available)
+                                               : line);
+        follow_status->setToolTip(line + owner.tr(
+            "\nSum of per-node GPU time, all views, attributed barriers included."
+            "\nShared passes are counted under each Graph node, not exclusively."
+            "\nMaterials and Raw JSON stay whole. The Logical graph is not a closed dependency graph."));
+    }
+    void evaluateFollowFilter() {
+        follow_filter = external_node_filter ? external_node_filter() : FramePlanExternalNodeFilter{};
+        narrowed_names.reset();
+        const bool synchronized = followIdentityMatches();
+        if (follow_graph->isChecked() && follow_filter.names) {
+            if (synchronized) {
+                follow_sync_requested.reset();
+                if (follow_filter.known) narrowed_names = *follow_filter.names;
+            } else {
+                const FollowSyncIdentity difference{
+                    follow_filter.runtime_generation, follow_filter.graph_variant, follow_filter.graph,
+                    model ? model->runtime_generation : std::nullopt,
+                    model ? model->graph_variant : std::string{},
+                    model ? model->graph : std::string{}};
+                if (follow_sync_requested != difference) {
+                    follow_sync_requested = difference;
+                    if (plan_synchronization_action) plan_synchronization_action();
+                }
+            }
+        } else {
+            follow_sync_requested.reset();
+        }
+        updateFollowControls();
+        updateFollowStatus();
+    }
+    void applyFollowFilters() {
+        const auto *names = narrowed_names && !narrowed_names->empty() ? &*narrowed_names : nullptr;
+        for (auto *tree : {passes, resources, physical, decisions, backends, barriers})
+            applyFilter(*tree, filter->text(), names);
+        applyFilter(*materials, filter->text());
+    }
     QString requested_hit_group;
     // LP-4d2: a loop whose copies are picked once the plan read for it is in.
     QString requested_loop_group;
@@ -828,6 +966,19 @@ struct FramePlanWidget::Impl {
             "Depth 0 shows no pass nodes. Depth 1 is exactly the unique "
             "writers and readers of the selected target."));
         toolbar->addWidget(depth);
+        follow_graph = new QCheckBox(owner.tr("Follow Graph"), &owner);
+        follow_graph->setObjectName(QStringLiteral("pelican.framePlanFollowGraph"));
+        follow_status = new QLabel(&owner);
+        follow_status->setObjectName(QStringLiteral("pelican.framePlanFollowStatus"));
+        follow_status->setFont(studioSmallFont());
+        follow_status->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        follow_status->setVisible(false);
+        QObject::connect(follow_graph, &QCheckBox::toggled, &owner, [this](bool) {
+            if (follow_graph_changed_action)
+                follow_graph_changed_action(follow_graph->isChecked());
+            if (model) populate();
+            else evaluateFollowFilter();
+        });
         zoom_status = new QLabel(owner.tr("Zoom: 100%"), &owner);
         zoom_status->setObjectName(
             QStringLiteral("pelican.framePlanZoomStatus"));
@@ -906,6 +1057,16 @@ struct FramePlanWidget::Impl {
         toolbar_tools->addStretch(1);
         layout->addLayout(toolbar_tools);
 
+        // FP-1: Follow Graph has a row of its own. Rows 1 and 2 set the
+        // window's floor, and the line needs the width they would squeeze.
+        auto *follow_row = new QHBoxLayout;
+        follow_row->setObjectName(QStringLiteral("frame_plan_follow_row"));
+        follow_row->setContentsMargins(0, 0, 0, 0);
+        follow_row->addWidget(follow_graph);
+        follow_row->addWidget(follow_status, 1);
+        follow_row->addStretch(0);
+        layout->addLayout(follow_row);
+
         // UI-1a: tab order follows the rows. Undo and Redo are spliced between
         // Refresh and Filter by setRenderHistoryActions, where they are made.
         QWidget::setTabOrder(refresh, filter);
@@ -917,6 +1078,7 @@ struct FramePlanWidget::Impl {
         QWidget::setTabOrder(order_nodes, edit_task);
         QWidget::setTabOrder(edit_task, edit_pass);
         QWidget::setTabOrder(edit_pass, new_target);
+        QWidget::setTabOrder(new_target, follow_graph);
 
         status = new QLabel(&owner);
         status->setObjectName(QStringLiteral("pelican.framePlanStatus"));
@@ -1014,6 +1176,7 @@ struct FramePlanWidget::Impl {
 
         tabs = new QTabWidget(&owner);
         tabs->setObjectName(QStringLiteral("pelican.framePlanTabs"));
+        tabs->tabBar()->setObjectName(QStringLiteral("pelican.framePlanTabBar"));
         tabs->setMovable(true);
         logical_splitter = new QSplitter(Qt::Horizontal, tabs);
         logical_splitter->setObjectName(
@@ -1551,15 +1714,7 @@ struct FramePlanWidget::Impl {
                          },
                          Qt::QueuedConnection);
         QObject::connect(filter, &QLineEdit::textChanged, &owner,
-                         [this](const QString &needle) {
-                             applyFilter(*passes, needle);
-                             applyFilter(*resources, needle);
-                             applyFilter(*physical, needle);
-                             applyFilter(*decisions, needle);
-                             applyFilter(*backends, needle);
-                             applyFilter(*barriers, needle);
-                             applyFilter(*materials, needle);
-                         });
+                         [this](const QString &) { applyFollowFilters(); });
         QObject::connect(target, &QComboBox::currentTextChanged, &owner,
                          [this](const QString &) {
                              if (model) {
@@ -3401,7 +3556,7 @@ struct FramePlanWidget::Impl {
             if (model && !kept.contains(text(name)) &&
                 planPassOf(FramePlanNodeKey{model->graph, name}) != nullptr)
                 kept.push_back(text(name));
-        if (!kept.isEmpty()) item->setData(0, RowNodesRole, kept);
+        item->setData(0, RowNodesRole, kept);
     }
     QStringList rowNodes(const QTreeWidgetItem *item) const {
         for (; item != nullptr; item = item->parent()) {
@@ -3675,6 +3830,11 @@ struct FramePlanWidget::Impl {
 
     void showPlanNode(const std::string &name) {
         tabs->setCurrentWidget(logical_splitter);
+        if (model && follow_graph->isChecked() && narrowed_names &&
+            !narrowed_names->contains(name)) {
+            follow_graph->setChecked(false);
+            if (follow_disabled_action) follow_disabled_action();
+        }
         if (!model || !logical_scene->selectPlanNode(FramePlanNodeKey{model->graph, name})) {
             showStatus(owner.tr("The frame plan has no node %1: refresh it.").arg(text(name)));
             return;
@@ -4110,6 +4270,11 @@ struct FramePlanWidget::Impl {
         if (model) loadPlacement();
         // Q-18: a commit elsewhere while out of view left the plan behind.
         if (plan_stale && planReadable()) readPlanAgain();
+        if (follow_dirty && model) {
+            follow_dirty = false;
+            owner.setProperty("pelicanFramePlanFollowDirty", false);
+            populate();
+        }
     }
 
     // RP-1a2: the body of hideEvent, after the base class. Called once per
@@ -4422,6 +4587,8 @@ struct FramePlanWidget::Impl {
             return;
         }
         populate_after_drag = false;
+        owner.setProperty("pelicanFramePlanPopulateCount",
+                          owner.property("pelicanFramePlanPopulateCount").toInt() + 1);
         // FX-8: a refresh can land between selecting a row and pressing Pin.
         // Carry the candidate identity, never a pointer into the rebuilt tree.
         const auto picked_backend = candidateOf(backends->currentItem());
@@ -4446,7 +4613,10 @@ struct FramePlanWidget::Impl {
                 ? std::nullopt
                 : std::optional<FramePlanNodeKey>{FramePlanNodeKey{
                       model->graph, target->currentText().toStdString()}};
-        if (whole_frame)
+        evaluateFollowFilter();
+        if (narrowed_names && !narrowed_names->empty())
+            logical_scene->populateFollowing(*model, *narrowed_names);
+        else if (whole_frame)
             logical_scene->populateWholeFrame(*model);
         else
             logical_scene->populate(*model, selected_target, depth->value());
@@ -4476,20 +4646,29 @@ struct FramePlanWidget::Impl {
                     break;
                 }
             }
-        addBackendBand();
         populateBarriers();
         populateMaterials();
         raw_json_stale = true;
         refreshRawJson();
         tabs->setEnabled(true);
         refresh->setEnabled(viewport.rpcReady());
-        applyFilter(*passes, filter->text());
-        applyFilter(*resources, filter->text());
-        applyFilter(*physical, filter->text());
-        applyFilter(*decisions, filter->text());
-        applyFilter(*backends, filter->text());
-        applyFilter(*barriers, filter->text());
-        applyFilter(*materials, filter->text());
+        applyFollowFilters();
+        for (auto *tree : {passes, resources, physical, decisions, backends, barriers}) {
+            const auto clear_hidden = [&tree](auto &&self, QTreeWidgetItem *item,
+                                              bool parent_hidden) -> void {
+                const bool hidden = parent_hidden || item->isHidden();
+                if (hidden) {
+                    item->setSelected(false);
+                    if (tree->currentItem() == item) tree->setCurrentItem(nullptr);
+                }
+                for (int index = 0; index < item->childCount(); ++index)
+                    self(self, item->child(index), hidden);
+            };
+            for (int index = 0; index < tree->topLevelItemCount(); ++index)
+                clear_hidden(clear_hidden, tree->topLevelItem(index), false);
+        }
+        if (narrowed_names) populateLogicalDetails();
+        addBackendBand();
 
         const auto compute_count = static_cast<std::size_t>(std::count_if(
             model->nodes.begin(), model->nodes.end(), [](const FramePlanNode &node) {
@@ -5099,14 +5278,11 @@ struct FramePlanWidget::Impl {
     void populateResources() {
         for (const FramePlanResource &resource : model->resources) {
             auto *item = new QTreeWidgetItem(resources);
-            // GL-2a's from_nodes; a plan without them, the writers and readers.
-            if (!resource.from_nodes.empty()) {
-                setRowNodes(item, resource.from_nodes);
-            } else {
-                auto names = resource.writers;
-                names.insert(names.end(), resource.readers.begin(), resource.readers.end());
-                setRowNodes(item, names);
-            }
+            auto names = resource.from_nodes;
+            names.insert(names.end(), resource.writers.begin(), resource.writers.end());
+            names.insert(names.end(), resource.readers.begin(), resource.readers.end());
+            names.insert(names.end(), resource.history_readers.begin(), resource.history_readers.end());
+            setRowNodes(item, names);
             setPlanningSubject(item, "resource", resource.name,
                                resource.loop_origin.has_value());
             item->setText(0, text(resource.name));
@@ -5561,7 +5737,11 @@ struct FramePlanWidget::Impl {
         group->setFont(0, font);
         for (const auto *resource : kept) {
             auto *item = new QTreeWidgetItem(group);
-            setRowNodes(item, resource->from_nodes);
+            auto names = resource->from_nodes;
+            names.insert(names.end(), resource->writers.begin(), resource->writers.end());
+            names.insert(names.end(), resource->readers.begin(), resource->readers.end());
+            names.insert(names.end(), resource->history_readers.begin(), resource->history_readers.end());
+            setRowNodes(item, names);
             item->setText(0, text(resource->name));
             item->setText(1, owner.tr("Not aliasable"));
             item->setText(2, text(resource->reason));
@@ -5589,12 +5769,19 @@ struct FramePlanWidget::Impl {
         for (std::size_t index = 0; index < model->barriers.size(); ++index) {
             const auto &barrier = model->barriers[index];
             auto *item = new QTreeWidgetItem(barriers);
-            setRowNodes(item, {barrier.from, barrier.to});
+            std::vector<std::string> names{barrier.from, barrier.to};
+            if (const auto *resource = findResource(*model, barrier.resource)) {
+                names.insert(names.end(), resource->from_nodes.begin(), resource->from_nodes.end());
+                names.insert(names.end(), resource->writers.begin(), resource->writers.end());
+                names.insert(names.end(), resource->readers.begin(), resource->readers.end());
+                names.insert(names.end(), resource->history_readers.begin(), resource->history_readers.end());
+            }
+            setRowNodes(item, names);
             item->setText(0, QString::number(static_cast<qulonglong>(index)));
             item->setText(1, text(barrier.from));
             item->setText(2, text(barrier.to));
             item->setText(3, text(barrier.resource));
-            item->setText(4, text(barrier.kind));
+            item->setText(4, names.empty() ? owner.tr("frame-wide") : text(barrier.kind));
         }
     }
 
@@ -5752,6 +5939,55 @@ void FramePlanWidget::setShadersReloadedAction(std::function<void()> reloaded) {
 void FramePlanWidget::setPerfLines(const QString &summary, const QString &delta) {
     setClippedLabelText(impl_->perf_summary, summary);
     setClippedLabelText(impl_->perf_delta, delta);
+}
+
+void FramePlanWidget::setExternalNodeFilter(
+    std::function<FramePlanExternalNodeFilter()> provider) {
+    impl_->external_node_filter = std::move(provider);
+}
+
+void FramePlanWidget::externalNodeFilterChanged() {
+    if (!impl_->follow_graph->isChecked()) return;
+    if (!impl_->shown.isShown()) {
+        impl_->follow_dirty = true;
+        setProperty("pelicanFramePlanFollowDirty", true);
+        return;
+    }
+    if (impl_->model) impl_->populate();
+    else impl_->evaluateFollowFilter();
+}
+
+void FramePlanWidget::externalNodeFilterLabelChanged() {
+    if (!impl_->follow_graph->isChecked() || !impl_->shown.isShown()) return;
+    impl_->evaluateFollowFilter();
+}
+
+void FramePlanWidget::setExternalNodeTimes(
+    std::map<std::string, double, std::less<>> node_ms,
+    std::optional<std::uint64_t> runtime_generation) {
+    impl_->external_node_times = std::move(node_ms);
+    impl_->external_times_generation = runtime_generation;
+    impl_->updateFollowStatus();
+}
+
+bool FramePlanWidget::followGraph() const {
+    return impl_->follow_graph->isChecked();
+}
+
+void FramePlanWidget::setFollowGraph(bool enabled) {
+    impl_->follow_graph->setChecked(enabled);
+}
+
+void FramePlanWidget::setFollowGraphChangedAction(std::function<void(bool)> action) {
+    impl_->follow_graph_changed_action = std::move(action);
+}
+
+void FramePlanWidget::setFollowGraphDisabledAction(std::function<void()> action) {
+    impl_->follow_disabled_action = std::move(action);
+}
+
+void FramePlanWidget::setPlanSynchronizationAction(std::function<void()> action) {
+    impl_->plan_synchronization_action = std::move(action);
 }
 
 void FramePlanWidget::setDropTransferSourceAction(DropTransferSourceAction action) {

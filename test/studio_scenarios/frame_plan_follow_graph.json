@@ -1,0 +1,125 @@
+{
+  "invariants": {},
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "frame_plan_follow_graph",
+  "description": "FP-1: Follow Graph narrows the Frame Plan to the picked Graph node's compiled passes and restores the whole frame when switched off. The same ssao_pass row is seen before following, missing while gbuffer_pass is followed, and visible again afterward.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the whole Frame Plan has arrived",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#gbuffer_pass",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Passes tab",
+      "cmd": "click",
+      "name": "pelican.framePlanTabBar",
+      "point": [
+        130,
+        12
+      ]
+    },
+    {
+      "label": "ssao_pass's row is visible before following",
+      "cmd": "wait",
+      "name": "pelican.framePlanPasses::row#2",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "Follow Graph on",
+      "cmd": "click",
+      "name": "pelican.framePlanFollowGraph"
+    },
+    {
+      "label": "Target is disabled while following",
+      "cmd": "wait",
+      "name": "pelican.framePlanTarget",
+      "enabled": false,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "bring the Graph forward",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the real gbuffer render node is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node_header#gbuffer_pass",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick gbuffer_pass in the Graph",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#gbuffer_pass"
+    },
+    {
+      "label": "the Inspector says where the pass comes from, not that it is gone",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.fromRenderingSetup",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "return to the Frame Plan so a tabbed hidden panel catches up",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.frame_plan"
+    },
+    {
+      "label": "the follow line is showing",
+      "cmd": "wait",
+      "name": "pelican.framePlanFollowStatus",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "the other pass's row is gone while following",
+      "cmd": "wait",
+      "name": "pelican.framePlanPasses::row#2",
+      "missing": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "gbuffer_pass itself remains",
+      "cmd": "wait",
+      "name": "pelican.framePlanPasses::row#1",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "Follow Graph off",
+      "cmd": "click",
+      "name": "pelican.framePlanFollowGraph"
+    },
+    {
+      "label": "Target returns",
+      "cmd": "wait",
+      "name": "pelican.framePlanTarget",
+      "enabled": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the same ssao_pass row is back in the whole frame",
+      "cmd": "wait",
+      "name": "pelican.framePlanPasses::row#2",
+      "visible": true,
+      "timeout_ms": 60000
+    }
+  ]
+}

@@ -26625,6 +26625,42 @@ TEST_CASE("SDK-1a the document's answer after an in-place shape keeps the next f
     CHECK(nb2bLayers(h.document, "hud").contains(card));
 }
 
+TEST_CASE("FP-1 a folded Graph node press reports its plan owner", "[fp1]") {
+    (void)application();
+    RecordedCapability transport;
+    auto capability = transport.capability();
+    capability.requestFramePlan = [&transport](QString *) {
+        transport.calls.push_back(RecordedCapability::Call{
+            QStringLiteral("get_frame_plan")});
+        return transport.next++;
+    };
+    PelicanStudio::GraphCanvasWidget widget{std::move(capability)};
+    widget.resize(900, 600);
+    widget.show();
+    QCoreApplication::processEvents();
+    const auto answer = [&](const QString &method, const Json &reply) {
+        CAPTURE(method);
+        const qint64 id = transport.idOf(method);
+        REQUIRE(id != 0);
+        REQUIRE(transport.deliver);
+        transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+    };
+    answer(QStringLiteral("get_graph_instances"), gl1bRead());
+    answer(QStringLiteral("get_frame_plan"), gl1bPlan());
+    answer(QStringLiteral("get_graph_catalog"), visualCatalog());
+    QCoreApplication::processEvents();
+    REQUIRE(widget.scene().property("pelicanGraphFoldedCount").toULongLong() == 3);
+    std::optional<PelicanStudio::GraphNodeRef> picked;
+    widget.setNodePickObserver(
+        [&](std::optional<PelicanStudio::GraphNodeRef> ref) { picked = std::move(ref); });
+    QGraphicsItem *folded = nodeItem(widget.scene(), QStringLiteral("gbuffer"));
+    REQUIRE(folded != nullptr);
+    click(widget.scene(), folded->sceneBoundingRect().center());
+    REQUIRE(picked.has_value());
+    CHECK(picked->scope.empty());
+    CHECK(picked->id == "gbuffer");
+}
+
 TEST_CASE("HUB-1a a Graph node is reported only by the press that picked it",
           "[devstudio][graph-canvas][scene][hub1a]") {
     (void)application();

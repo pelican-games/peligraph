@@ -10,8 +10,11 @@
 
 #include <filesystem>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
+#include <set>
+#include <string>
 
 class QAction;
 class QByteArray;
@@ -24,6 +27,16 @@ namespace PelicanStudio {
 class EmbeddedViewport;
 class RenderConfigDigest;
 struct ShaderReloadOutcome;
+
+struct FramePlanExternalNodeFilter {
+    std::optional<std::set<std::string>> names;
+    QString label;
+    bool known = false;
+    std::optional<std::uint64_t> runtime_generation;
+    std::optional<std::string> graph_variant;
+    std::optional<std::string> graph;
+    bool operator==(const FramePlanExternalNodeFilter &) const = default;
+};
 
 class FramePlanWidget final : public QWidget {
     struct Impl;
@@ -206,6 +219,16 @@ class FramePlanWidget final : public QWidget {
     // and the plan's size, and what the last edit moved (the window's
     // PlanPerfHub reads them). The labels stay, empty or not.
     void setPerfLines(const QString &summary, const QString &delta);
+    void setExternalNodeFilter(std::function<FramePlanExternalNodeFilter()> provider);
+    void externalNodeFilterChanged();
+    void externalNodeFilterLabelChanged();
+    void setExternalNodeTimes(std::map<std::string, double, std::less<>> node_ms,
+                              std::optional<std::uint64_t> runtime_generation);
+    [[nodiscard]] bool followGraph() const;
+    void setFollowGraph(bool enabled);
+    void setFollowGraphChangedAction(std::function<void(bool)> action);
+    void setFollowGraphDisabledAction(std::function<void()> action);
+    void setPlanSynchronizationAction(std::function<void()> action);
     // VI-3b. Fix sockets on one pass, as the band's Fix button does: the
     // variadic group of its shader becomes one fixed declaration per
     // connected input (engine://passthrough is copied into the project

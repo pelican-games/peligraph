@@ -712,6 +712,8 @@ void GraphCanvasModel::clearContext() {
     plan_passes_.clear();
     plan_graph_.clear();
     plan_author_graph_.clear();
+    plan_runtime_generation_.reset();
+    plan_graph_variant_.reset();
     plan_retry_budget_ = 0;
     plan_retry_wanted_ = false;
     full_plan_reply_.reset();
@@ -895,6 +897,8 @@ void GraphCanvasModel::requestLoopReports() {
         plan_passes_.clear();
         plan_graph_.clear();
         plan_author_graph_.clear();
+        plan_runtime_generation_.reset();
+        plan_graph_variant_.reset();
         plan_buffers_.clear();
         render_authoring_ = Json::object();
         ray_layout_read_.reset();
@@ -4416,6 +4420,11 @@ bool GraphCanvasModel::isLoopBodyScope(std::string_view scope) const {
     });
 }
 
+namespace {
+bool planPassMadeBy(const GraphCanvasPlanPass &pass, const GraphNodeRef &node,
+                    bool loose);
+}
+
 GraphCanvasLoopElementRead GraphCanvasModel::loopElementRead(std::string_view scope,
                                                              std::string_view node) const {
     if (node.empty()) return GraphCanvasLoopElementRead::none;
@@ -4430,14 +4439,10 @@ GraphCanvasLoopElementRead GraphCanvasModel::loopElementRead(std::string_view sc
         for (const auto &name : planNodesOf(node))
             if (const auto *pass = planPass(name)) note(*pass);
     } else {
-        // A body node: the passes whose origin is it, in that definition
-        // (an engine that predates origin: loop_origin's body node).
-        for (const auto &pass : plan_passes_) {
-            const bool made = pass.origin
-                                  ? pass.origin->definition == scope && pass.origin->node == node
-                                  : !pass.loop.empty() && pass.loop_node == node;
-            if (made) note(pass);
-        }
+        // The legacy Layers read deliberately keeps its loose body match.
+        for (const auto &pass : plan_passes_)
+            if (planPassMadeBy(pass, GraphNodeRef{std::string{scope}, std::string{node}, {}}, true))
+                note(pass);
     }
     if (!reads) return GraphCanvasLoopElementRead::none;
     return copied ? GraphCanvasLoopElementRead::in_loop : GraphCanvasLoopElementRead::outside_loop;
@@ -6106,6 +6111,14 @@ std::string GraphCanvasDomainStub::text() const {
 
 void GraphCanvasModel::readPlanPasses(const Json &plan) {
     plan_graph_ = text(plan, "graph");
+    plan_runtime_generation_.reset();
+    if (const auto generation = plan.find("runtime_generation");
+        generation != plan.end() && generation->is_number_unsigned())
+        plan_runtime_generation_ = generation->get<std::uint64_t>();
+    plan_graph_variant_.reset();
+    if (const auto variant = plan.find("graph_variant");
+        variant != plan.end() && variant->is_object() && variant->contains("name"))
+        plan_graph_variant_ = text(*variant, "name");
     plan_author_graph_ = planningAuthorGraphName(plan_graph_, plan.value("graph_variant", Json::object()));
     // The contract each material pass draws with, as material_routing says.
     std::map<std::string, std::string, std::less<>> contracts;
@@ -6828,6 +6841,63 @@ std::vector<std::string> GraphCanvasModel::planNodesOf(std::string_view canvas_n
         if (owner == canvas_node) result.push_back(pass.name);
     }
     return result;
+}
+
+namespace {
+
+bool planPassMadeBy(const GraphCanvasPlanPass &pass, const GraphNodeRef &node,
+                    bool loose) {
+    if (pass.origin) {
+        const auto &origin = *pass.origin;
+        if (origin.definition != node.scope || origin.node != node.id) return false;
+        return loose || node.instance.empty() || origin.instance_path == node.instance;
+    }
+    return loose && !pass.loop.empty() && pass.loop_node == node.id;
+}
+
+} // namespace
+
+GraphCanvasPlanNodes GraphCanvasModel::planNodesOfRef(const GraphNodeRef &node) const {
+    GraphCanvasPlanNodes result;
+    result.runtime_generation = plan_runtime_generation_;
+    result.graph_variant = plan_graph_variant_;
+    result.graph = plan_graph_.empty() ? std::nullopt
+                                       : std::optional<std::string>{plan_graph_};
+    if (!loop_reports_received_ || node.id.empty()) return result;
+    std::set<std::string> unique_names;
+    for (const auto &pass : plan_passes_) {
+        if (!unique_names.insert(pass.name).second) return result;
+    }
+    const std::string scope = graphNodeScopeId(node.scope);
+    if (scope.empty()) {
+        std::set<std::string> folded_features;
+        for (const auto &pass : plan_passes_) {
+            if (pass.kind == "anchor") continue;
+            auto owner = graphOwnerOf(pass);
+            if (owner.empty()) owner = foldedOwnerOf(pass);
+            if (owner != node.id) continue;
+            if (!pass.feature.empty()) folded_features.insert(pass.feature);
+            result.names.insert(pass.name);
+        }
+        if (folded_features.size() > 1) result.names.clear();
+        else result.known = true;
+        return result;
+    }
+    for (const auto &pass : plan_passes_) {
+        if (pass.kind == "anchor") continue;
+        if (!pass.origin && !pass.loop.empty() && pass.loop_node == node.id) {
+            result.names.clear();
+            return result;
+        }
+        if (planPassMadeBy(pass, GraphNodeRef{scope, node.id, node.instance}, false))
+            result.names.insert(pass.name);
+    }
+    result.known = true;
+    return result;
+}
+
+void GraphCanvasModel::requestPlanForFollowGraph() {
+    read(RequestKind::Loops, "get_frame_plan", Json::object(), true);
 }
 
 // GL-5f, decision 3.

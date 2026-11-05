@@ -15461,7 +15461,17 @@ InspectorGraphNodeView GraphCanvasWidget::nodeView(const GraphNodeRef &node) con
     view.ref.scope = graphNodeScopeId(node.scope);
     const auto nodes = impl_->model.nodes(view.ref.scope);
     const auto found = std::ranges::find(nodes, view.ref.id, &GraphCanvasNode::id);
-    if (found == nodes.end()) return view;
+    if (found == nodes.end()) {
+        if (view.ref.scope.empty()) {
+            const auto folded = impl_->model.foldedNodes();
+            const auto pass = std::ranges::find(folded, view.ref.id, &GraphCanvasFoldedNode::id);
+            if (pass != folded.end()) {
+                view.from_rendering_setup = true;
+                view.heading = pass->label;
+            }
+        }
+        return view;
+    }
     view.found = true;
     view.heading = found->heading();
     view.op = found->op;

@@ -31,6 +31,7 @@
 #include "runtimeoutliner.hpp"
 #include "studiotheme.hpp"
 #include "studiocommands.hpp"
+#include "../guitrace.hpp"
 #include "../viewport/embeddedviewport.hpp"
 #include "../viewport/studiooscsettings.hpp"
 
@@ -1042,7 +1043,11 @@ void MainWindow::createWorkspace() {
         // it comes to the front, from the latest state.
         if (inspector_dirty_) scheduleInspectorRefresh();
     });
-    selection_hub_.setChanged([this] { scheduleInspectorRefresh(); });
+    auto schedule_frame_plan_follow = std::make_shared<std::function<void()>>();
+    selection_hub_.setChanged([this, schedule_frame_plan_follow] {
+        scheduleInspectorRefresh();
+        if (*schedule_frame_plan_follow) (*schedule_frame_plan_follow)();
+    });
     inspector_->setBackToSceneAction(
         [this] { selection_hub_.pickedSceneObject(); });
     // PM-3c: the objects the running game spawned, as greyed "(runtime)"
@@ -1144,6 +1149,67 @@ void MainWindow::createWorkspace() {
             else
                 selection_hub_.pickedSceneObject();
         });
+    auto follow_filter = [this] {
+        FramePlanExternalNodeFilter filter;
+        if (selection_hub_.front() != SelectionFront::graph_node ||
+            !selection_hub_.graphNode()) {
+            filter.label = tr("No Graph node picked");
+            return filter;
+        }
+        const auto &ref = *selection_hub_.graphNode();
+        filter.label = QString::fromStdString(ref.id);
+        if (!ref.instance.empty())
+            filter.label += QStringLiteral(" [%1]").arg(QString::fromStdString(ref.instance));
+        const auto mapped = graph_canvas_->model().planNodesOfRef(ref);
+        filter.names = mapped.names;
+        filter.known = mapped.known;
+        filter.runtime_generation = mapped.runtime_generation;
+        filter.graph_variant = mapped.graph_variant;
+        filter.graph = mapped.graph;
+        return filter;
+    };
+    frame_plan_->setExternalNodeFilter(follow_filter);
+    // Studio's setting and not the project's: the layout's frame_plan member
+    // holds one placement per graph, and a toggle mustn't dirty a project.
+    if (user_settings_)
+        frame_plan_->setFollowGraph(
+            user_settings_->value(QStringLiteral("frame_plan/follow_graph"), false).toBool());
+    frame_plan_->setFollowGraphChangedAction([this](bool on) {
+        if (user_settings_) user_settings_->setValue(QStringLiteral("frame_plan/follow_graph"), on);
+    });
+    auto follow_timer = new QTimer(this);
+    follow_timer->setObjectName(QStringLiteral("pelican.framePlanFollowTimer"));
+    follow_timer->setSingleShot(true);
+    follow_timer->setInterval(0);
+    auto previous_follow = std::make_shared<std::optional<FramePlanExternalNodeFilter>>();
+    connect(follow_timer, &QTimer::timeout, this,
+            [this, follow_filter, previous_follow] {
+                GuiTraceSpan span("frame_plan.follow_graph");
+                if (!frame_plan_->followGraph()) return;
+                if (!frame_plan_->isVisible()) {
+                    frame_plan_->externalNodeFilterChanged();
+                    return;
+                }
+                const auto current = follow_filter();
+                if (previous_follow && **previous_follow == current) return;
+                const bool names_unchanged =
+                    previous_follow && (*previous_follow)->names == current.names &&
+                    (*previous_follow)->known == current.known &&
+                    (*previous_follow)->runtime_generation == current.runtime_generation &&
+                    (*previous_follow)->graph_variant == current.graph_variant &&
+                    (*previous_follow)->graph == current.graph;
+                *previous_follow = current;
+                if (names_unchanged) frame_plan_->externalNodeFilterLabelChanged();
+                else frame_plan_->externalNodeFilterChanged();
+            });
+    *schedule_frame_plan_follow = [follow_timer] { follow_timer->start(); };
+    frame_plan_->setPlanSynchronizationAction([this] {
+        graph_canvas_->model().requestPlanForFollowGraph();
+    });
+    frame_plan_->setFollowGraphDisabledAction([this] {
+        statusBar()->showMessage(
+            tr("Follow Graph turned off to reveal the requested Frame Plan node."), 5000);
+    });
     // The tab's own editors follow its selection first; only then does the
     // Inspector page read the hub again. This only schedules.
     graph_canvas_->setNodeShownObserver([this] {
@@ -1569,6 +1635,8 @@ void MainWindow::createWorkspace() {
                     frame_plan_->setPerfLines(summary, delta);
                     graph_canvas_->setPerfLines(summary, delta);
                     graph_canvas_->setPlanNodeTimes(plan_perf_->model().nodeMs());
+                    frame_plan_->setExternalNodeTimes(
+                        plan_perf_->model().nodeMs(), plan_perf_->model().nodeGeneration());
                 },
         },
         this);

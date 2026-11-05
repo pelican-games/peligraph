@@ -790,9 +790,15 @@ struct InspectorWidget::Impl {
         graph_ref = view.ref;
 
         if (!view.found) {
-            auto *gone = plainLabel(owner.tr("This node is no longer in the document."),
-                                    graph_page);
-            gone->setObjectName(QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+            auto *gone = plainLabel(
+                view.from_rendering_setup
+                    ? owner.tr("This pass comes from the rendering setup. The Graph's own panel shows its settings.")
+                    : owner.tr("This node is no longer in the document."),
+                graph_page);
+            gone->setWordWrap(true);
+            gone->setObjectName(view.from_rendering_setup
+                                    ? QStringLiteral("pelican.inspectorGraph.fromRenderingSetup")
+                                    : QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
             graph_layout->addWidget(gone);
             graph_layout->addWidget(open);
             graph_layout->addStretch();

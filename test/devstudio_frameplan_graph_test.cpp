@@ -104,6 +104,7 @@ TEST_CASE("Studio RPC preserves record values or refuses lossy integer transport
 #include <QPainterPath>
 #include <QPen>
 #include <QLabel>
+#include <QLayout>
 #include <QLineEdit>
 #include <QCompleter>
 #include <QAbstractItemModel>
@@ -16450,6 +16451,393 @@ TEST_CASE("FP-FUZZ1 deterministic prefixes", "[fp-fuzz1-prefix]") {
         plan_dock->setWidget(nullptr);
         fixture.widget.setParent(nullptr);
     }
+}
+
+QTreeWidgetItem *fp1FindRow(QTreeWidgetItem *item, const QString &needle) {
+    for (int column = 0; column < item->columnCount(); ++column)
+        if (item->text(column).contains(needle, Qt::CaseInsensitive)) return item;
+    for (int index = 0; index < item->childCount(); ++index)
+        if (auto *found = fp1FindRow(item->child(index), needle)) return found;
+    return nullptr;
+}
+
+QTreeWidgetItem *fp1FindRow(QTreeWidget &tree, const QString &needle) {
+    for (int index = 0; index < tree.topLevelItemCount(); ++index)
+        if (auto *found = fp1FindRow(tree.topLevelItem(index), needle)) return found;
+    return nullptr;
+}
+
+QTreeWidgetItem *fp1FindPassRow(QTreeWidget &tree, const QString &name) {
+    for (int index = 0; index < tree.topLevelItemCount(); ++index) {
+        auto *item = tree.topLevelItem(index);
+        if (item->text(1) == name) return item;
+    }
+    return nullptr;
+}
+
+QLabel &fp1FollowStatus(FramePlanWidget &widget) {
+    auto *label = widget.findChild<QLabel *>(QStringLiteral("pelican.framePlanFollowStatus"));
+    REQUIRE(label != nullptr);
+    return *label;
+}
+
+QCheckBox &fp1FollowCheck(FramePlanWidget &widget) {
+    auto *check = widget.findChild<QCheckBox *>(QStringLiteral("pelican.framePlanFollowGraph"));
+    REQUIRE(check != nullptr);
+    return *check;
+}
+
+TEST_CASE("FP-1 Follow Graph narrows the logical graph and combines with Filter", "[fp1]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1200, 800);
+    widget.show();
+    auto wire = exampleFramePlan(true);
+    wire["runtime_generation"] = 7;
+    wire["graph_variant"] = {{"name", "flat"}};
+    std::vector<std::string> names;
+    for (const auto &node : wire.at("nodes"))
+        if (node.value("kind", std::string{}) != "anchor")
+            names.push_back(node.at("name").get<std::string>());
+    REQUIRE(names.size() >= 3);
+    FramePlanExternalNodeFilter filter;
+    filter.known = true;
+    filter.names = std::set<std::string>{names[0]};
+    filter.label = QStringLiteral("picked");
+    filter.runtime_generation = 7;
+    filter.graph_variant = "flat";
+    filter.graph = wire.at("graph").get<std::string>();
+    widget.setExternalNodeFilter([&filter] { return filter; });
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    const StringSet whole = sceneNodeNames(scene(widget));
+    const int default_target = targetSelector(widget).currentIndex();
+    const int default_depth = subtreeDepth(widget).value();
+    targetSelector(widget).setCurrentIndex(1);
+    subtreeDepth(widget).setValue(3);
+    const QString target = targetSelector(widget).currentText();
+    widget.setFollowGraph(true);
+    QApplication::processEvents();
+
+    CHECK(sceneNodeNames(scene(widget)) == StringSet{names[0]});
+    CHECK_FALSE(targetSelector(widget).isEnabled());
+    CHECK_FALSE(subtreeDepth(widget).isEnabled());
+    CHECK(targetSelector(widget).toolTip().contains(QStringLiteral("Follow Graph")));
+    CHECK(fp1FollowStatus(widget).toolTip().contains(QStringLiteral("not a closed dependency graph")));
+    auto *passes = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    REQUIRE(passes != nullptr);
+    auto *first = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    auto *second = fp1FindPassRow(*passes, QString::fromStdString(names[1]));
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    CHECK_FALSE(first->isHidden());
+    CHECK(second->isHidden());
+    second->setSelected(true);
+    passes->setCurrentItem(second);
+
+    framePlanFilter(widget).setText(QStringLiteral("fp1_text_that_matches_no_frame_row"));
+    QApplication::processEvents();
+    CHECK(first->isHidden());
+    CHECK(second->isHidden());
+    framePlanFilter(widget).clear();
+    QApplication::processEvents();
+    CHECK_FALSE(first->isHidden());
+    CHECK(second->isHidden());
+    widget.setFollowGraph(false);
+    QApplication::processEvents();
+    CHECK(targetSelector(widget).isEnabled());
+    CHECK(subtreeDepth(widget).isEnabled());
+    CHECK(targetSelector(widget).currentText() == target);
+    CHECK(subtreeDepth(widget).value() == 3);
+    second = fp1FindPassRow(*passes, QString::fromStdString(names[1]));
+    REQUIRE(second != nullptr);
+    CHECK_FALSE(second->isHidden());
+    CHECK(fp1FollowStatus(widget).isHidden());
+
+    widget.setFollowGraph(true);
+    first = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    REQUIRE(first != nullptr);
+    first->setSelected(true);
+    passes->setCurrentItem(first);
+    filter.names = std::set<std::string>{names[1], "a stale plan name"};
+    widget.externalNodeFilterChanged();
+    CHECK(sceneNodeNames(scene(widget)) == StringSet{names[1]});
+    CHECK(passes->selectedItems().isEmpty());
+    CHECK(passes->currentItem() == nullptr);
+    int notices = 0;
+    widget.setFollowGraphDisabledAction([&notices] { ++notices; });
+    widget.showPlanNode(QString::fromStdString(names[0]));
+    CHECK_FALSE(widget.followGraph());
+    CHECK(notices == 1);
+    targetSelector(widget).setCurrentIndex(default_target);
+    subtreeDepth(widget).setValue(default_depth);
+    CHECK(sceneNodeNames(scene(widget)) == whole);
+}
+
+TEST_CASE("FP-1 Follow Graph applies child, consumer and barrier attribution", "[fp1]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.show();
+    auto wire = exampleFramePlan(true);
+    wire["runtime_generation"] = 11;
+    wire["graph_variant"] = {{"name", "flat"}};
+    std::vector<std::string> names;
+    for (const auto &node : wire.at("nodes"))
+        if (node.value("kind", std::string{}) != "anchor")
+            names.push_back(node.at("name").get<std::string>());
+    REQUIRE(names.size() >= 2);
+    REQUIRE(!wire.at("resources").empty());
+    wire["resources"][0]["readers"] = Json::array({names[0]});
+    wire["resources"][0]["writers"] = Json::array();
+    wire["resources"][0]["from_nodes"] = Json::array();
+    wire["barriers"].push_back({{"from", names[1]}, {"to", names[1]},
+                               {"resource", "not-a-resource"},
+                               {"kind", "unattributed-test"}});
+    REQUIRE(buildFramePlanModel(wire.dump()).nodes.size() == names.size());
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    QApplication::processEvents();
+    auto *passes = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    auto *resources = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanResources"));
+    auto *barriers = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanBarriers"));
+    REQUIRE(passes != nullptr);
+    REQUIRE(resources != nullptr);
+    REQUIRE(barriers != nullptr);
+    CAPTURE(names[0], passes->topLevelItemCount());
+    if (auto *plan_status = widget.findChild<QLabel *>(QStringLiteral("pelican.framePlanStatus")))
+        INFO("plan status: " << plan_status->text().toStdString());
+    QTreeWidgetItem *pass = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    REQUIRE(pass != nullptr);
+    QTreeWidgetItem *detail = nullptr;
+    for (int index = 0; index < pass->childCount(); ++index)
+        if (pass->child(index)->childCount() > 0) {
+            detail = pass->child(index)->child(0);
+            break;
+        }
+    REQUIRE(detail != nullptr);
+    framePlanFilter(widget).setText(QStringLiteral("__fp1_no_match__"));
+    CHECK(detail->isHidden());
+    CHECK(pass->isHidden());
+    framePlanFilter(widget).clear();
+
+    FramePlanExternalNodeFilter filter;
+    filter.known = true;
+    filter.names = std::set<std::string>{names[0]};
+    filter.label = QStringLiteral("picked");
+    filter.runtime_generation = 11;
+    filter.graph_variant = "flat";
+    filter.graph = wire.at("graph").get<std::string>();
+    widget.setExternalNodeFilter([&filter] { return filter; });
+    widget.setFollowGraph(true);
+    pass = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    REQUIRE(pass != nullptr);
+    CHECK_FALSE(pass->isHidden());
+    const QString consumer_resource = QString::fromStdString(
+        wire["resources"][0]["name"].get<std::string>());
+    CHECK(fp1FindRow(*resources, consumer_resource) != nullptr);
+    CHECK_FALSE(fp1FindRow(*resources, consumer_resource)->isHidden());
+    auto *other_barrier = fp1FindRow(*barriers, QStringLiteral("unattributed-test"));
+    REQUIRE(other_barrier != nullptr);
+    CHECK(other_barrier->isHidden());
+    auto *unattributed = new QTreeWidgetItem(barriers);
+    unattributed->setText(1, QStringLiteral("frame-wide-test"));
+    unattributed->setText(4, QStringLiteral("frame-wide"));
+    unattributed->setData(0, Qt::UserRole + 71, QStringList{});
+    framePlanFilter(widget).setText(QStringLiteral("frame-wide-test"));
+    CHECK_FALSE(unattributed->isHidden());
+    framePlanFilter(widget).clear();
+    CHECK_FALSE(unattributed->isHidden());
+    pass->setExpanded(true);
+    CHECK(std::ranges::any_of(std::views::iota(0, pass->childCount()), [pass](int index) {
+        return !pass->child(index)->isHidden();
+    }));
+
+    const auto attribute = [&names](QTreeWidgetItem *item, int index) {
+        item->setData(0, Qt::UserRole + 71,
+                      QStringList{QString::fromStdString(names[index])});
+    };
+    auto *child_match = new QTreeWidgetItem(passes);
+    child_match->setText(1, QStringLiteral("fp1-parent-not-matching"));
+    attribute(child_match, 1);
+    auto *matching_child = new QTreeWidgetItem(child_match);
+    matching_child->setText(1, QStringLiteral("fp1-only-child-matches"));
+    attribute(matching_child, 0);
+    auto *parent_match = new QTreeWidgetItem(passes);
+    parent_match->setText(1, QStringLiteral("fp1-parent-matching"));
+    attribute(parent_match, 0);
+    auto *other_child = new QTreeWidgetItem(parent_match);
+    other_child->setText(1, QStringLiteral("fp1-other-child"));
+    attribute(other_child, 1);
+    auto *and_row = new QTreeWidgetItem(passes);
+    and_row->setText(1, QStringLiteral("fp1-text-only"));
+    attribute(and_row, 1);
+    framePlanFilter(widget).setText(QStringLiteral("fp1-child-filter-trigger"));
+    framePlanFilter(widget).clear();
+    CHECK_FALSE(child_match->isHidden());
+    CHECK_FALSE(matching_child->isHidden());
+    CHECK_FALSE(parent_match->isHidden());
+    CHECK(other_child->isHidden());
+    framePlanFilter(widget).setText(QStringLiteral("__fp1_no_match__"));
+    CHECK(child_match->isHidden());
+    CHECK(matching_child->isHidden());
+    CHECK(parent_match->isHidden());
+    CHECK(and_row->isHidden());
+    framePlanFilter(widget).setText(QStringLiteral("fp1-text-only"));
+    CHECK(and_row->isHidden());
+    framePlanFilter(widget).clear();
+    CHECK_FALSE(parent_match->isHidden());
+
+    passes->setCurrentItem(pass);
+    auto *backends = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanBackends"));
+    REQUIRE(backends != nullptr);
+    auto *selected_backend = new QTreeWidgetItem(backends);
+    selected_backend->setText(0, QStringLiteral("fp1-backend"));
+    attribute(selected_backend, 0);
+    backends->setItemWidget(selected_backend, 0, new QWidget);
+    backends->setCurrentItem(selected_backend);
+    QPointer<QWidget> old_band = backends->itemWidget(selected_backend, 0);
+    filter.names = std::set<std::string>{names[1]};
+    widget.externalNodeFilterChanged();
+    pass = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    REQUIRE(pass != nullptr);
+    CHECK(pass->isHidden());
+    CHECK(passes->selectedItems().isEmpty());
+    CHECK(passes->currentItem() == nullptr);
+    CHECK(backends->selectedItems().isEmpty());
+    CHECK(backends->currentItem() == nullptr);
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::DeferredDelete);
+    CHECK(old_band == nullptr);
+
+    widget.setFollowGraph(false);
+    passes = widget.findChild<QTreeWidget *>(QStringLiteral("pelican.framePlanPasses"));
+    pass = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    framePlanFilter(widget).setText(QStringLiteral("__fp1_no_match__"));
+    CHECK(pass->isHidden());
+    filter.names = std::set<std::string>{names[0]};
+    widget.setFollowGraph(true);
+    pass = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    CHECK(pass->isHidden());
+    framePlanFilter(widget).clear();
+    pass = fp1FindPassRow(*passes, QString::fromStdString(names[0]));
+    CHECK_FALSE(pass->isHidden());
+}
+
+TEST_CASE("FP-1 Follow Graph bypasses an entered or collapsed group", "[fp1]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    auto wire = exampleFramePlan(true);
+    wire["runtime_generation"] = 12;
+    wire["graph_variant"] = {{"name", "flat"}};
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    auto *logical = dynamic_cast<FramePlanGraphicsScene *>(&scene(widget));
+    REQUIRE(logical != nullptr);
+    QString group;
+    QString picked;
+    for (const auto &node : wire.at("nodes")) {
+        auto *item = nodeItem(*logical, node.at("name").get<std::string>());
+        if (item && !item->data(FramePlanGroupIdRole).toString().isEmpty()) {
+            group = item->data(FramePlanGroupIdRole).toString();
+            picked = QString::fromStdString(node.at("name").get<std::string>());
+            break;
+        }
+    }
+    REQUIRE(!group.isEmpty());
+    REQUIRE(logical->collapseGroup(group));
+    CHECK(nodeItem(*logical, picked.toStdString()) == nullptr);
+    FramePlanExternalNodeFilter filter;
+    filter.known = true;
+    filter.names = std::set<std::string>{picked.toStdString()};
+    filter.runtime_generation = 12;
+    filter.graph_variant = "flat";
+    filter.graph = wire.at("graph").get<std::string>();
+    widget.setExternalNodeFilter([&filter] { return filter; });
+    widget.setFollowGraph(true);
+    CHECK(nodeItem(*logical, picked.toStdString()) != nullptr);
+    CHECK(itemsOfKind(*logical, FramePlanGroupItem).empty());
+    widget.setFollowGraph(false);
+    logical = dynamic_cast<FramePlanGraphicsScene *>(&scene(widget));
+    REQUIRE(logical != nullptr);
+    REQUIRE(logical->enterGroup(group));
+    CHECK(logical->property("pelicanCurrentGroupScope").toString() == group);
+    widget.setFollowGraph(true);
+    CHECK(nodeItem(*logical, picked.toStdString()) != nullptr);
+    CHECK(logical->property("pelicanCurrentGroupScope").toString().isEmpty());
+    widget.setFollowGraph(false);
+    logical = dynamic_cast<FramePlanGraphicsScene *>(&scene(widget));
+    CHECK(logical->property("pelicanCurrentGroupScope").toString() == group);
+    CHECK(logical->leaveGroup());
+}
+
+TEST_CASE("FP-1 Follow Graph identity, empty states and timing stay explicit", "[fp1]") {
+    application();
+    EmbeddedViewport viewport;
+    FramePlanWidget widget{&viewport};
+    widget.resize(1000, 700);
+    widget.show();
+    auto wire = exampleFramePlan(true);
+    wire["runtime_generation"] = 7;
+    wire["graph_variant"] = {{"name", "flat"}};
+    std::vector<std::string> names;
+    for (const auto &node : wire.at("nodes"))
+        if (node.value("kind", std::string{}) != "anchor")
+            names.push_back(node.at("name").get<std::string>());
+    REQUIRE(names.size() >= 3);
+    FramePlanExternalNodeFilter filter;
+    filter.label = QStringLiteral("nothing picked");
+    widget.setExternalNodeFilter([&filter] { return filter; });
+    int reads = 0;
+    widget.setPlanSynchronizationAction([&reads] { ++reads; });
+    widget.receiveResult(QByteArray::fromStdString(wire.dump()));
+    const StringSet whole = sceneNodeNames(scene(widget));
+    widget.setFollowGraph(true);
+    CHECK(fp1FollowStatus(widget).text().contains(QStringLiteral("nothing picked")));
+    CHECK(sceneNodeNames(scene(widget)) == whole);
+    CHECK(reads == 0);
+
+    filter.known = true;
+    filter.names = std::set<std::string>{names[0], names[1]};
+    filter.runtime_generation = 8;
+    filter.graph_variant = "flat";
+    filter.graph = wire.at("graph").get<std::string>();
+    widget.externalNodeFilterChanged();
+    CHECK(fp1FollowStatus(widget).text().contains(QStringLiteral("not synchronized")));
+    CHECK(sceneNodeNames(scene(widget)) == whole);
+    CHECK(reads == 1);
+    widget.externalNodeFilterChanged();
+    CHECK(reads == 1);
+
+    filter.runtime_generation = 7;
+    widget.externalNodeFilterChanged();
+    CHECK(fp1FollowStatus(widget).toolTip().contains(QStringLiteral("-- ms (2 missing)")));
+    CHECK(fp1FollowStatus(widget).toolTip().contains(QStringLiteral("attributed barriers included")));
+    widget.setExternalNodeTimes({{names[0], 1.25}}, 7);
+    CHECK(fp1FollowStatus(widget).toolTip().contains(QStringLiteral("-- ms (1 missing)")));
+    widget.setExternalNodeTimes({{names[0], 1.25}, {names[1], 2.75}}, 8);
+    CHECK(fp1FollowStatus(widget).toolTip().contains(QStringLiteral("-- ms (2 missing)")));
+    widget.setExternalNodeTimes({{names[0], 1.25}, {names[1], 2.75}}, 7);
+    CHECK(fp1FollowStatus(widget).toolTip().contains(QStringLiteral("4.0 ms Σ GPU")));
+    filter.label = QStringLiteral("a very long Graph node label that must be elided by font metrics");
+    filter.names = std::set<std::string>{names[0]};
+    // The row lays out on the event loop, and elision needs the real width.
+    widget.layout()->activate();
+    QApplication::processEvents();
+    widget.externalNodeFilterLabelChanged();
+    const auto &status = fp1FollowStatus(widget);
+    CHECK(status.fontMetrics().horizontalAdvance(status.text()) <= status.width());
+    CHECK(status.toolTip().contains(filter.label));
+    CHECK(status.toolTip().contains(QStringLiteral("1.3 ms Σ GPU")));
+    CHECK(status.toolTip().contains(QStringLiteral("Shared passes")));
+
+    filter.names = std::set<std::string>{};
+    widget.externalNodeFilterChanged();
+    CHECK(status.toolTip().contains(QStringLiteral("0 passes, showing whole frame")));
+    CHECK(sceneNodeNames(scene(widget)) == whole);
+    filter.known = false;
+    filter.names = std::set<std::string>{names[0]};
+    widget.externalNodeFilterChanged();
+    CHECK(status.toolTip().contains(QStringLiteral("mapping unavailable")));
+    CHECK(sceneNodeNames(scene(widget)) == whole);
 }
 
 TEST_CASE("FP-FUZZ1 seeded random canvas operations", "[fp-fuzz1-short]") {

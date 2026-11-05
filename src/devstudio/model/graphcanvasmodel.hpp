@@ -4,6 +4,7 @@
 #include "graphfilters.hpp"
 #include "inspectormodel.hpp"
 #include "raylayoutmodel.hpp"
+#include "selectionhub.hpp"
 
 #include <nlohmann/json.hpp>
 
@@ -684,6 +685,14 @@ struct GraphCanvasPlanOrigin {
     std::optional<std::int64_t> element;
 
     bool operator==(const GraphCanvasPlanOrigin &) const = default;
+};
+
+struct GraphCanvasPlanNodes {
+    std::set<std::string> names;
+    bool known = false;
+    std::optional<std::uint64_t> runtime_generation;
+    std::optional<std::string> graph_variant;
+    std::optional<std::string> graph;
 };
 
 // GL-2b: one feature pass a graph node's pass took the place of (`replaces`).
@@ -1420,6 +1429,8 @@ class GraphCanvasModel {
     std::vector<GraphCanvasPlanPass> plan_passes_;
     std::string plan_graph_;
     std::string plan_author_graph_;
+    std::optional<std::uint64_t> plan_runtime_generation_;
+    std::optional<std::string> plan_graph_variant_;
     void readPlanPasses(const nlohmann::json &plan);
     // --- GL-1e: the plan's buffers (resources[].kind), and the authoring
     // context read after a plan with a rendering-section pass.
@@ -2369,6 +2380,7 @@ class GraphCanvasModel {
     }
     [[nodiscard]] const std::string &planGraph() const noexcept { return plan_graph_; }
     [[nodiscard]] const std::string &planAuthorGraph() const noexcept { return plan_author_graph_; }
+    void requestPlanForFollowGraph();
     // Decision 1. The folded nodes the canvas draws: at the root, one per
     // feature and one per other pass no graph node made (not the anchors),
     // in the plan's order -- none while the Render domain is hidden; inside
@@ -2832,6 +2844,7 @@ class GraphCanvasModel {
     [[nodiscard]] bool planPassEditedHere(std::string_view plan_node) const;
     // The frame plan nodes drawn under one root canvas node, in plan order.
     [[nodiscard]] std::vector<std::string> planNodesOf(std::string_view canvas_node) const;
+    [[nodiscard]] GraphCanvasPlanNodes planNodesOfRef(const GraphNodeRef &node) const;
     // Decision 2: bands and the Layers section are shown on the real root,
     // while the domain filter shows one domain only (3.3).
     [[nodiscard]] bool layersShown() const;

@@ -2370,6 +2370,7 @@ void FramePlanGraphicsScene::populate(
     current_target_ = selected_target;
     current_depth_ = std::max(0, depth);
     whole_frame_ = false;
+    following_names_.reset();
     // A proposal describes one exact plan snapshot. A normal frame-plan
     // refresh may change reachability even when every selected name survives,
     // so never carry the suggestion across populate().
@@ -2382,6 +2383,18 @@ void FramePlanGraphicsScene::populateWholeFrame(const FramePlanModel &model) {
     current_model_ = model;
     current_target_.reset();
     whole_frame_ = true;
+    following_names_.reset();
+    convex_hull_proposal_.reset();
+    pruneGroupState();
+    renderCurrentGraph();
+}
+
+void FramePlanGraphicsScene::populateFollowing(
+    const FramePlanModel &model, const std::set<std::string> &names) {
+    current_model_ = model;
+    current_target_.reset();
+    whole_frame_ = false;
+    following_names_ = names;
     convex_hull_proposal_.reset();
     pruneGroupState();
     renderCurrentGraph();
@@ -2511,8 +2524,9 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
     const std::vector<GroupDefinition> groups =
         discoverGroups(model, session_groups_);
     const GroupDefinition *scope_group =
-        current_group_scope_ ? findGroup(groups, *current_group_scope_)
-                             : nullptr;
+        !following_names_ && current_group_scope_
+            ? findGroup(groups, *current_group_scope_)
+            : nullptr;
     const auto retained_primary_node = selected_node_;
     const auto retained_nodes = selected_nodes_;
 
@@ -2524,21 +2538,23 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
                         return resource.name == current_target_->name;
                     });
     selected_resource_ = target_is_valid ? current_target_ : std::nullopt;
-    const std::set<std::string, std::less<>> visible_names =
-        scope_group
-            ? std::set<std::string, std::less<>>{
-                  scope_group->members.begin(), scope_group->members.end()}
-            : whole_frame_ ? allNodeNames(model)
-            : selected_resource_
-                  ? subtreeNodeNames(model, selected_resource_->name,
-                                     normalized_depth)
-                  : std::set<std::string, std::less<>>{};
+    std::set<std::string, std::less<>> visible_names;
+    if (following_names_) {
+        for (const auto &node : model.nodes)
+            if (following_names_->contains(node.name)) visible_names.insert(node.name);
+    } else if (scope_group) {
+        visible_names.insert(scope_group->members.begin(), scope_group->members.end());
+    } else if (whole_frame_) {
+        visible_names = allNodeNames(model);
+    } else if (selected_resource_) {
+        visible_names = subtreeNodeNames(model, selected_resource_->name, normalized_depth);
+    }
     const auto node_selection_survives = [&](const FramePlanNodeKey &node) {
         if (node.graph != model.graph ||
             !visible_names.contains(node.name)) {
             return false;
         }
-        return scope_group != nullptr ||
+        return following_names_ || scope_group != nullptr ||
                std::ranges::none_of(
                    groups, [&](const GroupDefinition &group) {
                        return group.collapsible &&
@@ -2561,7 +2577,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
         }
         setProperty("pelicanCollapsedGroups", collapsed);
         setProperty("pelicanCurrentGroupScope",
-                    current_group_scope_
+                    !following_names_ && current_group_scope_
                         ? qtext(groupStateId(*current_group_scope_))
                         : QString{});
 
@@ -2624,7 +2640,7 @@ void FramePlanGraphicsScene::renderCurrentGraph() {
 
     std::map<std::string, VisibleEntity, std::less<>> entities;
     std::map<std::string, std::string, std::less<>> entity_for_node;
-    if (!scope_group) {
+    if (!scope_group && !following_names_) {
         for (const auto &group : groups) {
             if (!group.collapsible ||
                 !collapsed_groups_.contains(group.state_key)) {

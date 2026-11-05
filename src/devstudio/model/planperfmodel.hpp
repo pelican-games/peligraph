@@ -114,6 +114,9 @@ class PlanPerfModel {
     [[nodiscard]] const std::map<std::string, double, std::less<>> &nodeMs() const noexcept {
         return node_ms_;
     }
+    [[nodiscard]] std::optional<std::uint64_t> nodeGeneration() const {
+        return node_ms_.empty() ? std::nullopt : currentGeneration();
+    }
     // An edit is waiting for its after.
     [[nodiscard]] bool waiting() const noexcept { return pending_.has_value(); }
     // The generation whose plan the waiting edit needs and nobody has read:

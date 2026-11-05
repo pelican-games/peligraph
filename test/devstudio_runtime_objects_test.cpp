@@ -26,14 +26,20 @@
 #include "../src/devstudio/viewport/nativewindowhost.hpp"
 #include "../src/devstudio/viewport/viewportgeometry.hpp"
 #include "inspectorwidget.hpp"
+#include "frameplanwidget.hpp"
+#include "graphcanvaswidget.hpp"
+#include "../src/devstudio/guitrace.hpp"
 #include "outlinertree.hpp"
 #include "runtimeoutliner.hpp"
 
 #include <QAction>
 #include <QApplication>
 #include <QByteArray>
+#include <QCheckBox>
+#include <QComboBox>
 #include <QElapsedTimer>
 #include <QGroupBox>
+#include <QGraphicsSceneMouseEvent>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -45,6 +51,7 @@
 #include <QPoint>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QStatusBar>
 #include <QTest>
 #include <QTimer>
 #include <QTreeWidgetItemIterator>
@@ -138,8 +145,56 @@ class FakeEngine {
     // An engine from before RO-1: get_runtime_objects is an unknown method.
     bool knows_runtime_objects = true;
     int runtime_reads = 0;
+    int frame_plan_reads = 0;
+    std::uint64_t frame_plan_generation = 21;
     // Every operation an `edit` carried.
     std::vector<Json> operations;
+
+    int graph_node_count = 4;
+
+    Json graphRead() const {
+        Json nodes = Json::array({
+            {{"id", "first"}, {"op", "render.fullscreen"}, {"parameters", Json::object()},
+             {"outputs", Json::array({"color"})}},
+            {{"id", "second"}, {"op", "render.fullscreen"}, {"parameters", Json::object()},
+             {"outputs", Json::array({"color"})}},
+            {{"id", "value_a"}, {"op", "graph.value"}, {"parameters", Json::object()},
+             {"outputs", Json::array({"value"})}},
+            {{"id", "value_b"}, {"op", "graph.value"}, {"parameters", Json::object()},
+             {"outputs", Json::array({"value"})}}});
+        for (int index = 4; index < graph_node_count; ++index)
+            nodes.push_back({{"id", "node_" + std::to_string(index)},
+                             {"op", "render.fullscreen"}, {"parameters", Json::object()},
+                             {"outputs", Json::array({"color"})}});
+        return {{"source_reference", "fp1"}, {"source_digest", {{"hex", "fp1"}}},
+                {"instances", Json::array()}, {"definitions", Json::object()},
+                {"nodes", std::move(nodes)}};
+    }
+
+    Json framePlan() const {
+        Json nodes = Json::array();
+        Json resources = Json::array();
+        for (const auto &graph_node : graphRead().at("nodes")) {
+            const std::string name = graph_node.at("id").get<std::string>();
+            if (graph_node.at("op") != "render.fullscreen") continue;
+            const int order = static_cast<int>(nodes.size());
+            nodes.push_back({{"name", name}, {"kind", "render"}, {"order", order},
+                             {"level", order}, {"source", "project"},
+                             {"origin", {{"node", name}}},
+                             {"reads", Json::array()}, {"writes", Json::array({name})},
+                             {"reads_history", Json::array()}, {"declaration_index", order},
+                             {"shader_resolution", {{"state", "not_applicable"}}}});
+            resources.push_back({{"name", name}, {"kind", "render_target"}, {"format", "RGBA8"},
+                                 {"writers", Json::array({name})}, {"readers", Json::array()},
+                                 {"from_nodes", Json::array({name})}});
+        }
+        return {{"schema", "pelican.frame_plan"}, {"version", 1},
+                {"profile", "runtime"}, {"graph", "fp1_graph"},
+                {"graph_variant", {{"name", "flat"}}},
+                {"runtime_generation", frame_plan_generation},
+                {"nodes", std::move(nodes)}, {"resources", std::move(resources)},
+                {"barriers", Json::array()}, {"loops", Json::array()}};
+    }
 
     void pump() {
         QApplication::processEvents();
@@ -196,6 +251,22 @@ class FakeEngine {
         const auto id = request.at("id").get<qint64>();
         const auto method = request.at("method").get<std::string>();
         const Json params = request.value("params", Json::object());
+        if (method == "get_graph_instances") {
+            result(id, graphRead());
+            return;
+        }
+        if (method == "get_frame_plan") {
+            ++frame_plan_reads;
+            result(id, framePlan());
+            return;
+        }
+        if (method == "get_graph_catalog" || method == "get_live_inputs") {
+            result(id, method == "get_graph_catalog"
+                           ? Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
+                                  {"modules", Json::array()}}
+                           : Json{{"inputs", Json::array()}});
+            return;
+        }
         if (method == "get_status") {
             Json reading = status(state.c_str(), game_frame);
             result(id, reading);
@@ -293,9 +364,11 @@ struct Rig {
     OutlinerTree &outliner = *window.outliner_;
     InspectorWidget &inspector = *window.inspector_;
 
-    explicit Rig(std::string state = "playing", bool knows_runtime_objects = true) {
+    explicit Rig(std::string state = "playing", bool knows_runtime_objects = true,
+                 int graph_node_count = 4) {
         engine.state = std::move(state);
         engine.knows_runtime_objects = knows_runtime_objects;
+        engine.graph_node_count = graph_node_count;
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -640,6 +713,188 @@ TEST_CASE("PM-3c a Studio attached to an engine in the edit state asks for no ru
     rig.readStatus();
     REQUIRE(rig.pumpUntil([&] { return rig.runtimeRow() != nullptr; }));
     CHECK(rig.window.runtime_outliner_->readTimer()->isActive());
+}
+
+TEST_CASE("FP-1 MainWindow follows the hub only while its panel is visible", "[fp1]") {
+    Rig rig;
+    auto *graph = static_cast<GraphCanvasWidget *>(
+        rig.named<QWidget>("pelican.graphCanvas"));
+    auto *plan = static_cast<FramePlanWidget *>(
+        rig.named<QWidget>("pelican.framePlan"));
+    REQUIRE(graph != nullptr);
+    REQUIRE(plan != nullptr);
+    auto *graph_dock = rig.named<QDockWidget>("pelican.graphDock");
+    auto *plan_dock = rig.named<QDockWidget>("pelican.framePlanDock");
+    REQUIRE(graph_dock != nullptr);
+    REQUIRE(plan_dock != nullptr);
+    graph_dock->show();
+    graph_dock->raise();
+    plan_dock->hide();
+    REQUIRE(rig.pumpUntil([&] {
+        return graph->scene().property("pelicanGraphNodeCount").toInt() >= 2;
+    }));
+    auto node = [&](const QString &name) -> QGraphicsItem * {
+        for (auto *item : graph->scene().items())
+            if (item->data(NodeGraphNameRole).toString() == name &&
+                item->data(NodeGraphItemKindRole).toString() == QLatin1String{GraphCanvasNodeItem})
+                return item;
+        return nullptr;
+    };
+    auto *graph_view = graph->findChild<QGraphicsView *>(
+        QStringLiteral("pelican.graphCanvasView"));
+    REQUIRE(graph_view != nullptr);
+    auto click_node = [&](const QString &name) {
+        CAPTURE(name);
+        graph_dock->show();
+        graph_dock->raise();
+        QApplication::processEvents();
+        INFO("graph pick: " << name.toStdString());
+        REQUIRE(rig.pumpUntil([&] { return node(name) != nullptr; }));
+        auto *item = node(name);
+        REQUIRE(item != nullptr);
+        const QPointF point = item->sceneBoundingRect().center();
+        CAPTURE(name, point);
+        QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+        press.setScenePos(point);
+        press.setButton(Qt::LeftButton);
+        press.setButtons(Qt::LeftButton);
+        QApplication::sendEvent(&graph->scene(), &press);
+        QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+        release.setScenePos(point);
+        release.setButton(Qt::LeftButton);
+        QApplication::sendEvent(&graph->scene(), &release);
+        if (graph->scene().property("pelicanGraphSelectedNode").toString() != name)
+            rig.pumpUntil([&] {
+                return graph->scene().property("pelicanGraphSelectedNode").toString() == name;
+            });
+        REQUIRE(graph->scene().property("pelicanGraphSelectedNode").toString() == name);
+        rig.pumpFor(30);
+        CAPTURE(static_cast<int>(rig.window.selection_hub_.front()),
+                rig.window.selection_hub_.intent(), rig.window.selection_hub_.revision());
+        REQUIRE(rig.window.selection_hub_.front() == SelectionFront::graph_node);
+        REQUIRE(rig.window.selection_hub_.graphNode().has_value());
+        REQUIRE(rig.window.selection_hub_.graphNode()->id == name.toStdString());
+    };
+    auto *check = rig.named<QCheckBox>("pelican.framePlanFollowGraph");
+    auto *status = rig.named<QLabel>("pelican.framePlanFollowStatus");
+    auto *target = rig.named<QComboBox>("pelican.framePlanTarget");
+    REQUIRE(check != nullptr);
+    REQUIRE(status != nullptr);
+    REQUIRE(target != nullptr);
+    plan_dock->show();
+    plan_dock->raise();
+    check->setChecked(true);
+    // It's Studio's setting: the engine's set_layout refuses anything in
+    // frame_plan but a placement per graph, so the project's layout stays clean.
+    {
+        const auto placements = graph->scene().layoutMember("frame_plan");
+        CHECK((!placements.is_object() || !placements.contains("follow_graph")));
+    }
+    CHECK(rig.window.user_settings_->value(QStringLiteral("frame_plan/follow_graph")).toBool());
+    REQUIRE(rig.pumpUntil([&] { return plan->followGraph() && !target->isEnabled(); }));
+    INFO("initial Frame Plan reads=" << rig.engine.frame_plan_reads
+         << ", status=" << status->toolTip().toStdString()
+         << ", plan status=" << rig.named<QLabel>("pelican.framePlanStatus")->toolTip().toStdString());
+    REQUIRE(rig.pumpUntil([&] {
+        return plan->property("pelicanFramePlanPopulateCount").toInt() > 0;
+    }));
+    const int plan_reads = rig.engine.frame_plan_reads;
+    const int populated = plan->property("pelicanFramePlanPopulateCount").toInt();
+
+    plan_dock->hide();
+    click_node(QStringLiteral("first"));
+    CHECK(status->toolTip().contains(QStringLiteral("No Graph node picked")));
+    // The engine's read count also holds the Graph's own follow-up reads
+    // (UX-12c), so the populate count is what says the hidden panel kept still.
+    CHECK(plan->property("pelicanFramePlanPopulateCount").toInt() == populated);
+    CHECK(plan->property("pelicanFramePlanFollowDirty").toBool());
+    const int reads_before_new_plan = rig.engine.frame_plan_reads;
+    rig.engine.frame_plan_generation = 22;
+    graph->poll();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.frame_plan_reads > reads_before_new_plan; }));
+    plan->planChangedByCommit(22, 1);
+    click_node(QStringLiteral("second"));
+    CHECK(plan->property("pelicanFramePlanPopulateCount").toInt() == populated);
+    plan_dock->show();
+    plan_dock->raise();
+    REQUIRE(rig.pumpUntil([&] {
+        return status->toolTip().contains(QStringLiteral("second")) &&
+               status->toolTip().contains(QStringLiteral("passes"));
+    }));
+    CHECK(plan->followGraph());
+    CHECK(rig.engine.frame_plan_reads > plan_reads + 1);
+    CHECK(plan->property("pelicanFramePlanPopulateCount").toInt() > populated);
+    CHECK_FALSE(plan->property("pelicanFramePlanFollowDirty").toBool());
+    QApplication::processEvents();
+    auto *inspector_graph = rig.named<QWidget>("pelican.inspectorGraphPage");
+    auto *inspector_dock = rig.named<QDockWidget>("pelican.inspectorDock");
+    REQUIRE(inspector_graph != nullptr);
+    REQUIRE(inspector_dock != nullptr);
+    inspector_dock->show();
+    inspector_dock->raise();
+    REQUIRE(rig.pumpUntil([&] { return !inspector_graph->isHidden(); }));
+
+    int before_pick = plan->property("pelicanFramePlanPopulateCount").toInt();
+    click_node(QStringLiteral("first"));
+    REQUIRE(rig.pumpUntil([&] { return status->toolTip().contains(QStringLiteral("first")); }));
+    CHECK(plan->property("pelicanFramePlanPopulateCount").toInt() == before_pick + 1);
+    before_pick = plan->property("pelicanFramePlanPopulateCount").toInt();
+    click_node(QStringLiteral("first"));
+    CHECK(plan->property("pelicanFramePlanPopulateCount").toInt() == before_pick);
+
+    click_node(QStringLiteral("value_a"));
+    REQUIRE(rig.pumpUntil([&] {
+        return status->toolTip().contains(QStringLiteral("value_a")) &&
+               status->toolTip().contains(QStringLiteral("0 passes"));
+    }));
+    before_pick = plan->property("pelicanFramePlanPopulateCount").toInt();
+    click_node(QStringLiteral("value_b"));
+    REQUIRE(rig.pumpUntil([&] { return status->toolTip().contains(QStringLiteral("value_b")); }));
+    CHECK(status->toolTip().contains(QStringLiteral("0 passes")));
+    CHECK(plan->property("pelicanFramePlanPopulateCount").toInt() == before_pick);
+    CHECK_FALSE(inspector_graph->isHidden());
+
+    rig.click(rig.row(QStringLiteral("Cube")));
+    rig.pumpFor(30);
+    CHECK(status->toolTip().contains(QStringLiteral("No Graph node picked")));
+    CHECK(inspector_graph->isHidden());
+
+    click_node(QStringLiteral("first"));
+    REQUIRE(rig.pumpUntil([&] { return status->toolTip().contains(QStringLiteral("first")); }));
+    plan->showPlanNode(QStringLiteral("second"));
+    CHECK_FALSE(plan->followGraph());
+    CHECK(rig.window.statusBar()->currentMessage().contains(QStringLiteral("Follow Graph turned off")));
+}
+
+TEST_CASE("FP-1 Follow Graph full refresh timing at 163 Graph nodes", "[fp1]") {
+    Rig rig{"playing", true, 163};
+    auto *graph = rig.window.graph_canvas_;
+    auto *plan = rig.window.frame_plan_;
+    auto *graph_dock = rig.window.docks_[MainWindow::GraphDock];
+    auto *plan_dock = rig.window.docks_[MainWindow::FramePlanDock];
+    graph_dock->hide();
+    plan_dock->show();
+    plan_dock->raise();
+    rig.named<QCheckBox>("pelican.framePlanFollowGraph")->setChecked(true);
+    REQUIRE(rig.pumpUntil([&] {
+        return graph->model().nodes().size() == 163 &&
+               plan->property("pelicanFramePlanPopulateCount").toInt() > 0;
+    }));
+    std::vector<double> milliseconds;
+    GuiTrace::owner = &milliseconds;
+    GuiTrace::sink = [](void *owner, const char *stage, std::int64_t begin,
+                        std::int64_t end, double, double) {
+        if (QLatin1String{stage} == QLatin1String{"frame_plan.follow_graph"})
+            static_cast<std::vector<double> *>(owner)->push_back((end - begin) / 1.0e6);
+    };
+    rig.window.selection_hub_.pickedGraphNode(GraphNodeRef{.id = "node_100"});
+    rig.pumpUntil([&] { return !milliseconds.empty(); });
+    GuiTrace::sink = nullptr;
+    GuiTrace::owner = nullptr;
+    REQUIRE(milliseconds.size() == 1);
+    WARN("FP-1 frame_plan.follow_graph at 163 Graph nodes: " << milliseconds.front() << " ms");
+    CHECK(rig.named<QLabel>("pelican.framePlanFollowStatus")->toolTip().contains(
+        QStringLiteral("node_100")));
 }
 
 TEST_CASE("PM-3c an engine from before RO-1 is asked once and shows no runtime rows",
