@@ -30216,6 +30216,201 @@ TEST_CASE("GT-1 pass-input designated lines are not tie candidates",
     (void)f.model.takeRpcRequests();
 }
 
+TEST_CASE("GT-1 the first crossed scope owns a mixed-scope tie",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    ZoneHarness h;
+    h.document["nodes"].push_back({{"id", "right"}, {"op", "value.add"},
+        {"inputs", {{"b", {{"node", "a"}, {"port", "value"}}}}},
+        {"outputs", {"value"}}});
+    h.document["layout"] = {{"nodes", {{"a", {{"x", 0}, {"y", 0}}},
+        {"curve", {{"x", 0}, {"y", 200}}}, {"right", {{"x", 400}, {"y", 0}}},
+        {"steps", {{"x", 1100}, {"y", 900}}}}}};
+    h.document["definitions"]["first"]["layout"] = {{"nodes", {
+        {"target", {{"x", 30}, {"y", 40}}}, {"a", {{"x", 30}, {"y", 200}}},
+        {"sum", {{"x", 360}, {"y", 100}}}}}};
+    h.open();
+    h.scene.repopulate();
+    QGraphicsView view{&h.scene};
+    view.resize(1400, 1000);
+    view.show();
+    QCoreApplication::processEvents();
+    std::vector<QPointF> cut;
+    for (QGraphicsItem *item : std::array<QGraphicsItem *, 4>{
+             edgeItem(h.scene, "a", "value", "steps", "target"),
+             edgeItem(h.scene, "a", "value", "right", "b"),
+             scopedEdge(h.scene, "first", "target", "value", "sum", "a"),
+             scopedEdge(h.scene, "first", "a", "value", "sum", "b")}) {
+        auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+        REQUIRE(line != nullptr);
+        const QPointF middle = line->mapToScene(line->path().pointAtPercent(0.5));
+        cut.push_back(middle + QPointF{0, -40});
+        cut.push_back(middle + QPointF{0, 40});
+    }
+    const auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButton button,
+                          Qt::MouseButtons buttons) {
+        const QPoint local = view.mapFromScene(at);
+        QMouseEvent event{type, QPointF{local}, QPointF{view.viewport()->mapToGlobal(local)},
+                          button, buttons, Qt::ShiftModifier};
+        QApplication::sendEvent(view.viewport(), &event);
+    };
+    send(QEvent::MouseButtonPress, cut.front(), Qt::RightButton, Qt::RightButton);
+    for (std::size_t i = 1; i < cut.size(); ++i)
+        send(QEvent::MouseMove, cut[i], Qt::NoButton, Qt::RightButton);
+    send(QEvent::MouseButtonRelease, cut.back(), Qt::RightButton, Qt::NoButton);
+    INFO("mixed-scope notice " << h.model.editNotice().message);
+    REQUIRE(h.scene.layout().ties.size() == 1);
+    CHECK(h.scene.layout().ties[0].edges.size() == 2);
+    CHECK(h.scene.layout("first").ties.empty());
+    const std::set<GraphCanvasEdgeKey> expected{{"steps", "target"}, {"right", "b"}};
+    CHECK(std::set<GraphCanvasEdgeKey>(h.scene.layout().ties[0].edges.begin(),
+                                      h.scene.layout().ties[0].edges.end()) == expected);
+    QEventLoop settle;
+    QTimer::singleShot(GraphCanvasScene::GraphCanvasLayoutDebounceMs + 50,
+                       &settle, &QEventLoop::quit);
+    settle.exec();
+    const Json ops = h.commit();
+    CHECK(h.document.at("layout").at("ties").size() == 1);
+    CHECK_FALSE(h.document.at("definitions").at("first").at("layout").contains("ties"));
+}
+
+TEST_CASE("GT-1 read-only instance bodies and folded views never start a tie",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    SECTION("an instance body whose model cannot edit") {
+        auto document = zoneDocument(true);
+        document["nodes"].back() = {{"id", "steps"}, {"op", "graph.instance"},
+                                    {"definition", "first"}, {"outputs", {"out"}}};
+        ZoneHarness h{document};
+        h.open();
+        REQUIRE(h.model.selectScope("first"));
+        h.scene.repopulate();
+        h.model.setConnected(false);
+        REQUIRE_FALSE(h.model.canEdit());
+        QGraphicsView view{&h.scene};
+        view.resize(1000, 800);
+        view.show();
+        auto *line = dynamic_cast<QGraphicsPathItem *>(
+            scopedEdge(h.scene, "first", "target", "value", "sum", "a"));
+        REQUIRE(line != nullptr);
+        const QPointF middle = line->mapToScene(line->path().pointAtPercent(0.5));
+        const auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButton button,
+                              Qt::MouseButtons buttons) {
+            const QPoint local = view.mapFromScene(at);
+            QMouseEvent event{type, QPointF{local}, QPointF{view.viewport()->mapToGlobal(local)},
+                              button, buttons, Qt::ShiftModifier};
+            QApplication::sendEvent(view.viewport(), &event);
+        };
+        send(QEvent::MouseButtonPress, middle + QPointF{0, -40}, Qt::RightButton, Qt::RightButton);
+        send(QEvent::MouseMove, middle + QPointF{0, 40}, Qt::NoButton, Qt::RightButton);
+        CHECK(gt1PreviewCount(h.scene) == 0);
+        CHECK_FALSE(h.scene.dragging());
+        send(QEvent::MouseButtonRelease, middle + QPointF{0, 40}, Qt::RightButton, Qt::NoButton);
+        CHECK(h.scene.layout("first").ties.empty());
+        CHECK(h.model.takeRpcRequests().empty());
+    }
+    SECTION("a folded implementation") {
+        Gf1aProject project{gf1aFilters()};
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        openGf1a(model, scene, project, gf1aRead(), gf1aPlan(), "");
+        REQUIRE(scene.enterFolded("feature:bloom"));
+        REQUIRE(model.foldedView());
+        QGraphicsView view{&scene};
+        view.resize(1000, 800);
+        view.show();
+        const auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButton button,
+                              Qt::MouseButtons buttons) {
+            const QPoint local = view.mapFromScene(at);
+            QMouseEvent event{type, QPointF{local}, QPointF{view.viewport()->mapToGlobal(local)},
+                              button, buttons, Qt::ShiftModifier};
+            QApplication::sendEvent(view.viewport(), &event);
+        };
+        send(QEvent::MouseButtonPress, {100, 100}, Qt::RightButton, Qt::RightButton);
+        send(QEvent::MouseMove, {300, 300}, Qt::NoButton, Qt::RightButton);
+        CHECK(gt1PreviewCount(scene) == 0);
+        send(QEvent::MouseButtonRelease, {300, 300}, Qt::RightButton, Qt::NoButton);
+        CHECK(model.takeRpcRequests().empty());
+    }
+}
+
+TEST_CASE("GT-1 folded-canvas derived lines are excluded from root-coordinate ties",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    f.model.refresh();
+    for (const auto &request : f.model.takeRpcRequests()) {
+        if (request.method == "get_graph_instances")
+            f.model.receiveRpcResult(request.request_id, context(f.document).dump());
+        else if (request.method == "get_frame_plan")
+            f.model.receiveRpcResult(request.request_id, gl1bPlan().dump());
+        else if (request.method == "get_graph_catalog")
+            f.model.receiveRpcResult(request.request_id,
+                Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
+                     {"modules", Json::array()}}.dump());
+        else if (request.method == "get_live_inputs")
+            f.model.receiveRpcResult(request.request_id, Json{{"inputs", Json::array()}}.dump());
+    }
+    f.scene.repopulate();
+    REQUIRE(std::ranges::any_of(itemsOfKind(f.scene, GraphCanvasNodeItem), [](QGraphicsItem *item) {
+        return item->data(GraphCanvasDerivedRole).toBool();
+    }));
+    auto *derived = edgeItem(f.scene, "clock", "value", "left", "bias");
+    auto *kept = edgeItem(f.scene, "clock", "value", "left", "gain");
+    REQUIRE(derived != nullptr);
+    REQUIRE(kept != nullptr);
+    derived->setData(GraphCanvasDerivedRole, true);
+    f.document["nodes"].push_back({{"id", "right"}, {"op", "value.add"},
+        {"inputs", {{"b", {{"node", "clock"}, {"port", "value"}}}}},
+        {"outputs", {"value"}}});
+    f.model.refresh();
+    answer(f.model, f.document);
+    f.scene.repopulate();
+    derived = edgeItem(f.scene, "clock", "value", "left", "bias");
+    kept = edgeItem(f.scene, "clock", "value", "left", "gain");
+    auto *second = edgeItem(f.scene, "clock", "value", "right", "b");
+    derived->setData(GraphCanvasDerivedRole, true);
+    const auto cut_at = [&](QGraphicsPathItem *line) {
+        const QPointF middle = line->mapToScene(line->path().pointAtPercent(0.5));
+        return std::pair{middle + QPointF{0, -40}, middle + QPointF{0, 40}};
+    };
+    std::vector<QPointF> cut;
+    for (QGraphicsPathItem *line : {derived, kept, second}) {
+        const auto [top, bottom] = cut_at(line);
+        cut.push_back(top);
+        cut.push_back(bottom);
+    }
+    for (QPointF &point : cut)
+        point = f.view.mapToScene(f.view.mapFromScene(point));
+    std::vector<QPointF> crossings;
+    for (QGraphicsPathItem *line : {kept, second}) {
+        bool found = false;
+        for (std::size_t i = 1; i < cut.size() && !found; ++i)
+            for (const QPolygonF &polygon : line->path().toSubpathPolygons()) {
+                for (int j = 1; j < polygon.size() && !found; ++j) {
+                    QPointF at;
+                    found = graphCanvasSegmentsCross(cut[i - 1], cut[i],
+                        line->mapToScene(polygon[j - 1]), line->mapToScene(polygon[j]), &at);
+                    if (found) crossings.push_back(at);
+                }
+                if (found) break;
+            }
+        REQUIRE(found);
+    }
+    f.press(cut.front());
+    for (std::size_t i = 1; i < cut.size(); ++i) f.move(cut[i]);
+    f.release(cut.back());
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    REQUIRE(f.scene.layout().ties[0].edges.size() == 2);
+    const QPointF expected = (crossings[0] + crossings[1]) / 2.0;
+    CHECK(std::abs(f.scene.layout().ties[0].position.x() - expected.x()) < 1e-6);
+    CHECK(std::abs(f.scene.layout().ties[0].position.y() - expected.y()) < 1e-6);
+    CHECK(std::set<GraphCanvasEdgeKey>(f.scene.layout().ties[0].edges.begin(),
+                                      f.scene.layout().ties[0].edges.end()) ==
+          std::set<GraphCanvasEdgeKey>{{"left", "gain"}, {"right", "b"}});
+    (void)f.model.takeRpcRequests();
+}
+
 TEST_CASE("CB-1 a handled Bezier graph is stable across a full scene rebuild",
           "[devstudio][graph-canvas][scene][cb1]") {
     (void)application();
