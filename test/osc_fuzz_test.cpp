@@ -285,8 +285,8 @@ void runFuzz(std::size_t count, std::uint64_t seed) {
         }
     }
     fuzz.input.releaseDue(now + (20ULL << 32));
-    if (fuzz.input.snapshotJson().at("scheduled") != 0)
-        FAIL("scheduled queue did not empty after time passed");
+    // ctest runs with -w NoAssertions, so the clean path needs an assertion too.
+    CHECK(fuzz.input.snapshotJson().at("scheduled").get<int>() == 0);
 }
 } // namespace
 
