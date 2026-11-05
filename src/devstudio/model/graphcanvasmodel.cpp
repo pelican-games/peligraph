@@ -6128,7 +6128,20 @@ std::vector<GraphCanvasFoldedNode> GraphCanvasModel::foldedNodes() const {
         return featurePassNodes(folded_trail_.back().feature);
     }
     if (!domainShown("render")) return {};
-    return rootFoldedNodes();
+    auto folded = rootFoldedNodes();
+    const auto *filter = activeGraphFilterDocument();
+    if (filter == nullptr) return folded;
+    // GF-1a, decision 2: a filter is ANDed with Render, never ORed. A feature
+    // fold is named by its project-local feature name; a pass fold is not a
+    // feature and no filter names it.
+    std::erase_if(folded, [&](const GraphCanvasFoldedNode &node) {
+        GraphFilterFacts facts;
+        facts.kind = node.feature_group ? GraphFilterFacts::Kind::folded_feature
+                                        : GraphFilterFacts::Kind::folded_other;
+        if (node.feature_group) facts.feature_name = featureShortName(node.feature);
+        return !graphFilterMatches(*filter, *graph_filters_read_.document, facts);
+    });
+    return folded;
 }
 
 std::vector<GraphCanvasDerivedEdge> GraphCanvasModel::derivedEdges() const {
@@ -7115,14 +7128,57 @@ bool GraphCanvasModel::takeCanvasDomainOfDocument() {
     return true;
 }
 
-bool GraphCanvasModel::nodeShown(std::string_view scope, const GraphCanvasNode &node) const {
-    // A graph.instance and a graph.loop are structure: whatever domain their
-    // body is in, they stay (opDomain answers nothing for graph.*).
-    if (!scope.empty() || folded_stash_) return true;
+bool GraphCanvasModel::nodeShownByDomain(const GraphCanvasNode &node) const {
     // SG-1: a canvas.output is a render pass as well -- the Render filter
     // shows it, and cuts the line into it with `← canvas (N)`.
     if (node.op == "canvas.output" && domainShown("render")) return true;
     return domainShown(opDomain(node.op));
+}
+
+const GraphFilter *GraphCanvasModel::activeGraphFilterDocument() const {
+    if (!active_graph_filter_ || !graph_filters_read_.document) return nullptr;
+    return findGraphFilter(*graph_filters_read_.document, *active_graph_filter_);
+}
+
+void GraphCanvasModel::setGraphFilters(GraphFiltersRead read) {
+    graph_filters_read_ = std::move(read);
+    if (!active_graph_filter_) return;
+    // GF-1a, decision 3: a re-read keeps the chosen filter while its id is
+    // still in the file; a removed id, or a file that is now invalid or gone,
+    // falls back to All. The document may also have changed what the same id
+    // matches, so the canvas redraws on every re-read while one is chosen.
+    if (!graph_filters_read_.document ||
+        findGraphFilter(*graph_filters_read_.document, *active_graph_filter_) == nullptr)
+        active_graph_filter_.reset();
+    ++report_revision_;
+}
+
+bool GraphCanvasModel::setActiveGraphFilter(std::optional<std::string> id) {
+    if (id && (!graph_filters_read_.document ||
+               findGraphFilter(*graph_filters_read_.document, *id) == nullptr))
+        return false;
+    if (active_graph_filter_ == id) return false;
+    active_graph_filter_ = std::move(id);
+    ++report_revision_;
+    return true;
+}
+
+bool GraphCanvasModel::nodeShown(std::string_view scope, const GraphCanvasNode &node) const {
+    // A graph.instance and a graph.loop are structure: whatever domain their
+    // body is in, they stay (opDomain answers nothing for graph.*).
+    if (!scope.empty() || folded_stash_) return true;
+    if (!nodeShownByDomain(node)) return false;
+    const auto *filter = activeGraphFilterDocument();
+    if (filter == nullptr) return true;
+    // GF-1a, decision 2: every other root node is named by the filter or is
+    // not drawn. The structure stays; a canvas.output the Render box shows is
+    // still the filter's to hide.
+    if (node.op == "graph.instance" || node.op == "graph.loop") return true;
+    GraphFilterFacts facts;
+    facts.kind = GraphFilterFacts::Kind::node;
+    facts.node_id = node.id;
+    facts.op = node.op;
+    return graphFilterMatches(*filter, *graph_filters_read_.document, facts);
 }
 
 std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {
@@ -7131,9 +7187,14 @@ std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {
     const auto drawn = nodes({});
     std::map<std::string, std::string, std::less<>> domain_of;
     std::set<std::string, std::less<>> hidden;
+    std::set<std::string, std::less<>> shown;
     for (const auto &node : drawn) {
         domain_of[node.id] = opDomain(node.op);
-        if (!nodeShown({}, node)) hidden.insert(node.id);
+        // GF-1a, decision 2: a stub says "the Show boxes hide this". A node
+        // the chosen filter hides instead is not given one, and its lines are
+        // not drawn: a filter narrows the canvas rather than cutting it.
+        if (!nodeShownByDomain(node)) hidden.insert(node.id);
+        else if (nodeShown({}, node)) shown.insert(node.id);
     }
     const auto all = edges({});
     struct Cut {
@@ -7152,12 +7213,13 @@ std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {
         return cuts.back();
     };
     for (const auto &edge : all) {
-        const bool from_hidden = hidden.contains(edge.from_node);
-        const bool to_hidden = hidden.contains(edge.to_node);
-        if (from_hidden == to_hidden) continue;
-        if (from_hidden) {
-            // The hidden producer and the hidden nodes of its domain it
-            // reads from, however far up.
+        const bool from_shown = shown.contains(edge.from_node);
+        const bool to_shown = shown.contains(edge.to_node);
+        if (from_shown == to_shown) continue;
+        if (!from_shown) {
+            // A hidden producer the Show boxes hide, and the hidden nodes of
+            // its domain it reads from, however far up.
+            if (!hidden.contains(edge.from_node)) continue;
             const auto domain = domain_of[edge.from_node];
             auto &entry = cut(edge.to_node, edge.to_port, true, domain);
             std::vector<std::string> stack{edge.from_node};
@@ -7172,6 +7234,7 @@ std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {
                         stack.push_back(upstream.from_node);
             }
         } else {
+            if (!hidden.contains(edge.to_node)) continue;
             cut(edge.from_node, edge.from_port, false, domain_of[edge.to_node])
                 .nodes.insert(edge.to_node);
         }

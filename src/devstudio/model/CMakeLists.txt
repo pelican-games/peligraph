@@ -18,6 +18,9 @@ add_library(pelican_studio_inspector_model STATIC
     graphattachmentmodel.hpp
     graphcanvasmodel.cpp
     graphcanvasmodel.hpp
+    # GF-1a: a project's graph_filters.json, read strictly and evaluated.
+    graphfilters.cpp
+    graphfilters.hpp
     # UX-8: a curve's keys, a playback's fields, buffer ports, packed scalars.
     graphcanvasvalues.cpp
     # SDK-2a: the one strict reading of a value.curve's keys and its sampler.

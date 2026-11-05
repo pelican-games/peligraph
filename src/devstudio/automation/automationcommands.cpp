@@ -1861,9 +1861,13 @@ AutomationReply commandAction(const AutomationHost &host,
     const bool was_checked = entry.action->isChecked();
     // Fired where it lives, with no popup in between: opening the menu would
     // enter a modal event loop, and this command has a reply to finish writing.
+    // The action can delete itself: GF-1a's Reload rebuilds the menu that owns
+    // it once events run. The reply then describes it as it was when fired.
+    const QPointer<QAction> alive{entry.action};
+    const QJsonObject fired = actionJson(entry);
     entry.action->trigger();
     QCoreApplication::processEvents();
-    QJsonObject result = actionJson(entry);
+    QJsonObject result = alive ? actionJson(entry) : fired;
     result.insert(QStringLiteral("was_checked"), was_checked);
     result.insert(QStringLiteral("triggered"), true);
     return AutomationReply::success(result);

@@ -35,6 +35,7 @@
 #include <QAbstractItemView>
 #include <QAbstractSpinBox>
 #include <QAction>
+#include <QActionGroup>
 #include <QBrush>
 #include <QByteArray>
 #include <QCheckBox>
@@ -8538,6 +8539,11 @@ struct GraphCanvasWidget::Impl {
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
     std::vector<std::pair<std::string, QCheckBox *>> domain_boxes;
+    // GF-1a: the project's filter menu, beside Show. It is hidden while the
+    // project has no graph_filters.json and says "invalid" when one is bad.
+    QToolButton *graph_filter_button = nullptr;
+    QMenu *graph_filter_menu = nullptr;
+    QActionGroup *graph_filter_group = nullptr;
     // Decision 4: the line an edit inside a folded view gets, with its
     // "Expand to edit…" link (the named action), and the owner's two flows.
     QLabel *folded_notice = nullptr;
@@ -8877,6 +8883,19 @@ struct GraphCanvasWidget::Impl {
                 dispatch();
             });
         }
+        // GF-1a: the project's filter menu. With no graph_filters.json the
+        // button is hidden; a bad file leaves it on the row saying so.
+        graph_filter_button = new QToolButton(&view);
+        graph_filter_button->setObjectName(QStringLiteral("pelican.graphCanvasFilter"));
+        graph_filter_button->setPopupMode(QToolButton::InstantPopup);
+        graph_filter_button->setAutoRaise(true);
+        graph_filter_button->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
+        graph_filter_button->setMaximumWidth(210);
+        graph_filter_button->hide();
+        graph_filter_menu = new QMenu(&view);
+        graph_filter_menu->setObjectName(QStringLiteral("pelican.graphCanvasFilterMenu"));
+        graph_filter_button->setMenu(graph_filter_menu);
+        controls_tools->addWidget(graph_filter_button);
         // The stretch comes before Auto layout / Fit view / Recompute once,
         // which are inserted after it below and so sit at the row's right.
         controls_tools->addStretch(1);
@@ -11238,7 +11257,7 @@ struct GraphCanvasWidget::Impl {
         const auto id = std::exchange(pending_reveal, {});
         pending_reveal_failed = {};
         model.selectScope({});
-        showDomainOf({}, id);
+        ensureNodeVisible({}, id);
         scene->repopulate();
         scene->selectNode(id);
         syncScopeControls();
@@ -11578,15 +11597,144 @@ struct GraphCanvasWidget::Impl {
         syncDomainFilter();
     }
 
+    // GF-1a: the filter menu, rebuilt from the project's file. The button
+    // keeps its width; a long label is elided, and its whole text is in the
+    // tooltip and the accessible name.
+    void rebuildGraphFilterMenu() {
+        if (graph_filter_menu == nullptr || graph_filter_button == nullptr) return;
+        graph_filter_menu->clear();
+        delete graph_filter_group;
+        graph_filter_group = new QActionGroup(graph_filter_menu);
+        graph_filter_group->setExclusive(true);
+        const auto &read = model.graphFilters();
+        const auto addReload = [this] {
+            graph_filter_menu->addSeparator();
+            auto *reload = graph_filter_menu->addAction(QObject::tr("Reload"));
+            reload->setObjectName(QStringLiteral("pelican.graphCanvasFilter.reload"));
+            // The re-read rebuilds this menu, which deletes the action being
+            // activated; do it from the event loop, as a stub's press does.
+            QObject::connect(
+                reload, &QAction::triggered, &guard, [this] { reloadGraphFilters(); },
+                Qt::QueuedConnection);
+        };
+        if (!read.document) {
+            if (!read.error.empty()) {
+                auto *invalid =
+                    graph_filter_menu->addAction(QObject::tr("graph_filters.json is invalid"));
+                invalid->setObjectName(QStringLiteral("pelican.graphCanvasFilter.invalid"));
+                invalid->setEnabled(false);
+                invalid->setToolTip(qtext(read.error));
+                addReload();
+            }
+            return;
+        }
+        auto *all = graph_filter_menu->addAction(QObject::tr("All"));
+        all->setObjectName(QStringLiteral("pelican.graphCanvasFilter.all"));
+        all->setCheckable(true);
+        all->setChecked(!model.activeGraphFilter().has_value());
+        graph_filter_group->addAction(all);
+        QObject::connect(all, &QAction::triggered, &guard, [this] {
+            selectGraphFilter(std::nullopt);
+        });
+        // GF-1b adds the hierarchy to the menu; this first slice reads
+        // children but offers only the top-level filters, in file order.
+        for (const auto &filter : read.document->filters) {
+            auto *action = graph_filter_menu->addAction(qtext(filter.label));
+            action->setObjectName(QStringLiteral("pelican.graphCanvasFilter.") + qtext(filter.id));
+            action->setCheckable(true);
+            action->setChecked(model.activeGraphFilter() == filter.id);
+            action->setToolTip(qtext(filter.label));
+            graph_filter_group->addAction(action);
+            QObject::connect(action, &QAction::triggered, &guard,
+                             [this, id = filter.id] { selectGraphFilter(id); });
+        }
+        addReload();
+    }
+
+    void syncGraphFilterControls() {
+        if (graph_filter_button == nullptr) return;
+        const auto &read = model.graphFilters();
+        const auto elide = [this](const QString &text) {
+            const QFontMetrics metrics{graph_filter_button->font()};
+            return metrics.elidedText(text, Qt::ElideRight, metrics.averageCharWidth() * 24);
+        };
+        if (!read.document) {
+            if (read.error.empty()) {
+                graph_filter_button->hide();
+            } else {
+                graph_filter_button->show();
+                graph_filter_button->setText(elide(QObject::tr("Filter: invalid")));
+                graph_filter_button->setToolTip(qtext(read.error));
+                graph_filter_button->setAccessibleName(QObject::tr("Graph filter: invalid"));
+            }
+        } else {
+            const auto *filter = model.activeGraphFilter()
+                                     ? findGraphFilter(*read.document, *model.activeGraphFilter())
+                                     : nullptr;
+            const auto label = filter != nullptr ? qtext(filter->label) : QObject::tr("All");
+            const auto text = QObject::tr("Filter: %1").arg(label);
+            graph_filter_button->show();
+            graph_filter_button->setText(elide(text));
+            graph_filter_button->setToolTip(text);
+            graph_filter_button->setAccessibleName(text);
+        }
+        if (graph_filter_group != nullptr) {
+            for (QAction *action : graph_filter_group->actions()) {
+                const QSignalBlocker block{action};
+                action->setChecked(model.activeGraphFilter() ==
+                                   action->objectName()
+                                       .mid(QStringLiteral("pelican.graphCanvasFilter.").size())
+                                       .toStdString());
+            }
+            if (!graph_filter_group->actions().isEmpty()) {
+                const QSignalBlocker block{graph_filter_group->actions().front()};
+                graph_filter_group->actions().front()->setChecked(
+                    !model.activeGraphFilter().has_value());
+            }
+        }
+    }
+
+    void selectGraphFilter(std::optional<std::string> id) {
+        if (!model.setActiveGraphFilter(std::move(id))) return;
+        syncGraphFilterControls();
+        // dispatch() synchronizes, which re-reads the UI nodes and rebuilds
+        // this menu -- deleting the action being activated. Leave the state
+        // set and draw from the event loop, as Reload does.
+        QMetaObject::invokeMethod(&guard, [this] { dispatch(); }, Qt::QueuedConnection);
+    }
+
+    // GF-1a, decision 3: Reload reads graph_filters.json again. The chosen
+    // filter survives a re-read while its id does; a removed id, an invalid
+    // file and a missing one all fall back to All.
+    void refreshGraphFilters() {
+        model.setGraphFilters(project_root.empty() ? GraphFiltersRead{}
+                                                   : readGraphFilters(project_root));
+        rebuildGraphFilterMenu();
+        syncGraphFilterControls();
+    }
+
+    void reloadGraphFilters() {
+        const bool had_active = model.activeGraphFilter().has_value();
+        const bool had_document = model.graphFilters().document.has_value();
+        refreshGraphFilters();
+        if (had_active || had_document != model.graphFilters().document.has_value()) dispatch();
+    }
+
     // GL-1, decision 5: a root node another panel reveals is drawn, whatever
-    // the filter held -- its domain is added to it.
-    void showDomainOf(const std::string &scope, const std::string &id) {
+    // Show and the filter held -- its domain is added, and a filter that
+    // would still hide it is cleared.
+    void ensureNodeVisible(const std::string &scope, const std::string &id) {
         if (!scope.empty()) return;
         const auto nodes = model.nodes({});
         const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
-        if (found != nodes.end() && !model.nodeShown({}, *found))
+        if (found == nodes.end()) return;
+        if (!model.nodeShown({}, *found)) {
             model.setDomainShown(GraphCanvasModel::opDomain(found->op), true);
+            if (!model.nodeShown({}, *found))
+                (void)model.setActiveGraphFilter(std::nullopt);
+        }
         syncDomainFilter();
+        syncGraphFilterControls();
     }
 
     // GL-1, decision 5: the boxes say what the model shows (a stub adds a
@@ -12017,11 +12165,17 @@ struct GraphCanvasWidget::Impl {
         if (project_root.empty()) {
             model.setUiNodes({});
             ui_nodes_error = "no project is open";
+            model.setGraphFilters({});
+            rebuildGraphFilterMenu();
+            syncGraphFilterControls();
             return;
         }
         auto read = readProjectUiNodes(project_root);
         model.setUiNodes(std::move(read.nodes));
         ui_nodes_error = std::move(read.error);
+        // GF-1a: the same project read that lists UI nodes picks up a
+        // graph_filters.json edited since the last one.
+        refreshGraphFilters();
     }
 
     void syncUiNodeRow(const GraphCanvasNode *node) {
@@ -13802,15 +13956,14 @@ bool GraphCanvasWidget::revealPlanPass(const QString &pass) {
         return revealGraphNode(qtext(target.scope), qtext(target.node),
                                qtext(target.instance_path));
     const auto &id = target.node;
-    // The real root, with the domain the node is in shown.
+    // The real root, with the domain the node is in shown and a filter that
+    // would hide it cleared.
     model.selectScope({});
     const auto nodes = model.nodes({});
-    if (const auto graph = std::ranges::find(nodes, id, &GraphCanvasNode::id); graph != nodes.end()) {
-        if (!model.nodeShown({}, *graph))
-            model.setDomainShown(GraphCanvasModel::opDomain(graph->op), true);
-    } else {
+    if (std::ranges::any_of(nodes, [&](const GraphCanvasNode &drawn) { return drawn.id == id; }))
+        impl_->ensureNodeVisible({}, id);
+    else
         model.setDomainShown("render", true);
-    }
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();
@@ -13902,7 +14055,7 @@ bool GraphCanvasWidget::revealNode(const QString &node) {
             return drawn.id == id;
         }))
         return false;
-    impl_->showDomainOf({}, id);
+    impl_->ensureNodeVisible({}, id);
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();
@@ -13977,7 +14130,7 @@ bool GraphCanvasWidget::revealGraphNode(const QString &scope,
             std::ranges::find(offered, root_instance) != offered.end())
             model.watchInstance(root_instance);
     }
-    impl_->showDomainOf(model.currentScope(), id);
+    impl_->ensureNodeVisible(model.currentScope(), id);
     impl_->scene->repopulate();
     impl_->scene->selectNode(id);
     impl_->syncScopeControls();
@@ -14164,6 +14317,9 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
         impl_->edit_order.clear();
         // NB-1: another project's document decides Canvas again.
         impl_->model.followCanvasDomainOfDocument();
+        // GF-1a: a chosen filter is that project's; it goes even when the
+        // next project has a filter with the same id.
+        (void)impl_->model.setActiveGraphFilter(std::nullopt);
     }
     impl_->project_root = project_root;
     // NB-3: where the canvas nodes' pictures read their images and fonts.

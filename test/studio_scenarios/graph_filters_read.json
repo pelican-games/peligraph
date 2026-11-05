@@ -1,0 +1,177 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_filters_read",
+  "description": "GF-1a: a project's graph_filters.json adds a filter row to the Show line. With no file the row is not there; a file written before opening the project offers its filters, and choosing one narrows the root canvas to the nodes it names. Editing the file's label and pressing Reload keeps the chosen id and takes the label; an invalid file says so, clears the choice and keeps Reload; an empty valid file returns to All and puts the hidden nodes back.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the fixture has no graph_filters.json, so the Show row has no filter row",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "visible": false,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a person writes a project's graph_filters.json before opening it",
+      "file": "write",
+      "path": "{project}/graph_filters.json",
+      "text": "{\n  \"schema\": \"pelican.graph_filters\",\n  \"version\": 1,\n  \"categories\": [],\n  \"feature_categories\": {},\n  \"filters\": [\n    {\n      \"id\": \"left_only\",\n      \"label\": \"Left only\",\n      \"match\": {\n        \"node_ids\": [\n          \"left\"\n        ]\n      }\n    }\n  ]\n}\n"
+    },
+    {
+      "label": "open the untouched copy, so opening the project is a project switch",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the switched-to engine answers",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "open the project carrying the file",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the engine answers",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "turn on Value, so the clock is on the canvas before any filter",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "the clock is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the file's filters are offered, starting at All",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: All",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "choose Left only",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.left_only"
+    },
+    {
+      "label": "the button names the choice",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: Left only",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the matched node is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a node the filter does not name is not",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a picture of the narrowed canvas",
+      "cmd": "screenshot",
+      "path": "{artifacts}/filtered.png",
+      "name": "pelican.graphCanvasView",
+      "mode": "screen"
+    },
+    {
+      "label": "the file's label changes, as an editor would change it",
+      "file": "write",
+      "path": "{project}/graph_filters.json",
+      "text": "{\n  \"schema\": \"pelican.graph_filters\",\n  \"version\": 1,\n  \"categories\": [],\n  \"feature_categories\": {},\n  \"filters\": [\n    {\n      \"id\": \"left_only\",\n      \"label\": \"Published\",\n      \"match\": {\n        \"node_ids\": [\n          \"left\"\n        ]\n      }\n    }\n  ]\n}\n"
+    },
+    {
+      "label": "Reload is the explicit re-read",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.reload"
+    },
+    {
+      "label": "the same id keeps the choice and takes the new label",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: Published",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "an invalid file is reported instead of silently ignored",
+      "file": "write",
+      "path": "{project}/graph_filters.json",
+      "text": "{\"schema\": \"pelican.graph_filters\"}\n"
+    },
+    {
+      "label": "Reload reads it",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.reload"
+    },
+    {
+      "label": "the row says the file is invalid and no filter stays chosen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: invalid",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "a file with no filters is valid and falls back to All",
+      "file": "write",
+      "path": "{project}/graph_filters.json",
+      "text": "{\n  \"schema\": \"pelican.graph_filters\",\n  \"version\": 1,\n  \"categories\": [],\n  \"feature_categories\": {},\n  \"filters\": []\n}\n"
+    },
+    {
+      "label": "Reload reads it",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.reload"
+    },
+    {
+      "label": "the filter row is back at All, so the canvas is not narrowed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: All",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the node the filter had hidden is back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 30000
+    }
+  ]
+}

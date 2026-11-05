@@ -29051,3 +29051,407 @@ TEST_CASE("GC-1 a cut the engine refuses draws its line again",
     REQUIRE(line != nullptr);
     CHECK(line->isVisible());
 }
+
+// --- GF-1a: a project's graph_filters.json narrows the root canvas. The
+// filter is ANDed with Show: it hides what Show would have drawn, never the
+// other way round. A definition, a loop and an instance are structure and
+// stay; a folded feature the filter names stays whole, and entering it draws
+// its passes -- the filter does not narrow the inside of a fold.
+
+namespace {
+
+Json gf1aPlan() {
+    auto plan = gl1bPlan();
+    auto bloom = gl1bPass("bloom_down", 4, "engine", Json::array(), Json::array({"bloom_out"}));
+    bloom["provider_feature"] = "bloom";
+    plan["nodes"].push_back(std::move(bloom));
+    return plan;
+}
+
+Json gf1aRead() {
+    auto read = gl1bRead();
+    read["definitions"]["body"] = {
+        {"nodes", Json::array({{{"id", "inside"}, {"op", "value.add"},
+                                {"parameters", Json::object()}, {"outputs", Json::array()}}})},
+        {"outputs", Json::object()}};
+    read["nodes"].push_back({{"id", "body_instance"},
+                                         {"op", "graph.instance"},
+                                         {"definition", "body"},
+                                         {"parameters", Json::object()},
+                                         {"outputs", Json::array()}});
+    return read;
+}
+
+Json gf1aFilters() {
+    return {{"schema", "pelican.graph_filters"},
+            {"version", 1},
+            {"categories", Json::array({{{"id", "post"}, {"label", "Post"}}})},
+            {"feature_categories", {{"bloom", Json::array({"post"})}}},
+            {"filters", Json::array(
+                 {{{"id", "post"}, {"label", "Post"},
+                   {"match", {{"node_ids", Json::array({"blur"})},
+                              {"feature_categories", Json::array({"post"})}}}},
+                  {{"id", "only_bloomed"}, {"label", "Only bloomed"},
+                   {"match", {{"node_ids", Json::array({"bloomed"})}}},
+                   {"children", Json::array({{{"id", "nested"}, {"label", "Nested"},
+                                              {"match", Json::object()}}})}}})}};
+}
+
+struct Gf1aProject {
+    QTemporaryDir dir;
+    explicit Gf1aProject(const Json &filters) { write(filters); }
+    void write(const Json &filters) {
+        REQUIRE(dir.isValid());
+        std::ofstream{root() / "graph_filters.json"} << filters.dump(2);
+    }
+    [[nodiscard]] std::filesystem::path root() const {
+        return std::filesystem::path{dir.path().toStdString()};
+    }
+};
+
+void openGf1a(GraphCanvasModel &model, GraphCanvasScene &scene, const Gf1aProject &project,
+              const Json &read, const Json &plan, const std::string &active) {
+    model.setConnected(true);
+    for (int pass = 0; pass < 3; ++pass) {
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id, read.dump());
+            else if (request.method == "get_graph_catalog")
+                model.receiveRpcResult(
+                    request.request_id,
+                    Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
+                         {"modules", Json::array()}}
+                        .dump());
+            else if (request.method == "get_frame_plan")
+                model.receiveRpcResult(request.request_id, plan.dump());
+        }
+    }
+    model.setGraphFilters(PelicanStudio::readGraphFilters(project.root()));
+    REQUIRE(model.graphFilters().document.has_value());
+    if (!active.empty()) REQUIRE(model.setActiveGraphFilter(active));
+    scene.setModel(&model);
+}
+
+std::vector<std::string> gf1aShape(GraphCanvasScene &scene) {
+    std::vector<std::string> shape;
+    for (QGraphicsItem *item : scene.items()) {
+        const auto kind = item->data(PelicanStudio::NodeGraphItemKindRole).toString();
+        if (kind.isEmpty()) continue;
+        shape.push_back(kind.toStdString() + ":" +
+                        item->data(PelicanStudio::NodeGraphNameRole).toString().toStdString());
+    }
+    std::ranges::sort(shape);
+    return shape;
+}
+
+Json gf1aValueDocument() {
+    return {{"schema", "pelican.graph"},
+            {"version", 1},
+            {"outputs", Json::object()},
+            {"definitions", Json::object()},
+            {"nodes", Json::array(
+                 {{{"id", "producer"}, {"op", "value.add"},
+                   {"parameters", Json::object()},
+                   {"outputs", Json::array({"value"})}},
+                  {{"id", "consumer"}, {"op", "render.fullscreen"},
+                   {"parameters", Json::object()},
+                   {"inputs", {{"source", {{"node", "producer"}, {"port", "value"}}}}},
+                   {"outputs", Json::array({"color"})}}})}};
+}
+
+Json gf1aValueFilters() {
+    return {{"schema", "pelican.graph_filters"},
+            {"version", 1},
+            {"categories", Json::array({{{"id", "value"}, {"label", "Value"}}})},
+            {"feature_categories", Json::object()},
+            {"filters", Json::array({{{"id", "both"}, {"label", "Both"},
+                                      {"match", {{"node_ids",
+                                                  Json::array({"producer", "consumer"})}}}}})}};
+}
+
+} // namespace
+
+TEST_CASE("GF-1a the filter narrows the root canvas's nodes, edges, stubs and folded "
+          "features; Show still wins, structure stays, and a fold opens whole",
+          "[devstudio][graph-canvas][scene][gf1a]") {
+    (void)application();
+    Gf1aProject project{gf1aFilters()};
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    openGf1a(model, scene, project, gf1aRead(), gf1aPlan(), "post");
+
+    // A node the filter names is drawn; one it does not is cut, and a cut
+    // node the filter hid is not a stub (a stub is Show's cut, not the
+    // filter's).
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+    CHECK(model.domainStubs().empty());
+    CHECK(itemsOfKind(scene, PelicanStudio::GraphCanvasDerivedEdgeItem).empty());
+
+    // The folded feature the filter names stays; the plan's other folded
+    // nodes do not.
+    CHECK(nodeItem(scene, QStringLiteral("feature:bloom")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("gbuffer")) == nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("lighting")) == nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("present")) == nullptr);
+    // Structure is not content: the instance stays whatever the filter says.
+    CHECK(nodeItem(scene, QStringLiteral("body_instance")) != nullptr);
+
+    // Inside a fold the filter does not reach: the feature's pass is drawn.
+    REQUIRE(scene.enterFolded("feature:bloom"));
+    CHECK(nodeItem(scene, QStringLiteral("bloom_down")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("feature:bloom")) == nullptr);
+    model.leaveFolded();
+    scene.repopulate();
+
+    // A definition is an inner scope too, including for an op the root filter
+    // would hide.
+    REQUIRE(model.enterInstance("body_instance"));
+    scene.repopulate();
+    CHECK(nodeItem(scene, QStringLiteral("inside")) != nullptr);
+    model.selectScope({});
+    scene.repopulate();
+
+    // All puts back what the filter took; the same model and scene.
+    REQUIRE(model.setActiveGraphFilter(std::nullopt));
+    scene.repopulate();
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("feature:bloom")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("gbuffer")) != nullptr);
+
+    // Show off wins over a filter that matches: the matching feature and
+    // the matching node both go.
+    REQUIRE(model.setActiveGraphFilter("post"));
+    REQUIRE(model.setDomainShown("render", false));
+    scene.repopulate();
+    CHECK(nodeItem(scene, QStringLiteral("blur")) == nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("feature:bloom")) == nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("body_instance")) != nullptr);
+}
+
+TEST_CASE("GF-1a switching a filter draws exactly what opening with it draws",
+          "[devstudio][graph-canvas][scene][gf1a]") {
+    (void)application();
+    Gf1aProject project{gf1aFilters()};
+    GraphCanvasModel switched_model;
+    GraphCanvasScene switched_scene;
+    openGf1a(switched_model, switched_scene, project, gf1aRead(), gf1aPlan(), "");
+    const auto all = gf1aShape(switched_scene);
+    REQUIRE(switched_model.setActiveGraphFilter("post"));
+    switched_scene.repopulate();
+    const auto switched = gf1aShape(switched_scene);
+    CHECK(switched != all);
+
+    GraphCanvasModel rebuilt_model;
+    GraphCanvasScene rebuilt_scene;
+    openGf1a(rebuilt_model, rebuilt_scene, project, gf1aRead(), gf1aPlan(), "post");
+    CHECK(gf1aShape(rebuilt_scene) == switched);
+    CHECK(gf1aShape(rebuilt_scene) != all);
+}
+
+TEST_CASE("GF-1a a kept node's parameter change redraws it in place under a filter",
+          "[devstudio][graph-canvas][scene][gf1a]") {
+    (void)application();
+    Gf1aProject project{gf1aFilters()};
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    auto opened = gf1aRead();
+    for (auto &node : opened["nodes"])
+        if (node.at("id") == "blur") node["parameters"]["shader"] = "aa";
+    openGf1a(model, scene, project, opened, gf1aPlan(), "post");
+    QGraphicsItem *before = nodeItem(scene, QStringLiteral("blur"));
+    REQUIRE(before != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+
+    auto changed = opened;
+    for (auto &node : changed["nodes"])
+        if (node.at("id") == "blur") node["parameters"]["shader"] = "bb";
+    Gs3aTrace trace;
+    model.refresh();
+    for (const auto &request : model.takeRpcRequests()) {
+        if (request.method == "get_graph_instances")
+            model.receiveRpcResult(request.request_id, changed.dump());
+        else if (request.method == "get_frame_plan")
+            model.receiveRpcResult(request.request_id, gf1aPlan().dump());
+    }
+    CHECK(scene.followDocument());
+    CHECK(trace.refused() == 0);
+    CHECK(model.nodeParameters("", "blur").at("shader") == Json("bb"));
+    CHECK(nodeItem(scene, QStringLiteral("blur")) == before);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+}
+TEST_CASE("GF-1a the Graph's filter button follows the project file, and Reload is its "
+          "re-read",
+          "[devstudio][graph-canvas][scene][gf1a]") {
+    (void)application();
+    SECTION("no graph_filters.json: no filter row") {
+        QTemporaryDir root;
+        REQUIRE(root.isValid());
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
+        auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
+        CHECK_FALSE(button->isVisible());
+    }
+    SECTION("invalid: the button says so and the menu holds the reason") {
+        Gf1aProject project{Json{{"schema", "pelican.graph_filters"}}};
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(project.root());
+        auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
+        REQUIRE(button->isVisible());
+        CHECK(button->text() == QStringLiteral("Filter: invalid"));
+        CHECK(button->toolTip().contains(QStringLiteral("graph_filters.json")));
+        auto *invalid =
+            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.invalid"));
+        REQUIRE(invalid != nullptr);
+        CHECK_FALSE(invalid->isEnabled());
+        CHECK(tab.widget->findChild<QAction *>(
+                  QStringLiteral("pelican.graphCanvasFilter.reload")) != nullptr);
+    }
+    SECTION("valid: All and the file's filters, Reload picks up a new file") {
+        Gf1aProject project{gf1aFilters()};
+        Ux2Tab tab{false, true};
+        tab.widget->setProjectRoot(project.root());
+        auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
+        REQUIRE(button->isVisible());
+        CHECK(button->text() == QStringLiteral("Filter: All"));
+        auto *post =
+            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.post"));
+        REQUIRE(post != nullptr);
+        CHECK(post->isCheckable());
+        CHECK(tab.widget->findChild<QAction *>(
+                  QStringLiteral("pelican.graphCanvasFilter.only_bloomed")) != nullptr);
+        CHECK(tab.widget->findChild<QAction *>(
+                  QStringLiteral("pelican.graphCanvasFilter.nested")) == nullptr);
+        auto *all =
+            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.all"));
+        REQUIRE(all != nullptr);
+        CHECK(all->isChecked());
+
+        post->trigger();
+        QCoreApplication::processEvents();
+        CHECK(button->text() == QStringLiteral("Filter: Post"));
+        CHECK(button->toolTip() == QStringLiteral("Filter: Post"));
+        CHECK(button->accessibleName() == QStringLiteral("Filter: Post"));
+        CHECK(tab.widget->model().activeGraphFilter() == "post");
+
+        auto renamed = gf1aFilters();
+        renamed["filters"][0]["label"] = "Published";
+        project.write(renamed);
+        auto *reload = tab.widget->findChild<QAction *>(
+            QStringLiteral("pelican.graphCanvasFilter.reload"));
+        REQUIRE(reload != nullptr);
+        reload->trigger();
+        QCoreApplication::processEvents();
+        // The id survived the reload, so the choice did; the label followed.
+        CHECK(tab.widget->model().activeGraphFilter() == "post");
+        CHECK(button->text() == QStringLiteral("Filter: Published"));
+
+        auto long_label = gf1aFilters();
+        long_label["filters"][0]["label"] =
+            "A project filter with an intentionally very long label that must not widen Studio";
+        project.write(long_label);
+        reload = tab.widget->findChild<QAction *>(
+            QStringLiteral("pelican.graphCanvasFilter.reload"));
+        REQUIRE(reload != nullptr);
+        reload->trigger();
+        QCoreApplication::processEvents();
+        CHECK(button->text() != button->toolTip());
+        CHECK(button->toolTip().contains("intentionally very long label"));
+        CHECK(button->fontMetrics().horizontalAdvance(button->text()) <= button->fontMetrics().averageCharWidth() * 24);
+
+        project.write(Json{{"schema", "pelican.graph_filters"}, {"version", 1},
+                           {"categories", Json::array()}, {"feature_categories", Json::object()},
+                           {"filters", Json::array()}});
+        // Every reload rebuilt the menu, so its action is a new one.
+        reload = tab.widget->findChild<QAction *>(
+            QStringLiteral("pelican.graphCanvasFilter.reload"));
+        REQUIRE(reload != nullptr);
+        reload->trigger();
+        QCoreApplication::processEvents();
+        CHECK_FALSE(tab.widget->model().activeGraphFilter().has_value());
+        CHECK(button->text() == QStringLiteral("Filter: All"));
+    }
+}
+
+TEST_CASE("GF-1a Show and reveal both win over the filter, and a stub press brings a "
+          "matching node back",
+          "[devstudio][graph-canvas][scene][gf1a]") {
+    (void)application();
+    Gf1aProject project{gf1aFilters()};
+    Ux2Tab tab{false, true};
+    tab.widget->setProjectRoot(project.root());
+    tab.read(gf1aRead(), "gf1a");
+    tab.answer("get_frame_plan", gf1aPlan());
+    auto &model = tab.widget->model();
+    auto &scene = tab.widget->scene();
+    auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
+    auto *post =
+        tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.post"));
+    REQUIRE(post != nullptr);
+    post->trigger();
+    QCoreApplication::processEvents();
+    REQUIRE(model.activeGraphFilter() == "post");
+    REQUIRE(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+
+    // Show off hides even a node the filter matches.
+    auto *render = tab.field<QCheckBox>("pelican.graphCanvasShow.render");
+    render->setChecked(false);
+    QCoreApplication::processEvents();
+    CHECK(nodeItem(scene, QStringLiteral("blur")) == nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("feature:bloom")) == nullptr);
+
+    // Reveal turns Show on; the filter still hides this one, so reveal clears
+    // it -- and the button says All.
+    REQUIRE(tab.widget->revealNode(QStringLiteral("bloomed")));
+    QCoreApplication::processEvents();
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(render->isChecked());
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) != nullptr);
+    CHECK(button->text() == QStringLiteral("Filter: All"));
+
+    auto *only_bloomed = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.only_bloomed"));
+    REQUIRE(only_bloomed != nullptr);
+    only_bloomed->trigger();
+    QCoreApplication::processEvents();
+    CHECK(nodeItem(scene, QStringLiteral("blur")) == nullptr);
+    REQUIRE(tab.widget->revealGraphNode(QString{}, QStringLiteral("blur"), QString{}));
+    QCoreApplication::processEvents();
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+
+    only_bloomed = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.only_bloomed"));
+    REQUIRE(only_bloomed != nullptr);
+    only_bloomed->trigger();
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->revealPlanPass(QStringLiteral("blur")));
+    QCoreApplication::processEvents();
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+
+    // A stub press adds Show's domain; the node the active filter names is
+    // then drawn and the choice stays.
+    Gf1aProject value_project{gf1aValueFilters()};
+    Ux2Tab value_tab{false};
+    value_tab.widget->setProjectRoot(value_project.root());
+    value_tab.read(gf1aValueDocument(), "gf1a-value");
+    auto &value_model = value_tab.widget->model();
+    auto &value_scene = value_tab.widget->scene();
+    auto *both =
+        value_tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.both"));
+    REQUIRE(both != nullptr);
+    both->trigger();
+    QCoreApplication::processEvents();
+    REQUIRE(value_model.activeGraphFilter() == "both");
+    CHECK(nodeItem(value_scene, QStringLiteral("consumer")) != nullptr);
+    CHECK(nodeItem(value_scene, QStringLiteral("producer")) == nullptr);
+    QGraphicsItem *stub = kindItem(value_scene, PelicanStudio::GraphCanvasDomainStubItem,
+                                   QStringLiteral("consumer"));
+    REQUIRE(stub != nullptr);
+    click(value_scene, stub->sceneBoundingRect().center());
+    QCoreApplication::processEvents();
+    CHECK(value_model.activeGraphFilter() == "both");
+    CHECK(nodeItem(value_scene, QStringLiteral("producer")) != nullptr);
+    CHECK(nodeItem(value_scene, QStringLiteral("consumer")) != nullptr);
+}

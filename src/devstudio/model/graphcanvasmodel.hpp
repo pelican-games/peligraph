@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanmodel.hpp"
+#include "graphfilters.hpp"
 #include "inspectormodel.hpp"
 #include "raylayoutmodel.hpp"
 
@@ -1465,6 +1466,12 @@ class GraphCanvasModel {
     // Decision 5: the domains the root canvas shows (session state).
     std::set<std::string, std::less<>> domains_shown_{"render", "pose", "value", "audio", "ui",
                                                       "canvas"};
+    // GF-1a: the project's filters, and the one the session has chosen. Both
+    // are session state: choosing one never edits the project.
+    GraphFiltersRead graph_filters_read_;
+    std::optional<std::string> active_graph_filter_;
+    [[nodiscard]] const GraphFilter *activeGraphFilterDocument() const;
+    [[nodiscard]] bool nodeShownByDomain(const GraphCanvasNode &node) const;
     // NB-1: the next document read decides whether Canvas is shown.
     bool canvas_domain_follows_document_ = false;
     bool takeCanvasDomainOfDocument();
@@ -2877,6 +2884,22 @@ class GraphCanvasModel {
     // The cut ends of the root's lines to hidden nodes, one per socket and
     // domain.
     [[nodiscard]] std::vector<GraphCanvasDomainStub> domainStubs() const;
+
+    // GF-1a: the project's graph_filters.json (missing, valid, or invalid),
+    // and the filter the Graph tab shows. Setting a document keeps the active
+    // filter only while its id is still in the document; an invalid or missing
+    // document clears it.
+    void setGraphFilters(GraphFiltersRead read);
+    [[nodiscard]] const GraphFiltersRead &graphFilters() const noexcept {
+        return graph_filters_read_;
+    }
+    [[nodiscard]] const std::string &graphFiltersError() const noexcept {
+        return graph_filters_read_.error;
+    }
+    [[nodiscard]] bool setActiveGraphFilter(std::optional<std::string> id);
+    [[nodiscard]] const std::optional<std::string> &activeGraphFilter() const noexcept {
+        return active_graph_filter_;
+    }
 
     // --- UX-8: a curve onto a shader's value, the curve's keys, the sound
     // nodes' placing (graphcanvasvalues.cpp).

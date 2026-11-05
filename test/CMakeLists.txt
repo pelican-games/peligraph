@@ -428,6 +428,8 @@ if(TARGET pelican_studio_inspector_model)
   add_dependencies(pelican_test_devstudio_rendereditticket_test pelican_test_process_fixture_child)
   pelican_define_test(devstudio_graphattachment_test pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphcanvas_test pelican_studio_inspector_model)
+  # GF-1a: graph_filters.json read strictly and evaluated, without Qt.
+  pelican_define_test(devstudio_graph_filters_test pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
