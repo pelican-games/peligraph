@@ -259,12 +259,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
                 }
                 auto profile =
                     parseInputProfileString(profile_json, empty_definitions);
-                if (profile.name != name) {
-                    throw std::runtime_error(
-                        "input profile key '" + name +
-                        "' does not match document name '" + profile.name +
-                        "'");
-                }
+                profile.name = name;
                 loadProfileOscBindings(name, profile_document);
                 profiles.emplace(name, std::move(profile));
             }
@@ -293,12 +288,7 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
                  source.project_profile_jsons) {
                 auto profile =
                     parseInputProfileString(profile_json, project_definitions);
-                if (profile.name != name) {
-                    throw std::runtime_error(
-                        "input profile key '" + name +
-                        "' does not match document name '" + profile.name +
-                        "'");
-                }
+                profile.name = name;
                 loadProfileOscBindings(
                     name, nlohmann::json::parse(profile_json));
                 profiles.emplace(name, std::move(profile));
@@ -383,6 +373,24 @@ class InputActionsRuntime : public ModuleBase<InputActionsRuntime> {
 
     std::optional<std::string> activeProfile() const {
         return active_profile;
+    }
+
+    void replaceOscProfiles(const std::vector<std::string> &names,
+                            const nlohmann::json &document) {
+#if PELICAN_WITH_OSC
+        auto parsed = Osc::parseOscBindings(
+            document, GET_MODULE(LiveInputs).declarations());
+        for (const auto &name : names) {
+            if (profiles.contains(name)) osc_profiles.insert_or_assign(name, parsed);
+        }
+        if (active_profile &&
+            std::find(names.begin(), names.end(), *active_profile) != names.end()) {
+            GET_MODULE(OscInput).setBindings(parsed);
+        }
+#else
+        (void)names;
+        (void)document;
+#endif
     }
 
     std::vector<std::string> availableProfiles() const {
@@ -601,6 +609,13 @@ std::vector<std::string> availableInputProfiles() {
 
 void selectInputProfile(std::string_view profile_name) {
     GET_MODULE(InputActionsRuntime).selectProfile(profile_name);
+}
+
+void replaceInputProfileOscBindings(
+    const std::vector<std::string> &profile_names,
+    const nlohmann::json &profile_document) {
+    GET_MODULE(InputActionsRuntime).replaceOscProfiles(profile_names,
+                                                        profile_document);
 }
 
 const InputActionMap *inputActionMap() {

@@ -50,6 +50,8 @@ class LiveInputsDock final : public QWidget {
     // engine generation is stale is consumed and dropped.
     bool receiveResult(qint64 request_id, const QByteArray &result);
     bool receiveFailure(qint64 request_id, const QString &message);
+    bool receiveRefusal(qint64 request_id, const QString &error_code,
+                        const QString &message);
 
     void engineAvailable();
     void engineUnavailable();

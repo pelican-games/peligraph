@@ -1,6 +1,7 @@
 #pragma once
 
 #include <geom/vec.hpp>
+#include <nlohmann/json.hpp>
 
 #include <cstddef>
 #include <cstdint>
@@ -205,6 +206,8 @@ bool gamepadPollingEnabled();
 std::optional<std::string> activeInputProfile();
 std::vector<std::string> availableInputProfiles();
 void selectInputProfile(std::string_view profile_name);
+void replaceInputProfileOscBindings(const std::vector<std::string> &profile_names,
+                                    const nlohmann::json &profile_document);
 const InputActionMap *inputActionMap();
 std::vector<std::string> poseInputActionNames();
 void setInputActionBackendFrame(InputActionFrame frame);

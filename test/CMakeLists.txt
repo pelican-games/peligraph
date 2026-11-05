@@ -1083,6 +1083,13 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Widgets
   )
 
+  pelican_define_test(devstudio_liveinputs_learn_test
+    pelican_studio_inspector_model
+    pelican_project
+    pelican_core
+    nlohmann_json::nlohmann_json
+  )
+
   # OSC-3c: the Live Inputs dock -- the engine's declared inputs, the OSC
   # listener, recent traffic and its rate, the per-user settings, and Apply --
   # on the real widget with the test answering through its hooks.

@@ -1681,6 +1681,8 @@ void MainWindow::createWorkspace() {
                    const QString &message) {
                 (void)migration_panel_->acceptRpcRejection(
                     request_id, error_code, message);
+                (void)live_inputs_dock_->receiveRefusal(request_id, error_code,
+                                                        message);
             });
     connect(viewport_, &EmbeddedViewport::engineSessionEnding, this,
             [this] { invalidateDocumentOperations(); });

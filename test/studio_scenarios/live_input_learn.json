@@ -1,0 +1,219 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "live_input_learn",
+  "description": "OSC-3d: learn an unbound address, bind it in the active profile, apply real UDP immediately, and undo the binding.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "View > Live Inputs",
+      "cmd": "action",
+      "name": "pelican.view.liveInputs"
+    },
+    {
+      "label": "Listen for OSC",
+      "cmd": "click",
+      "name": "pelican.liveInputs.enabled",
+      "point": [
+        8,
+        10
+      ]
+    },
+    {
+      "label": "the operating system chooses the port",
+      "cmd": "type",
+      "name": "pelican.liveInputs.port",
+      "text": "0"
+    },
+    {
+      "label": "Apply saves and restarts the engine",
+      "cmd": "click",
+      "name": "pelican.liveInputs.apply"
+    },
+    {
+      "label": "the new engine has a local listener",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.listener",
+      "contains": "listening on 127.0.0.1:",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "Learn is available with the listener and profile",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.learn.a",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "learn input a",
+      "cmd": "click",
+      "name": "pelican.liveInputs.learn.a"
+    },
+    {
+      "label": "arming uses a fresh sequence",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.learnRow",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "move the fader to 0.1",
+      "osc": {
+        "address": "/fader/1",
+        "type": "f",
+        "value": 0.1,
+        "repeat": 1
+      }
+    },
+    {
+      "label": "move the fader to 0.2",
+      "osc": {
+        "address": "/fader/1",
+        "type": "f",
+        "value": 0.2,
+        "repeat": 1
+      }
+    },
+    {
+      "label": "move the fader to 0.3",
+      "osc": {
+        "address": "/fader/1",
+        "type": "f",
+        "value": 0.3,
+        "repeat": 1
+      }
+    },
+    {
+      "label": "the heard address is a candidate",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.learnCandidates",
+      "contains": "/fader/1",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "bind the candidate",
+      "cmd": "click",
+      "name": "pelican.liveInputs.learnBind"
+    },
+    {
+      "label": "the engine confirms the active file and applied binding",
+      "expect": "rpc_equals",
+      "method": "get_osc_bindings",
+      "params": {},
+      "path": "applied_live[0].address",
+      "value": "/fader/1",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the binding is on disk",
+      "file": "contains",
+      "path": "{project}/live/profile.json",
+      "text": "\"address\": \"/fader/1\""
+    },
+    {
+      "label": "other profile keys survive",
+      "file": "contains",
+      "path": "{project}/live/profile.json",
+      "text": "\"custom\""
+    },
+    {
+      "label": "send a value through the new binding",
+      "osc": {
+        "address": "/fader/1",
+        "type": "f",
+        "value": 0.5,
+        "repeat": 1
+      }
+    },
+    {
+      "label": "the running value changes at once",
+      "expect": "rpc_equals",
+      "method": "get_live_inputs",
+      "params": {},
+      "path": "inputs[name=a].value",
+      "value": 0.5,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the value came from OSC",
+      "expect": "rpc_equals",
+      "method": "get_live_inputs",
+      "params": {},
+      "path": "inputs[name=a].source",
+      "value": "osc",
+      "retry_ms": 30000
+    },
+    {
+      "label": "Undo is available",
+      "cmd": "wait",
+      "name": "pelican.liveInputs.undoBindings",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "undo the binding",
+      "cmd": "click",
+      "name": "pelican.liveInputs.undoBindings"
+    },
+    {
+      "label": "the running profile has no OSC binding",
+      "expect": "rpc_equals",
+      "method": "get_osc_bindings",
+      "params": {},
+      "path": "applied_live.$len",
+      "value": 0,
+      "retry_ms": 30000
+    },
+    {
+      "label": "send the now unbound address",
+      "osc": {
+        "address": "/fader/1",
+        "type": "f",
+        "value": 0.75,
+        "repeat": 1
+      }
+    },
+    {
+      "label": "Undo keeps the previous live value",
+      "expect": "rpc_equals",
+      "method": "get_live_inputs",
+      "params": {},
+      "path": "inputs[name=a].value",
+      "value": 0.5,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the unbound message tells the truth",
+      "expect": "rpc_equals",
+      "method": "get_live_inputs",
+      "params": {},
+      "path": "osc.recent[-1].reason",
+      "value": "unbound",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the newest entry is the message just sent",
+      "expect": "rpc_equals",
+      "method": "get_live_inputs",
+      "params": {},
+      "path": "osc.recent[-1].value",
+      "value": 0.75,
+      "retry_ms": 30000
+    }
+  ],
+  "invariants": {
+    "undo": false,
+    "reason": "the Live Inputs dock's Undo has its own history, and bindings aren't on the Graph's"
+  }
+}

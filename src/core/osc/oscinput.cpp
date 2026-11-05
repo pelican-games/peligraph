@@ -148,6 +148,31 @@ void OscInput::receive(std::span<const std::uint8_t> bytes,
             Event event;
             event.recent.address = message.address;
             event.recent.sender = std::string{sender};
+            if (message.arguments.size() == 1) {
+                const auto &argument = message.arguments.front();
+                switch (argument.tag) {
+                case 'f':
+                    if (std::isfinite(argument.number)) {
+                        event.recent.arg_type = "f";
+                        event.recent.value = argument.number;
+                        event.recent.has_value = true;
+                    }
+                    break;
+                case 'i':
+                    event.recent.arg_type = "i";
+                    event.recent.value = static_cast<double>(argument.integer);
+                    event.recent.has_value = true;
+                    break;
+                case 'T':
+                case 'F':
+                    event.recent.arg_type = std::string(1, argument.tag);
+                    event.recent.value = argument.boolean ? 1.0 : 0.0;
+                    event.recent.has_value = true;
+                    break;
+                default:
+                    break;
+                }
+            }
             if (message.reject == Osc::MessageReject::nested_bundle) {
                 ++counters_.nested_bundle;
                 event.recent.reason = "nested_bundle";
@@ -241,6 +266,26 @@ void OscInput::receive(std::span<const std::uint8_t> bytes,
     }
 }
 
+std::vector<Osc::OscBinding> OscInput::snapshotBindings() const {
+    std::scoped_lock lock{mutex_};
+    std::vector<Osc::OscBinding> result;
+    result.reserve(bindings_.size());
+    for (const auto &binding : bindings_) {
+        result.push_back(Osc::OscBinding{
+            .address = {},
+            .input = binding.input,
+            .input_type = binding.input_type,
+            .has_map = binding.has_map,
+            .map = binding.map,
+        });
+        result.back().address = std::string{};
+        for (const auto &[address, index] : lookup_) {
+            if (index == &binding - bindings_.data()) result.back().address = address;
+        }
+    }
+    return result;
+}
+
 nlohmann::json OscInput::snapshotJson() const {
     std::scoped_lock lock{mutex_};
     nlohmann::json recent = nlohmann::json::array();
@@ -252,10 +297,14 @@ nlohmann::json OscInput::snapshotJson() const {
             {"bound", event.bound},
             {"reason", event.reason},
             {"sender", event.sender},
+            {"arg_type", event.arg_type},
+            {"value", event.has_value ? nlohmann::json(event.value)
+                                      : nlohmann::json(nullptr)},
         });
     }
     return {
         {"bindings", bindings_.size()},
+        {"last_sequence", next_sequence_ - 1},
         {"received", counters_.received},
         {"applied", counters_.applied},
         {"unbound", counters_.unbound},

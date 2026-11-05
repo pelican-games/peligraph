@@ -15,6 +15,7 @@
 #include <QSettings>
 #include <QSpinBox>
 #include <QTemporaryDir>
+#include <QtTest/QTest>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
 
@@ -48,13 +49,15 @@ struct FakeEngine {
     qint64 now = 0;
     QList<qint64> sent;
     QStringList methods;
+    QHash<qint64, QJsonObject> parameters;
 
     LiveInputsDock::Hooks hooks()
     {
         return LiveInputsDock::Hooks{
-            .send = [this](const QString &method, const QJsonObject &, QString *) {
+            .send = [this](const QString &method, const QJsonObject &params, QString *) {
                 methods << method;
                 sent << next_id;
+                parameters.insert(next_id, params);
                 return next_id++;
             },
             .engine_identity = [this] { return generation; },
@@ -138,15 +141,45 @@ struct Fixture {
         return dock->findChild<QPushButton *>(QStringLiteral("pelican.liveInputs.apply"));
     }
 
+    QPushButton *unbind(const char *name, int index)
+    {
+        auto *tree = inputs();
+        for (int row = 0; row < tree->topLevelItemCount(); ++row) {
+            auto *item = tree->topLevelItem(row);
+            if (name && item->text(0) != QString::fromLatin1(name)) continue;
+            auto *bound = itemWidget(tree, item);
+            if (!bound) continue;
+            if (auto *button = bound->findChild<QPushButton *>(
+                    QStringLiteral("pelican.liveInputs.unbind.%1").arg(index)))
+                return button;
+        }
+        return nullptr;
+    }
+
+    void clickUnbind(int index)
+    {
+        auto *button = unbind(nullptr, index);
+        REQUIRE(button != nullptr);
+        button->click();
+    }
+
+    static QWidget *itemWidget(QTreeWidget *tree, QTreeWidgetItem *item)
+    {
+        return tree->itemWidget(item, 4);
+    }
+
     qint64 takeRequest()
     {
+        INFO("queued RPC methods: " << engine.methods.join(", ").toStdString());
         REQUIRE_FALSE(engine.sent.isEmpty());
         return engine.sent.takeFirst();
     }
 
     void reply(qint64 id, const Json &body)
     {
-        REQUIRE(dock->receiveResult(id, engine.answer(id, body)));
+        const bool received = dock->receiveResult(id, engine.answer(id, body));
+        application().processEvents();
+        REQUIRE(received);
     }
 };
 
@@ -174,6 +207,49 @@ Json listening(qint64 received, int port, Json recent = Json::array())
                     {"error", ""},
                     {"sender_not_allowed", 0},
                     {"receive_errors", 0}}}}}};
+}
+
+Json learnSnapshot(Json recent, std::uint64_t last_sequence)
+{
+    auto result = listening(last_sequence, 9000, std::move(recent));
+    result["osc"]["last_sequence"] = last_sequence;
+    result["inputs"] = Json::array({input("gain", "float", 0.5, "project"),
+                                    input("steps", "int", 1, "project"),
+                                    input("enabled", "bool", false, "project")});
+    return result;
+}
+
+Json heard(std::uint64_t sequence, const char *address, double value,
+           const char *sender = "127.0.0.1:5000")
+{
+    return {{"sequence", sequence}, {"address", address}, {"input", ""},
+            {"bound", false}, {"reason", "unbound"}, {"sender", sender},
+            {"arg_type", "f"}, {"value", value}};
+}
+
+Json bindingsResult(Json live, const char *digest = "d1", Json applied = nullptr)
+{
+    if (applied.is_null()) applied = live;
+    return {{"profile", {{"name", "live"}, {"reference", "live/profile.json"}}},
+            {"digest", digest}, {"live", std::move(live)}, {"applied_live", std::move(applied)}};
+}
+
+void primeBindings(Fixture &fixture, const Json &live)
+{
+    fixture.dock->engineAvailable();
+    fixture.reply(fixture.takeRequest(), learnSnapshot(Json::array(), 0));
+    const auto read = fixture.takeRequest();
+    REQUIRE(fixture.engine.methods.last() == "get_osc_bindings");
+    fixture.reply(read, bindingsResult(live));
+}
+
+void replyLive(Fixture &fixture, qint64 id, const Json &snapshot, const Json &bindings)
+{
+    fixture.reply(id, snapshot);
+    REQUIRE_FALSE(fixture.engine.sent.isEmpty());
+    const auto read = fixture.takeRequest();
+    REQUIRE(fixture.engine.methods.last() == "get_osc_bindings");
+    fixture.reply(read, bindings);
 }
 
 } // namespace
@@ -473,4 +549,352 @@ TEST_CASE("OSC-3c a stale engine reply is consumed but changes nothing",
           "listening on 127.0.0.1:45123");
     CHECK(std::string{fixture.rate()->text().toStdString()} == "—");
 
+}
+
+
+TEST_CASE("OSC-3d Learn binds an exact array and Undo follows returned digests",
+          "[osc3d][devstudio][live_inputs]")
+{
+    application();
+    Fixture fixture;
+    const Json original = Json::array({
+        {{"address", "/old"}, {"input", "steps"},
+         {"map", {{"from", Json::array({0, 1})}, {"to", Json::array({0, 8})}}}},
+    });
+    primeBindings(fixture, original);
+    auto *learn = fixture.dock->findChild<QPushButton *>(QStringLiteral("pelican.liveInputs.learn.gain"));
+    auto *row = fixture.dock->findChild<QWidget *>(QStringLiteral("pelican.liveInputs.learnRow"));
+    auto *candidates = fixture.dock->findChild<QComboBox *>(QStringLiteral("pelican.liveInputs.learnCandidates"));
+    auto *bind = fixture.dock->findChild<QPushButton *>(QStringLiteral("pelican.liveInputs.learnBind"));
+    auto *undo = fixture.dock->findChild<QPushButton *>(QStringLiteral("pelican.liveInputs.undoBindings"));
+    REQUIRE(learn != nullptr);
+    REQUIRE(learn->isEnabled());
+    learn->click();
+    application().processEvents();
+    CHECK(row->isVisible());
+    auto arming = fixture.takeRequest();
+    replyLive(fixture, arming, learnSnapshot(Json::array(), 10), bindingsResult(original));
+    fixture.dock->readNow();
+    auto polled = fixture.takeRequest();
+    const Json recent = Json::array({heard(11, "/fader/1", 0.1), heard(12, "/fader/1", 0.2)});
+    replyLive(fixture, polled, learnSnapshot(recent, 12), bindingsResult(original));
+    REQUIRE(candidates->count() == 1);
+    CHECK(candidates->currentText().contains(QStringLiteral("/fader/1")));
+    CHECK(candidates->currentText().contains(QStringLiteral("2 messages")));
+    REQUIRE(bind->isEnabled());
+    bind->click();
+    application().processEvents();
+    const auto edit = fixture.takeRequest();
+    REQUIRE(fixture.engine.methods.last() == "edit_osc_bindings");
+    const auto params = Json::parse(QJsonDocument(fixture.engine.parameters.value(edit)).toJson().constData());
+    CHECK(params.at("base_digest") == "d1");
+    CHECK(params.at("profile").at("name") == "live");
+    const Json bound = Json::array({original[0], {{"address", "/fader/1"}, {"input", "gain"}}});
+    CHECK(params.at("live") == bound);
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d2"},
+                         {"previous_digest", "d1"}, {"previous", original}, {"applied", bound}});
+    const auto read = fixture.takeRequest();
+    fixture.reply(read, bindingsResult(bound, "d2"));
+    REQUIRE(undo->isEnabled());
+    undo->click();
+    application().processEvents();
+    const auto undo_edit = fixture.takeRequest();
+    const auto undo_params = Json::parse(QJsonDocument(fixture.engine.parameters.value(undo_edit)).toJson().constData());
+    CHECK(undo_params.at("base_digest") == "d2");
+    CHECK(undo_params.at("live") == original);
+    fixture.reply(undo_edit, {{"committed", true}, {"changed", true}, {"digest", "d3"},
+                              {"previous_digest", "d2"}, {"previous", bound}, {"applied", original}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(original, "d3"));
+    CHECK_FALSE(undo->isEnabled());
+
+    auto *remove = fixture.dock->findChild<QPushButton *>(QStringLiteral("pelican.liveInputs.unbind.0"));
+    REQUIRE(remove != nullptr);
+    remove->click();
+    application().processEvents();
+    const auto unbind = fixture.takeRequest();
+    const auto unbind_params = Json::parse(QJsonDocument(fixture.engine.parameters.value(unbind)).toJson().constData());
+    CHECK(unbind_params.at("base_digest") == "d3");
+    CHECK(unbind_params.at("live") == Json::array());
+    fixture.reply(unbind, {{"committed", true}, {"changed", true}, {"digest", "d4"},
+                           {"previous_digest", "d3"}, {"previous", original}, {"applied", Json::array()}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(Json::array(), "d4"));
+    CHECK(undo->isEnabled());
+    fixture.dock->hide();
+    application().processEvents();
+    fixture.engine.sent.clear();
+    fixture.dock->readNow();
+    CHECK(fixture.engine.sent.isEmpty());
+}
+
+
+namespace {
+
+Json editParameters(Fixture &fixture, qint64 id)
+{
+    return Json::parse(QJsonDocument(fixture.engine.parameters.value(id)).toJson().constData());
+}
+
+void hearForGain(Fixture &fixture, const Json &live, const Json &recent,
+                 std::uint64_t last_sequence)
+{
+    auto *learn = fixture.dock->findChild<QPushButton *>(
+        QStringLiteral("pelican.liveInputs.learn.gain"));
+    REQUIRE(learn != nullptr);
+    REQUIRE(learn->isEnabled());
+    learn->click();
+    application().processEvents();
+    replyLive(fixture, fixture.takeRequest(),
+              learnSnapshot(Json::array(), last_sequence > 0 ? last_sequence - recent.size() : 0),
+              bindingsResult(live));
+    fixture.dock->readNow();
+    replyLive(fixture, fixture.takeRequest(), learnSnapshot(recent, last_sequence),
+              bindingsResult(live));
+}
+
+} // namespace
+
+TEST_CASE("OSC-3d Replace moves an address without its map and Already bound is explicit",
+          "[osc3d][devstudio][live_inputs]")
+{
+    application();
+    Fixture fixture;
+    const Json original = Json::array({
+        {{"address", "/old"}, {"input", "steps"},
+         {"map", {{"from", Json::array({0, 1})}, {"to", Json::array({0, 8})}}}},
+        {{"address", "/held"}, {"input", "gain"}},
+        {{"address", "/other"}, {"input", "steps"}},
+    });
+    primeBindings(fixture, original);
+    hearForGain(fixture, original,
+                Json::array({heard(11, "/old", 0.1), heard(12, "/old", 0.2)}), 12);
+    auto *candidates = fixture.dock->findChild<QComboBox *>(
+        QStringLiteral("pelican.liveInputs.learnCandidates"));
+    auto *bind = fixture.dock->findChild<QPushButton *>(
+        QStringLiteral("pelican.liveInputs.learnBind"));
+    CHECK(bind->text() == QStringLiteral("Replace \"steps\""));
+    bind->click();
+    application().processEvents();
+    const auto edit = fixture.takeRequest();
+    const Json replaced = Json::array({
+        {{"address", "/old"}, {"input", "gain"}}, original[1], original[2]});
+    CHECK(editParameters(fixture, edit).at("live") == replaced);
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d2"},
+                         {"previous_digest", "d1"}, {"previous", original}, {"applied", replaced}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(replaced, "d2"));
+    auto read = fixture.dock->findChild<QTreeWidget *>(
+        QStringLiteral("pelican.liveInputs.table"));
+    REQUIRE(read != nullptr);
+    CHECK(read->topLevelItem(0)->text(4) == QStringLiteral("/old, /held"));
+
+    hearForGain(fixture, replaced,
+                Json::array({heard(13, "/held", 0.2), heard(14, "/held", 0.3)}), 14);
+    CHECK_FALSE(bind->isEnabled());
+    CHECK(bind->toolTip() == QStringLiteral("Already bound"));
+    auto *row = fixture.dock->findChild<QWidget *>(
+        QStringLiteral("pelican.liveInputs.learnRow"));
+    auto *escape_target = row->findChild<QComboBox *>(
+        QStringLiteral("pelican.liveInputs.learnCandidates"));
+    fixture.dock->activateWindow();
+    escape_target->setFocus();
+    QTest::keyClick(escape_target, Qt::Key_Escape);
+    application().processEvents();
+    CHECK_FALSE(row->isVisible());
+}
+
+TEST_CASE("OSC-3d candidate choice survives polling and Show all reaches later controls",
+          "[osc3d][devstudio][live_inputs]")
+{
+    application();
+    Fixture fixture;
+    primeBindings(fixture, Json::array());
+    Json recent = Json::array();
+    std::uint64_t sequence = 1;
+    for (int control = 0; control < 6; ++control) {
+        const auto address = QStringLiteral("/fader/%1").arg(control).toStdString();
+        recent.push_back(heard(sequence++, address.c_str(), 0.1));
+        recent.push_back(heard(sequence++, address.c_str(), 0.2));
+    }
+    hearForGain(fixture, Json::array(), recent, sequence - 1);
+    auto *candidates = fixture.dock->findChild<QComboBox *>(
+        QStringLiteral("pelican.liveInputs.learnCandidates"));
+    auto *bind = fixture.dock->findChild<QPushButton *>(
+        QStringLiteral("pelican.liveInputs.learnBind"));
+    auto *row = fixture.dock->findChild<QWidget *>(
+        QStringLiteral("pelican.liveInputs.learnRow"));
+    REQUIRE(candidates->count() == 7);
+    INFO("combo index " << candidates->currentIndex() << ", text "
+                        << candidates->currentText().toStdString());
+    CHECK(candidates->itemText(6) == QStringLiteral("Show all"));
+    CHECK(candidates->currentData().toInt() == -1);
+    CHECK_FALSE(bind->isEnabled());
+    candidates->setCurrentIndex(4);
+    const auto selected = candidates->currentText();
+    fixture.dock->readNow();
+    replyLive(fixture, fixture.takeRequest(), learnSnapshot(recent, sequence - 1),
+              bindingsResult(Json::array()));
+    CHECK(candidates->currentText() == selected);
+    candidates->setCurrentIndex(6);
+    REQUIRE(candidates->count() == 7);
+    candidates->setCurrentIndex(6);
+    CHECK(candidates->currentData().toInt() == 5);
+    CHECK(candidates->currentText().contains(QStringLiteral("/fader/0")));
+    CHECK(bind->isEnabled());
+
+    fixture.engine.sent.clear();
+    QTest::qWait(160);
+    CHECK(fixture.engine.sent.size() == 1);
+    replyLive(fixture, fixture.takeRequest(), learnSnapshot(recent, sequence - 1),
+              bindingsResult(Json::array()));
+    fixture.dock->activateWindow();
+    candidates->setFocus();
+    QTest::keyClick(candidates, Qt::Key_Escape);
+    application().processEvents();
+    CHECK_FALSE(row->isVisible());
+    fixture.engine.sent.clear();
+    QTest::qWait(160);
+    CHECK(fixture.engine.sent.isEmpty());
+    QTest::qWait(450);
+    CHECK(fixture.engine.sent.size() == 1);
+}
+
+
+TEST_CASE("OSC-3d several edits chain Undo digests and external edits clear history",
+          "[osc3d][devstudio][live_inputs]")
+{
+    application();
+    Fixture fixture;
+    const Json first = Json::array({{{"address", "/one"}, {"input", "gain"}},
+                                    {{"address", "/two"}, {"input", "steps"}},
+                                    {{"address", "/three"}, {"input", "enabled"}}});
+    const Json second = Json::array({first[1], first[2]});
+    const Json third = Json::array({first[2]});
+    primeBindings(fixture, first);
+    auto *undo = fixture.dock->findChild<QPushButton *>(
+        QStringLiteral("pelican.liveInputs.undoBindings"));
+
+    fixture.clickUnbind(0);
+    application().processEvents();
+    auto edit = fixture.takeRequest();
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d2"},
+                         {"previous", first}, {"applied", second}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(second, "d2"));
+    auto *remove = fixture.unbind("steps", 0);
+    REQUIRE(remove != nullptr);
+    CHECK(remove->isEnabled());
+    remove->click();
+    application().processEvents();
+    edit = fixture.takeRequest();
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d3"},
+                         {"previous", second}, {"applied", third}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(third, "d3"));
+
+    fixture.clickUnbind(0);
+    application().processEvents();
+    edit = fixture.takeRequest();
+    fixture.reply(edit, {{"committed", true}, {"changed", false}, {"digest", "d3"},
+                         {"applied", third}});
+    CHECK(undo->toolTip() == QStringLiteral("Unbind /two from steps"));
+
+    undo->click();
+    application().processEvents();
+    edit = fixture.takeRequest();
+    CHECK(editParameters(fixture, edit).at("base_digest") == "d3");
+    CHECK(editParameters(fixture, edit).at("live") == second);
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d4"},
+                         {"previous", third}, {"applied", second}});
+    const auto first_undo_read = fixture.takeRequest();
+    undo->click();
+    application().processEvents();
+    edit = fixture.takeRequest();
+    CHECK(editParameters(fixture, edit).at("base_digest") == "d4");
+    CHECK(editParameters(fixture, edit).at("live") == first);
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d5"},
+                         {"previous", second}, {"applied", first}});
+    fixture.reply(first_undo_read, bindingsResult(first, "d5"));
+    CHECK_FALSE(undo->isEnabled());
+
+    INFO("Unbind after both Undo replies");
+    fixture.clickUnbind(0);
+    application().processEvents();
+    edit = fixture.takeRequest();
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d6"},
+                         {"previous", first}, {"applied", second}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(second, "d6"));
+    fixture.clickUnbind(0);
+    application().processEvents();
+    edit = fixture.takeRequest();
+    CHECK(fixture.dock->receiveRefusal(edit, QStringLiteral("external_modification"),
+                                      QStringLiteral("profile changed outside Studio")));
+    application().processEvents();
+    CHECK_FALSE(undo->isEnabled());
+    fixture.reply(fixture.takeRequest(), bindingsResult(third, "disk", second));
+    CHECK(fixture.note()->text().contains(QStringLiteral("Not applied: the file changed on disk")));
+
+    fixture.clickUnbind(0);
+    application().processEvents();
+    edit = fixture.takeRequest();
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d7"},
+                         {"previous", third}, {"applied", Json::array()}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(Json::array(), "d7"));
+    CHECK(undo->isEnabled());
+    fixture.dock->readNow();
+    auto stopped = learnSnapshot(Json::array(), 40);
+    stopped["osc"]["listener"]["state"] = "off";
+    stopped["osc"]["listener"]["port"] = 0;
+    replyLive(fixture, fixture.takeRequest(), stopped,
+              bindingsResult(Json::array(), "d7"));
+    CHECK_FALSE(fixture.dock->findChild<QPushButton *>(
+                    QStringLiteral("pelican.liveInputs.learn.gain"))->isEnabled());
+    CHECK(undo->isEnabled());
+    undo->click();
+    application().processEvents();
+    edit = fixture.takeRequest();
+    CHECK(editParameters(fixture, edit).at("base_digest") == "d7");
+    CHECK(editParameters(fixture, edit).at("live") == third);
+    fixture.reply(edit, {{"committed", true}, {"changed", true}, {"digest", "d8"},
+                         {"previous", Json::array()}, {"applied", third}});
+    fixture.reply(fixture.takeRequest(), bindingsResult(third, "d8"));
+    CHECK_FALSE(undo->isEnabled());
+}
+
+TEST_CASE("OSC-3d Learn needs a profile and listener and only one arming request runs",
+          "[osc3d][devstudio][live_inputs]")
+{
+    application();
+    Fixture fixture;
+    fixture.dock->engineAvailable();
+    fixture.reply(fixture.takeRequest(), learnSnapshot(Json::array(), 5));
+    fixture.reply(fixture.takeRequest(), {{"profile", nullptr}, {"digest", nullptr},
+                                          {"live", Json::array()}, {"applied_live", Json::array()}});
+    auto *learn = fixture.dock->findChild<QPushButton *>(
+        QStringLiteral("pelican.liveInputs.learn.gain"));
+    CHECK_FALSE(learn->isEnabled());
+    CHECK(learn->toolTip() == QStringLiteral("Set an input profile for this project first"));
+
+    fixture.dock->engineUnavailable();
+    fixture.dock->engineAvailable();
+    fixture.reply(fixture.takeRequest(), learnSnapshot(Json::array(), 5));
+    fixture.reply(fixture.takeRequest(), bindingsResult(Json::array()));
+    application().processEvents();
+    learn = qobject_cast<QPushButton *>(
+        fixture.inputs()->itemWidget(fixture.inputs()->topLevelItem(0), 5));
+    REQUIRE(learn != nullptr);
+    REQUIRE(learn->isEnabled());
+    learn->click();
+    application().processEvents();
+    CHECK_FALSE(learn->isEnabled());
+    auto *other = fixture.dock->findChild<QPushButton *>(
+        QStringLiteral("pelican.liveInputs.learn.steps"));
+    CHECK_FALSE(other->isEnabled());
+    CHECK(fixture.engine.sent.size() == 1);
+    auto *row = fixture.dock->findChild<QWidget *>(
+        QStringLiteral("pelican.liveInputs.learnRow"));
+    auto *escape_target = row->findChild<QComboBox *>(
+        QStringLiteral("pelican.liveInputs.learnCandidates"));
+    fixture.dock->activateWindow();
+    escape_target->setFocus();
+    QTest::keyClick(escape_target, Qt::Key_Escape);
+    application().processEvents();
+    CHECK_FALSE(row->isVisible());
+    CHECK(learn->isEnabled());
 }

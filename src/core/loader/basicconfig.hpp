@@ -210,6 +210,11 @@ DECLARE_MODULE(ProjectBasicConfig) {
     // project with no live inputs.
     std::optional<std::string> liveInputsJson() const;
     std::unordered_map<std::string, std::string> inputProfileJsons() const;
+    std::unordered_map<std::string, std::string> inputProfileJsonRefs() const {
+        return input_profile_json_refs;
+    }
+    void refreshInputProfileJsons(std::string_view reference,
+                                  std::string bytes) const;
     std::optional<std::string> defaultInputProfile() const;
     bool usesProjectSource() const { return project_source; }
 

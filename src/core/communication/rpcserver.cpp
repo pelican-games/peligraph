@@ -47,6 +47,7 @@
 #include "../os/liveinputrecording.hpp"
 #include "../renderingpass/graphinputs.hpp"
 #if PELICAN_WITH_OSC
+#include "oscbindingsrpc.hpp"
 #include "../osc/oscinput.hpp"
 #include "../osc/osclistener.hpp"
 #endif
@@ -1644,6 +1645,11 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     configureProjectSettingsRpcHandlers(server, modules.path_resolver, modules.reload_service,
                                         modules.assets_verification);
     configureGraphFiltersRpcHandlers(server, modules.path_resolver);
+#if PELICAN_WITH_OSC
+    configureOscBindingsRpcHandlers(server, modules.path_resolver,
+                                    modules.project_config, modules.osc_input,
+                                    modules.input_sequence, modules.problems);
+#endif
     // MT-1: material documents, surface schemas and material bindings, read
     // and written through the project document transaction, applied live.
     configureMaterialDocumentRpcHandlers(server, modules.path_resolver, modules.reload_service);

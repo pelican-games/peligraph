@@ -28,9 +28,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import queue
 import shutil
+import socket
+import struct
 import subprocess
 import sys
 import threading
@@ -663,6 +666,7 @@ class Run:
         self.read_steps = 0
         self.file_seen: set[tuple[str, str]] = set()
         self.list_patterns: dict[str, int] = {}
+        self.osc_socket: socket.socket | None = None
 
     # -- recording -----------------------------------------------------------
 
@@ -775,6 +779,8 @@ def step_label(step: dict[str, Any], index: int) -> str:
         return str(step["cmd"])
     if "file" in step:
         return f"file {step['file']}"
+    if "osc" in step:
+        return f"osc {step['osc'].get('address', '')}"
     return f"{step.get('expect', 'step')} #{index}"
 
 
@@ -1039,6 +1045,75 @@ def run_file_step(
         return False
     run.record("file", label, ok=True, request=request, detail=detail, started=started)
     return True
+
+
+def _osc_string(value: str) -> bytes:
+    encoded = value.encode("utf-8") + b"\0"
+    return encoded + bytes(-len(encoded) % 4)
+
+
+def run_osc_step(run: Run, step: dict[str, Any], label: str) -> bool:
+    started = time.perf_counter()
+    request = {"osc": step["osc"]}
+    try:
+        spec = step["osc"]
+        if not isinstance(spec, dict) or set(spec) - {"address", "type", "value", "repeat"}:
+            raise ValueError("osc needs only address, type, value and repeat")
+        address = spec.get("address")
+        kind = spec.get("type")
+        repeat = spec.get("repeat", 1)
+        value = spec.get("value")
+        if not isinstance(address, str) or not address.startswith("/"):
+            raise ValueError("osc.address must be an absolute OSC address")
+        if kind not in {"f", "i", "T", "F"}:
+            raise ValueError("osc.type must be f, i, T or F")
+        if isinstance(repeat, bool) or not isinstance(repeat, int) or repeat < 1:
+            raise ValueError("osc.repeat must be a positive integer")
+        if kind in {"f", "i"}:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ValueError(f"osc.value must be numeric for {kind}")
+            if not math.isfinite(value):
+                raise ValueError("osc.value must be finite")
+            if kind == "i" and (isinstance(value, float) and not value.is_integer()):
+                raise ValueError("osc.value must be an integer for i")
+        elif value not in {None, 0, 1}:
+            raise ValueError(f"osc.value must be 0, 1 or omitted for {kind}")
+        before_reply = run.call({"cmd": "rpc", "method": "get_live_inputs", "params": {}})
+        if not before_reply.get("ok"):
+            raise ValueError("get_live_inputs failed before sending OSC")
+        before = before_reply["result"]["result"]["osc"]
+        listener = before.get("listener") or {}
+        port = listener.get("port")
+        if listener.get("state") != "listening" or not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("the local OSC listener has no usable UDP port")
+        typetag = "," + kind
+        payload = _osc_string(address) + _osc_string(typetag)
+        if kind == "f":
+            payload += struct.pack(">f", float(value))
+        elif kind == "i":
+            payload += struct.pack(">i", int(value))
+        if run.osc_socket is None:
+            run.osc_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        before_received = before.get("received")
+        before_recent = json.dumps(before.get("recent"), sort_keys=True)
+        for _ in range(repeat):
+            run.osc_socket.sendto(payload, ("127.0.0.1", port))
+        deadline = time.monotonic() + float(step.get("timeout_ms", 5000)) / 1000
+        while True:
+            reply = run.call({"cmd": "rpc", "method": "get_live_inputs", "params": {}})
+            if reply.get("ok"):
+                osc = reply["result"]["result"]["osc"]
+                if osc.get("received") != before_received or json.dumps(osc.get("recent"), sort_keys=True) != before_recent:
+                    break
+            if time.monotonic() >= deadline:
+                raise ValueError("no received or recent change after sending OSC")
+            time.sleep(0.05)
+        run.record("osc", label, ok=True, request=request,
+                   detail=f"sent {repeat} {kind} message(s) to {address} on UDP {port}", started=started)
+        return True
+    except (KeyError, TypeError, ValueError, OSError, struct.error) as error:
+        run.record("osc", label, ok=False, request=request, detail=str(error), started=started)
+        return False
 
 
 def run_expect_step(run: Run, step: dict[str, Any], label: str) -> bool:
@@ -1766,6 +1841,8 @@ def main() -> int:
                 ok = run_file_step(
                     run, step, label, [arguments.project, artifacts]
                 )
+            elif "osc" in step:
+                ok = run_osc_step(run, step, label)
             elif "cmd" in step:
                 ok = run_command_step(run, step, label)
             else:
@@ -1786,6 +1863,8 @@ def main() -> int:
 
     if run.window_watch is not None:
         run.window_watch.stop()
+    if run.osc_socket is not None:
+        run.osc_socket.close()
     exit_code: int | None = None
     forced_shutdown = False
     if studio is not None:

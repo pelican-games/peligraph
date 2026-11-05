@@ -40,6 +40,7 @@ DECLARE_MODULE(OscInput) {
 
     // The `osc` object of get_live_inputs, read as one consistent snapshot.
     nlohmann::json snapshotJson() const;
+    std::vector<Osc::OscBinding> snapshotBindings() const;
 
   private:
     struct Binding {
@@ -55,6 +56,9 @@ DECLARE_MODULE(OscInput) {
         std::string input;
         std::string reason;
         std::string sender;
+        std::string arg_type;
+        double value = 0.0;
+        bool has_value = false;
         bool bound = false;
     };
 

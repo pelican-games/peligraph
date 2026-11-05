@@ -76,6 +76,8 @@ add_library(pelican_studio_inspector_model STATIC
     # UX-12b: the refusals FR-1 names with what is missing, and their fixes.
     featurerefusalfix.cpp
     featurerefusalfix.hpp
+    liveinputslearn.cpp
+    liveinputslearn.hpp
     # HW-2s / AV-1s: the Assets dock's watch switches and contents check.
     assetsdockmodel.cpp
     assetsdockmodel.hpp

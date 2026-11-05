@@ -1514,3 +1514,70 @@ class UD6ContentComparisonTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class StudioDriveOscTest(unittest.TestCase):
+    @staticmethod
+    def reply(port: int, received: int, recent=None) -> dict:
+        return {"ok": True, "result": {"result": {"osc": {
+            "listener": {"state": "listening", "port": port},
+            "received": received, "recent": recent or [],
+        }}}}
+
+    def test_real_udp_encoding_and_one_source_port_for_all_steps(self) -> None:
+        receiver = studio_drive.socket.socket(studio_drive.socket.AF_INET, studio_drive.socket.SOCK_DGRAM)
+        receiver.bind(("127.0.0.1", 0))
+        receiver.settimeout(2)
+        port = receiver.getsockname()[1]
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "osc"}, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.side_effect = [
+                self.reply(port, 0), self.reply(port, 1),
+                self.reply(port, 1), self.reply(port, 2),
+            ]
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    self.assertTrue(studio_drive.run_osc_step(run, {
+                        "osc": {"address": "/a", "type": "f", "value": 0.25, "repeat": 2},
+                    }, "two floats"))
+                    first, first_sender = receiver.recvfrom(1024)
+                    second, second_sender = receiver.recvfrom(1024)
+                    self.assertTrue(studio_drive.run_osc_step(run, {
+                        "osc": {"address": "/switch", "type": "T"},
+                    }, "true"))
+                    third, third_sender = receiver.recvfrom(1024)
+                expected = (studio_drive._osc_string("/a") + studio_drive._osc_string(",f")
+                            + studio_drive.struct.pack(">f", 0.25))
+                self.assertEqual(first, expected)
+                self.assertEqual(second, expected)
+                self.assertEqual(third, studio_drive._osc_string("/switch")
+                                 + studio_drive._osc_string(",T"))
+                self.assertEqual(first_sender[1], second_sender[1])
+                self.assertEqual(second_sender[1], third_sender[1])
+            finally:
+                if run.osc_socket is not None:
+                    run.osc_socket.close()
+                receiver.close()
+
+    def test_waits_for_received_or_recent_change(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            run = studio_drive.Run({"name": "osc-wait"}, Path(directory))
+            run.channel = mock.Mock(spec=studio_drive.Channel)
+            run.channel.send.side_effect = [
+                self.reply(9000, 4), self.reply(9000, 4),
+                self.reply(9000, 4, [{"address": "/a", "sequence": 8}]),
+            ]
+            run.osc_socket = mock.Mock(spec=studio_drive.socket.socket)
+            with (
+                mock.patch.object(studio_drive.time, "monotonic", return_value=10.0),
+                mock.patch.object(studio_drive.time, "sleep") as sleeper,
+                contextlib.redirect_stdout(io.StringIO()),
+            ):
+                self.assertTrue(studio_drive.run_osc_step(
+                    run, {"osc": {"address": "/a", "type": "i", "value": 3}}, "wait"))
+            run.osc_socket.sendto.assert_called_once_with(
+                studio_drive._osc_string("/a") + studio_drive._osc_string(",i")
+                + studio_drive.struct.pack(">i", 3), ("127.0.0.1", 9000))
+            sleeper.assert_called_once_with(0.05)
+            self.assertEqual(run.channel.send.call_count, 3)

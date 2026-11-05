@@ -31,6 +31,9 @@ target_sources(pelican_core PRIVATE
     projectsettingsrpc.cpp
     materialdocumentrpc.cpp
 )
+if(PELICAN_WITH_OSC)
+    target_sources(pelican_core PRIVATE oscbindingsrpc.cpp)
+endif()
 else()
 target_sources(pelican_core PRIVATE
     rpcserver_stub.cpp

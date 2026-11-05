@@ -3,20 +3,25 @@
 #include "../src/core/container.hpp"
 #include "../src/core/ecs/predefined.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/loader/basicconfig.hpp"
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/os/liveinputrecording.hpp"
 #include "../src/core/osc/osclistener.hpp"
 #include "../src/core/osc/osclistenerconfig.hpp"
+#include "../src/core/os/inputsequence.hpp"
 #include "../src/core/userpublic/userinput.hpp"
 #include "../src/core/watch/reloadgate.hpp"
+#include "../src/project/projectdocumenttransaction.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 
+#include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
@@ -465,46 +470,70 @@ class PlayerProcess {
 };
 #endif
 
-bool sendOscPhase(std::uint16_t port, float value) {
+void appendOscString(std::vector<std::uint8_t> &bytes, std::string_view text) {
+    bytes.insert(bytes.end(), text.begin(), text.end());
+    bytes.push_back(0);
+    while (bytes.size() % 4 != 0) bytes.push_back(0);
+}
+
+bool sendOscMessage(std::uint16_t port, std::string_view address,
+                    std::string_view tags, const std::vector<double> &values = {}) {
 #if defined(_WIN32)
     static WinsockScope winsock;
     if (!winsock.ok) return false;
-#endif
-#if defined(_WIN32)
     const auto socket_handle = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_handle == INVALID_SOCKET) return false;
 #else
     const int socket_handle = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (socket_handle < 0) return false;
 #endif
-
-    std::vector<std::uint8_t> bytes{'/', 'p', 'h', 'a', 's', 'e', 0, 0,
-                                    ',', 'f', 0, 0};
-    const auto bits = std::bit_cast<std::uint32_t>(value);
-    bytes.push_back(static_cast<std::uint8_t>(bits >> 24));
-    bytes.push_back(static_cast<std::uint8_t>(bits >> 16));
-    bytes.push_back(static_cast<std::uint8_t>(bits >> 8));
-    bytes.push_back(static_cast<std::uint8_t>(bits));
-
+    std::vector<std::uint8_t> bytes;
+    appendOscString(bytes, address);
+    appendOscString(bytes, "," + std::string{tags});
+    std::size_t index = 0;
+    for (const char tag : tags) {
+        const double value = index < values.size() ? values[index++] : 0.0;
+        if (tag == 's') {
+            appendOscString(bytes, "bad");
+            continue;
+        }
+        if (tag != 'f' && tag != 'i') continue;
+        const auto bits = tag == 'f'
+                              ? std::bit_cast<std::uint32_t>(static_cast<float>(value))
+                              : static_cast<std::uint32_t>(static_cast<std::int32_t>(value));
+        bytes.push_back(static_cast<std::uint8_t>(bits >> 24));
+        bytes.push_back(static_cast<std::uint8_t>(bits >> 16));
+        bytes.push_back(static_cast<std::uint8_t>(bits >> 8));
+        bytes.push_back(static_cast<std::uint8_t>(bits));
+    }
     sockaddr_in destination{};
     destination.sin_family = AF_INET;
     destination.sin_port = htons(port);
     destination.sin_addr.s_addr = htonl(0x7f000001u);
 #if defined(_WIN32)
-    const int sent =
-        ::sendto(socket_handle, reinterpret_cast<const char *>(bytes.data()),
-                 static_cast<int>(bytes.size()), 0,
-                 reinterpret_cast<const sockaddr *>(&destination),
-                 sizeof(destination));
+    const int sent = ::sendto(socket_handle, reinterpret_cast<const char *>(bytes.data()),
+                              static_cast<int>(bytes.size()), 0,
+                              reinterpret_cast<const sockaddr *>(&destination), sizeof(destination));
     ::closesocket(socket_handle);
 #else
-    const auto sent =
-        ::sendto(socket_handle, bytes.data(), bytes.size(), 0,
-                 reinterpret_cast<const sockaddr *>(&destination),
-                 sizeof(destination));
+    const auto sent = ::sendto(socket_handle, bytes.data(), bytes.size(), 0,
+                               reinterpret_cast<const sockaddr *>(&destination), sizeof(destination));
     ::close(socket_handle);
 #endif
     return sent >= 0 && static_cast<std::size_t>(sent) == bytes.size();
+}
+
+bool sendOscPhase(std::uint16_t port, float value) {
+    return sendOscMessage(port, "/phase", "f", {value});
+}
+
+const Json &recentFor(const Json &snapshot, std::string_view address) {
+    const auto &recent = snapshot.at("osc").at("recent");
+    const auto found = std::find_if(recent.rbegin(), recent.rend(), [&](const Json &entry) {
+        return entry.value("address", std::string{}) == address;
+    });
+    REQUIRE(found != recent.rend());
+    return *found;
 }
 
 } // namespace
@@ -1046,5 +1075,320 @@ TEST_CASE("OSC-4a CLI replay reproduces frozen values and simple graph pixels",
     replay("replay-two");
 }
 #endif
+
+} // namespace Pelican
+
+namespace Pelican {
+
+TEST_CASE("OSC-3d recent traffic keeps unbound values and rejects bad argument shapes",
+          "[osc3d][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc3d_recent_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir);
+    FastModuleContainer modules;
+    configureHeadless(root);
+    internal::prepareInputActionsRuntime();
+    GET_MODULE(EngineLaunchConfig).osc_listener =
+        parseOscListenerConfig("0", "127.0.0.1", std::nullopt);
+    internal::prepareOscListener();
+    const auto port = GET_MODULE(OscListener).statusJson().at("port").get<std::uint16_t>();
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+
+    struct Packet { const char *address; const char *tags; std::vector<double> values; };
+    const std::array packets{
+        Packet{"/unbound/f", "f", {0.25}}, Packet{"/unbound/i", "i", {7}},
+        Packet{"/unbound/t", "T", {}}, Packet{"/unbound/off", "F", {}},
+        Packet{"/unbound/none", "", {}}, Packet{"/unbound/many", "ff", {1, 2}},
+        Packet{"/unbound/string", "s", {}},
+    };
+    for (const auto &packet : packets) {
+        const auto before = rpc.result("get_live_inputs").at("osc").at("received").get<std::uint64_t>();
+        REQUIRE(sendOscMessage(port, packet.address, packet.tags, packet.values));
+        Json snapshot;
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            (void)rpc.result("step_frame");
+            snapshot = rpc.result("get_live_inputs");
+            if (snapshot.at("osc").at("received").get<std::uint64_t>() > before) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        REQUIRE(snapshot.at("osc").at("received").get<std::uint64_t>() > before);
+        const auto &recent = recentFor(snapshot, packet.address);
+        CHECK(recent.at("bound") == false);
+        CHECK(recent.at("reason") == "unbound");
+        CHECK(recent.at("sequence") == snapshot.at("osc").at("last_sequence"));
+        if (std::string_view{packet.address} == "/unbound/f") {
+            CHECK(recent.at("arg_type") == "f");
+            CHECK(recent.at("value").get<double>() == Catch::Approx(0.25));
+        } else if (std::string_view{packet.address} == "/unbound/i") {
+            CHECK(recent.at("arg_type") == "i");
+            CHECK(recent.at("value") == 7);
+        } else if (std::string_view{packet.address} == "/unbound/t") {
+            CHECK(recent.at("arg_type") == "T");
+            CHECK(recent.at("value") == 1);
+        } else if (std::string_view{packet.address} == "/unbound/off") {
+            CHECK(recent.at("arg_type") == "F");
+            CHECK(recent.at("value") == 0);
+        } else {
+            CHECK(recent.at("arg_type") == "");
+            CHECK(recent.at("value").is_null());
+        }
+    }
+}
+
+
+TEST_CASE("OSC-3d checked binding edits keep file cache and runtime in agreement",
+          "[osc3d][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc3d_edit_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir);
+    auto project = Json::parse(readFile(root / "project.json"));
+    project["basic_config"]["input_profiles"]["alias"] = "live/profile.json";
+    writeFile(root / "project.json", project.dump(2));
+    writeFile(root / "live" / "profile.json", R"json({
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "live",
+  "custom": {"keep": [1, 2, 3]},
+  "bindings": [],
+  "live": [{"address": "/phase", "input": "phase", "map": {"from": [0, 1], "to": [0, 4]}}]
+}
+)json");
+    writeFile(root / "live" / "plain.json", readFile(root / "live" / "profile.json"));
+    const auto original_profile_bytes = readFile(root / "live" / "plain.json");
+    FastModuleContainer modules;
+    configureHeadless(root);
+    internal::prepareInputActionsRuntime();
+    GET_MODULE(EngineLaunchConfig).osc_listener =
+        parseOscListenerConfig("0", "127.0.0.1", std::nullopt);
+    internal::prepareOscListener();
+    const auto port = GET_MODULE(OscListener).statusJson().at("port").get<std::uint16_t>();
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+
+    auto bindings = rpc.result("get_osc_bindings");
+    REQUIRE(bindings.at("profile").at("name") == "live");
+    REQUIRE(bindings.at("profile").at("reference") == "live/profile.json");
+    REQUIRE(bindings.at("live").size() == 1);
+    REQUIRE(bindings.at("live") == bindings.at("applied_live"));
+    const auto original_digest = bindings.at("digest").get<std::string>();
+    Json next = Json::array({
+        {{"address", "/fader/1"}, {"input", "phase"}},
+    });
+    const auto reload_before = rpc.result("get_status").at("reload");
+    const Json plain = rpc.result("get_osc_bindings");
+    (void)rpc.result("set_input_profile", {{"name", "plain"}});
+    auto profile_refused = rpc.error("edit_osc_bindings", {
+        {"profile", plain.at("profile")}, {"base_digest", plain.at("digest")}, {"live", next}});
+    CHECK(plain.at("digest") == original_digest);
+    CHECK(profile_refused.at("data").at("error_code") == "input_profile.profile_changed@1");
+    (void)rpc.result("set_input_profile", {{"name", "live"}});
+    auto edited = rpc.result("edit_osc_bindings", {
+        {"profile", plain.at("profile")}, {"base_digest", original_digest}, {"live", next}});
+    REQUIRE(edited.at("committed") == true);
+    REQUIRE(edited.at("changed") == true);
+    REQUIRE(edited.at("previous_digest") == original_digest);
+    REQUIRE(edited.at("digest").get<std::string>() != original_digest);
+    REQUIRE(edited.at("applied") == next);
+    CHECK(rpc.result("get_status").at("reload") == reload_before);
+    CHECK(readFile(root / "live" / "plain.json") == original_profile_bytes);
+
+    const auto written = readFile(root / "live" / "profile.json");
+    CHECK(written.find("\"custom\": {") < written.find("\"bindings\":"));
+    CHECK(written.find("\"bindings\": [") < written.find("\"live\":"));
+    CHECK(written.find("\"keep\": [") != std::string::npos);
+    const auto &config = GET_MODULE(ProjectBasicConfig);
+    CHECK(config.inputProfileJsons().at("live") == written);
+    CHECK(config.inputProfileJsons().at("alias") == written);
+    bindings = rpc.result("get_osc_bindings");
+    CHECK(bindings.at("live") == next);
+    CHECK(bindings.at("applied_live") == next);
+
+    const auto sendAndRead = [&](std::string_view address, double value) {
+        const auto before = rpc.result("get_live_inputs").at("osc").at("received").get<std::uint64_t>();
+        REQUIRE(sendOscMessage(port, address, "f", {value}));
+        Json snapshot;
+        for (int attempt = 0; attempt < 100; ++attempt) {
+            (void)rpc.result("step_frame");
+            snapshot = rpc.result("get_live_inputs");
+            if (snapshot.at("osc").at("received").get<std::uint64_t>() > before) break;
+            std::this_thread::sleep_for(std::chrono::milliseconds{5});
+        }
+        REQUIRE(snapshot.at("osc").at("received").get<std::uint64_t>() > before);
+        return snapshot;
+    };
+    auto snapshot = sendAndRead("/fader/1", 0.625);
+    CHECK(inputNamed(snapshot, "phase").at("value").get<double>() == Catch::Approx(0.625));
+    CHECK(inputNamed(snapshot, "phase").at("source") == "osc");
+    snapshot = sendAndRead("/phase", 0.75);
+    CHECK(recentFor(snapshot, "/phase").at("reason") == "unbound");
+    CHECK(inputNamed(snapshot, "phase").at("value").get<double>() == Catch::Approx(0.625));
+
+    (void)rpc.result("set_input_profile", {{"name", "alias"}});
+    CHECK(rpc.result("get_osc_bindings").at("live") == next);
+    snapshot = sendAndRead("/fader/1", 0.5);
+    CHECK(inputNamed(snapshot, "phase").at("value").get<double>() == Catch::Approx(0.5));
+    CHECK(inputNamed(snapshot, "phase").at("source") == "osc");
+    (void)rpc.result("set_input_profile", {{"name", "live"}});
+
+    const auto unchanged = rpc.result("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")}, {"live", next}});
+    CHECK(unchanged.at("changed") == false);
+    CHECK(unchanged.at("digest") == bindings.at("digest"));
+    CHECK(readFile(root / "live" / "profile.json") == written);
+
+    auto refused = rpc.error("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", original_digest}, {"live", Json::array()}});
+    CHECK(refused.at("data").at("error_code") == "external_modification");
+    refused = rpc.error("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")},
+        {"live", Json::array({{{"address", "/bad"}, {"input", "missing"}}})}});
+    CHECK(refused.at("data").at("error_code") == "input_profile.bindings_invalid@1");
+    CHECK(readFile(root / "live" / "profile.json") == written);
+
+    {
+        auto lock = ProjectDocumentTransactionLock::acquire(root);
+        refused = rpc.error("edit_osc_bindings", {
+            {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")},
+            {"live", Json::array()}});
+        CHECK(refused.at("data").at("error_code") == "input_profile.transaction_busy@1");
+    }
+    CHECK(readFile(root / "live" / "profile.json") == written);
+
+    (void)rpc.result("set_input_profile", {{"name", "plain"}});
+    refused = rpc.error("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")}, {"live", next}});
+    CHECK(refused.at("data").at("error_code") == "input_profile.profile_changed@1");
+    (void)rpc.result("set_input_profile", {{"name", "live"}});
+    CHECK(rpc.result("get_osc_bindings").at("applied_live") == next);
+    snapshot = sendAndRead("/fader/1", 0.75);
+    CHECK(inputNamed(snapshot, "phase").at("value").get<double>() == Catch::Approx(0.75));
+
+    GET_MODULE(InputSequenceRuntime).startRecording(dir.root / "capture", 60.0);
+    refused = rpc.error("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")},
+        {"live", Json::array()}});
+    CHECK(refused.at("data").at("error_code") == "input_profile.edit_during_replay@1");
+    (void)GET_MODULE(InputSequenceRuntime).stopRecording();
+    CHECK(readFile(root / "live" / "profile.json") == written);
+    CHECK(config.inputProfileJsons().at("live") == written);
+    CHECK(rpc.result("get_osc_bindings").at("applied_live") == next);
+
+    (void)rpc.result("start_live_record", {{"path", (dir.root / "live_capture.jsonl").string()}});
+    refused = rpc.error("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")},
+        {"live", Json::array()}});
+    CHECK(refused.at("data").at("error_code") == "input_profile.edit_during_replay@1");
+    (void)rpc.result("stop_live_record");
+    CHECK(readFile(root / "live" / "profile.json") == written);
+
+    writeFile(dir.root / "capture",
+              "{\"schema\":\"pelican.input_seq\",\"version\":1,\"fps\":60}\n{\"frame\":0}\n");
+    GET_MODULE(InputSequenceRuntime).startReplay(dir.root / "capture");
+    refused = rpc.error("edit_osc_bindings", {
+        {"profile", bindings.at("profile")}, {"base_digest", bindings.at("digest")},
+        {"live", Json::array()}});
+    CHECK(refused.at("data").at("error_code") == "input_profile.edit_during_replay@1");
+    GET_MODULE(InputSequenceRuntime).stopReplay();
+    CHECK(readFile(root / "live" / "profile.json") == written);
+    CHECK(config.inputProfileJsons().at("live") == written);
+    CHECK(rpc.result("get_osc_bindings").at("applied_live") == next);
+
+    auto outside = Json::parse(written);
+    outside["live"] = Json::array({{{"address", "/outside"}, {"input", "phase"}}});
+    writeFile(root / "live" / "profile.json", outside.dump(2));
+    const auto observed = rpc.result("get_osc_bindings");
+    CHECK(observed.at("live") == outside.at("live"));
+    CHECK(observed.at("applied_live") == next);
+}
+
+TEST_CASE("OSC-3d binding edits refuse missing and non-project profiles",
+          "[osc3d][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc3d_paths_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+
+    SECTION("no active profile") {
+        const auto root = copyLiveProject(dir);
+        auto project = Json::parse(readFile(root / "project.json"));
+        project["basic_config"].erase("input_profile");
+        writeFile(root / "project.json", project.dump(2));
+        FastModuleContainer modules;
+        configureHeadless(root);
+        internal::prepareInputActionsRuntime();
+        Rpc rpc;
+        const auto bindings = rpc.result("get_osc_bindings");
+        CHECK(bindings.at("profile").is_null());
+        CHECK(bindings.at("digest").is_null());
+        CHECK(bindings.at("live").empty());
+        const auto refused = rpc.error("edit_osc_bindings", {
+            {"profile", {{"name", "live"}, {"reference", "live/profile.json"}}},
+            {"base_digest", "unused"}, {"live", Json::array()}});
+        CHECK(refused.at("data").at("error_code") == "input_profile.none_active@1");
+    }
+
+    SECTION("parent traversal") {
+        const auto root = copyLiveProject(dir);
+        writeFile(dir.root / "outside.json", readFile(root / "live" / "profile.json"));
+        auto project = Json::parse(readFile(root / "project.json"));
+        project["basic_config"]["input_profiles"]["live"] = "live/../live/profile.json";
+        writeFile(root / "project.json", project.dump(2));
+        FastModuleContainer modules;
+        configureHeadless(root);
+        internal::prepareInputActionsRuntime();
+        Rpc rpc;
+        const auto refused = rpc.error("edit_osc_bindings", {
+            {"profile", {{"name", "live"}, {"reference", "live/../live/profile.json"}}},
+            {"base_digest", projectDocumentDigest(readFile(dir.root / "outside.json"))},
+            {"live", Json::array()}});
+        CHECK(refused.at("data").at("error_code") == "input_profile.not_writable@1");
+        CHECK(Json::parse(readFile(dir.root / "outside.json")).at("live").size() == 1);
+    }
+
+#ifndef _WIN32
+    SECTION("symlink leaving the project") {
+        const auto root = copyLiveProject(dir);
+        writeFile(dir.root / "outside.json", readFile(root / "live" / "profile.json"));
+        FastModuleContainer modules;
+        configureHeadless(root);
+        internal::prepareInputActionsRuntime();
+        std::filesystem::remove(root / "live" / "profile.json");
+        std::filesystem::create_symlink(dir.root / "outside.json", root / "live" / "profile.json");
+        Rpc rpc;
+        const auto refused = rpc.error("edit_osc_bindings", {
+            {"profile", {{"name", "live"}, {"reference", "live/profile.json"}}},
+            {"base_digest", projectDocumentDigest(readFile(dir.root / "outside.json"))},
+            {"live", Json::array()}});
+        CHECK(refused.at("data").at("error_code") == "input_profile.not_writable@1");
+        CHECK(Json::parse(readFile(dir.root / "outside.json")).at("live").size() == 1);
+    }
+#endif
+
+    SECTION("read-only regular file") {
+        const auto root = copyLiveProject(dir);
+        FastModuleContainer modules;
+        configureHeadless(root);
+        internal::prepareInputActionsRuntime();
+        Rpc rpc;
+        const auto path = root / "live" / "profile.json";
+        const auto before = readFile(path);
+        std::filesystem::permissions(path, std::filesystem::perms::owner_read);
+        const auto refused = rpc.error("edit_osc_bindings", {
+            {"profile", {{"name", "live"}, {"reference", "live/profile.json"}}},
+            {"base_digest", projectDocumentDigest(before)}, {"live", Json::array()}});
+        std::filesystem::permissions(path, std::filesystem::perms::owner_read |
+                                               std::filesystem::perms::owner_write);
+        CHECK(refused.at("data").at("error_code") == "input_profile.not_writable@1");
+        CHECK(readFile(path) == before);
+    }
+}
+
 
 } // namespace Pelican

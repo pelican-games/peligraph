@@ -1,0 +1,7 @@
+{
+  "schema": "pelican.input_profile",
+  "version": 1,
+  "name": "live",
+  "custom": {"preserved": true},
+  "bindings": []
+}

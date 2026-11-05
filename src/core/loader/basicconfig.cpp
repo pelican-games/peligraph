@@ -1131,6 +1131,13 @@ std::unordered_map<std::string, std::string> ProjectBasicConfig::inputProfileJso
     return input_profile_jsons;
 }
 
+void ProjectBasicConfig::refreshInputProfileJsons(
+    std::string_view reference, std::string bytes) const {
+    for (const auto &[name, candidate] : input_profile_json_refs) {
+        if (candidate == reference) input_profile_jsons.insert_or_assign(name, bytes);
+    }
+}
+
 std::optional<std::string> ProjectBasicConfig::defaultInputProfile() const {
     return default_input_profile;
 }
