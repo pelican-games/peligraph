@@ -14690,6 +14690,8 @@ GraphCanvasWidget::GraphCanvasWidget(GraphCanvasReadCapability graph,
 GraphCanvasWidget::~GraphCanvasWidget() {
     graphCanvasTeardownDyingForTest = true;
     setEngineShaderListRequester({});
+    // QWidget's destructor sends focus-out after impl_ is gone.
+    impl_->canvas->focusLossAction = {};
 }
 
 void GraphCanvasWidget::setPerfLines(const QString &summary, const QString &delta) {
