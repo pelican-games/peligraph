@@ -132,6 +132,8 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool force_unorm_color_path_for_testing = false;
     std::optional<std::filesystem::path> input_record;
     std::optional<std::filesystem::path> input_replay_path;
+    std::optional<std::filesystem::path> live_record;
+    std::optional<std::filesystem::path> live_replay_path;
     std::optional<std::string> input_profile;
     // OSC-2b: the process-wide UDP listener. Absent means no socket is opened.
     // Configured only by player options, never by the project file.

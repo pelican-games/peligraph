@@ -10,7 +10,7 @@ namespace Pelican { class EngineLaunchConfig; }
 
 namespace Pelican::watch {
 
-enum class ReloadGateReason : std::uint8_t { replay, strict_assets, rpc_driver };
+enum class ReloadGateReason : std::uint8_t { replay, live_replay, strict_assets, rpc_driver };
 
 // HW-1: what project.json's `hot_reload` declares. `undeclared` keeps the
 // launch default (the whole project watched, nothing under an RPC driver);
@@ -50,6 +50,7 @@ DECLARE_MODULE(ReloadGate) {
     mutable std::mutex mutex_;
     bool requested_ = false;
     bool replay_ = false;
+    bool live_replay_ = false;
     bool strict_ = false;
     bool rpc_ = false;
     WatchDeclaration watch_ = WatchDeclaration::undeclared;

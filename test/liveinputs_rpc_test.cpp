@@ -6,9 +6,11 @@
 #include "../src/core/loader/pathresolver.hpp"
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
+#include "../src/core/os/liveinputrecording.hpp"
 #include "../src/core/osc/osclistener.hpp"
 #include "../src/core/osc/osclistenerconfig.hpp"
 #include "../src/core/userpublic/userinput.hpp"
+#include "../src/core/watch/reloadgate.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -20,6 +22,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <iostream>
 #include <nlohmann/json.hpp>
 #include <bit>
 #include <sstream>
@@ -222,7 +225,10 @@ struct WinsockScope {
 // in this test injects a parsed listener config into the engine.
 class PlayerProcess {
   public:
-    explicit PlayerProcess(const std::filesystem::path &project) {
+    explicit PlayerProcess(const std::filesystem::path &project,
+                           std::vector<std::string> arguments = {}) {
+        arguments.insert(arguments.begin(), {"--rpc", "--headless", "--size", "64x64",
+            "--osc-port", "0", "--input-profile", "live", "--project", project.string()});
 #if defined(_WIN32)
         SECURITY_ATTRIBUTES attributes{};
         attributes.nLength = sizeof(attributes);
@@ -251,11 +257,13 @@ class PlayerProcess {
         startup.hStdOutput = stdout_write_;
         startup.hStdError = log_ != INVALID_HANDLE_VALUE ? log_ : stdout_write_;
 
-        std::wstring command =
-            L"\"" +
-            std::filesystem::path{PELICAN_OSC2C_PLAYER}.wstring() +
-            L"\" --rpc --headless --size 64x64 --osc-port 0 --input-profile live --project \"" +
-            project.wstring() + L"\"";
+        std::wstring command = L"\"" +
+            std::filesystem::path{PELICAN_OSC2C_PLAYER}.wstring() + L"\"";
+        for (const auto &argument : arguments) {
+            command += L" \"";
+            command += std::filesystem::path{argument}.wstring();
+            command += L"\"";
+        }
         if (!::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
                               CREATE_NO_WINDOW, nullptr, nullptr, &startup,
                               &process_)) {
@@ -270,7 +278,10 @@ class PlayerProcess {
         int output_pipe[2]{};
         if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0)
             throw std::runtime_error("pipe failed");
-        const auto project_string = project.string();
+        std::vector<char *> child_arguments;
+        child_arguments.push_back(const_cast<char *>(PELICAN_OSC2C_PLAYER));
+        for (auto &argument : arguments) child_arguments.push_back(argument.data());
+        child_arguments.push_back(nullptr);
         pid_ = ::fork();
         if (pid_ == 0) {
             (void)::dup2(input_pipe[0], STDIN_FILENO);
@@ -290,10 +301,7 @@ class PlayerProcess {
             }
             (void)::close(input_pipe[1]);
             (void)::close(output_pipe[0]);
-            ::execl(PELICAN_OSC2C_PLAYER, PELICAN_OSC2C_PLAYER, "--rpc",
-                    "--headless", "--size", "64x64", "--osc-port", "0",
-                    "--input-profile", "live", "--project",
-                    project_string.c_str(), static_cast<char *>(nullptr));
+            ::execv(PELICAN_OSC2C_PLAYER, child_arguments.data());
             ::_exit(127);
         }
         (void)::close(input_pipe[0]);
@@ -742,6 +750,300 @@ TEST_CASE("OSC-2c the real --osc-port option listens and freezes a packet",
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
     REQUIRE(phase == Catch::Approx(0.375));
+}
+#endif
+
+TEST_CASE("OSC-4a RPC records frozen values and replays them by relative frame",
+          "[osc4a][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc4a_rpc_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir);
+    const auto recording_path = dir.root / "show.live_seq";
+    FastModuleContainer modules;
+    configureHeadless(root);
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+    (void)rpc.result("step_frame");
+    (void)rpc.result("step_frame");
+
+    (void)rpc.result("start_live_record", {{"path", recording_path.generic_string()}});
+    const auto second_record = rpc.error("start_live_record",
+        {{"path", (dir.root / "second.live_seq").generic_string()}});
+    CHECK_THAT(second_record.at("message").get<std::string>(),
+               ContainsSubstring("live_input.record_active@1"));
+    CHECK(rpc.result("get_status").at("live_inputs").at("recording").at("lines") == 1);
+    const auto first = rpc.result("step_frame");
+    CHECK(first.at("frame") == 3);
+    CHECK(first.at("t") == Catch::Approx(3.0 / 60.0));
+    std::vector<double> expected{0.0};
+    for (const double phase : {0.25, 0.75, 0.75, 1.25}) {
+        (void)rpc.result("set_live_input", {{"values", {{"phase", phase}}}});
+        (void)rpc.result("step_frame");
+        expected.push_back(phase);
+    }
+    const auto stop = rpc.result("stop_live_record");
+    CHECK(stop.at("lines") == 5);
+    CHECK(stop.at("evaluations") == expected.size());
+    CHECK(stop.at("mean_write_ms").get<double>() >= 0.0);
+    CHECK(stop.at("max_write_ms").get<double>() >= 0.0);
+    CHECK(rpc.result("get_status").at("live_inputs").at("recording").is_null());
+    const auto recording = LiveInputRecording::loadFile(recording_path);
+    REQUIRE(recording.frames.size() == 4);
+    CHECK(recording.end.evaluations == expected.size());
+    CHECK(recording.frames.front().values.size() == 3);
+    CHECK(recording.frames.back().values.size() == 1);
+    const auto stopped_record = rpc.error("stop_live_record");
+    CHECK_THAT(stopped_record.at("message").get<std::string>(),
+               ContainsSubstring("live_input.record_inactive@1"));
+
+    (void)rpc.result("set_time", {{"t", 2.0 / 60.0}});
+    (void)rpc.result("set_live_input", {{"values", {{"phase", 2.0}}}});
+    (void)rpc.result("start_live_replay", {{"path", recording_path.generic_string()}});
+    const auto active_status = rpc.result("get_status").at("live_inputs");
+    CHECK(active_status.at("replaying") == true);
+    CHECK(active_status.at("replay_lines") == 4);
+    const auto set_error = rpc.error("set_live_input", {{"values", {{"phase", 3.0}}}});
+    CHECK_THAT(set_error.at("message").get<std::string>(),
+               ContainsSubstring("live_input.replay_active@1"));
+    CHECK(rpc.result("get_live_inputs").at("dropped_during_replay") == 1);
+    const LiveInputUpdate osc_update{"phase", 3.0};
+    const auto osc = GET_MODULE(LiveInputs).stageBatch({&osc_update, 1}, LiveInputSource::osc);
+    CHECK(osc.replay == 1);
+    CHECK(rpc.result("get_live_inputs").at("dropped_during_replay") == 2);
+    const auto time_error = rpc.error("set_time", {{"t", 10.0}});
+    CHECK_THAT(time_error.at("message").get<std::string>(),
+               ContainsSubstring("live_input.time_change_refused@1"));
+    std::vector<std::uint64_t> changed_frames;
+    for (std::size_t index = 0; index < expected.size() + 1; ++index) {
+        (void)rpc.result("step_frame");
+        const auto snapshot = rpc.result("get_live_inputs");
+        const auto phase = inputNamed(snapshot, "phase");
+        const double wanted = expected[std::min(index, expected.size() - 1)];
+        CHECK(phase.at("value") == Catch::Approx(wanted));
+        CHECK(phase.at("source") == "replay");
+        CHECK(phase.at("clamped") == false);
+        changed_frames.push_back(phase.at("changed_frame").get<std::uint64_t>());
+    }
+    CHECK(changed_frames[0] == 0);
+    CHECK(changed_frames[1] != changed_frames[0]);
+    CHECK(changed_frames[2] != changed_frames[1]);
+    CHECK(changed_frames[3] == changed_frames[2]);
+    CHECK(changed_frames[4] != changed_frames[3]);
+    CHECK(changed_frames[5] == changed_frames[4]);
+
+    const auto replay_error = rpc.error("start_live_replay", {{"path", recording_path.generic_string()}});
+    CHECK_THAT(replay_error.at("message").get<std::string>(), ContainsSubstring("live_input.replay_active@1"));
+    const auto record_error = rpc.error("start_live_record",
+        {{"path", (dir.root / "overlap.live_seq").generic_string()}});
+    CHECK_THAT(record_error.at("message").get<std::string>(),
+               ContainsSubstring("live_input.record_while_replaying@1"));
+    CHECK(rpc.result("get_status").at("live_inputs").at("replaying") == true);
+    CHECK(inputNamed(rpc.result("get_live_inputs"), "phase").at("source") == "replay");
+    const auto reload_error = rpc.error("reload_render_documents");
+    CHECK_THAT(reload_error.at("message").get<std::string>(),
+               ContainsSubstring("live_input.replay_active@1"));
+    CHECK(GET_MODULE(watch::ReloadGate).snapshot().reason == "live replay");
+    GET_MODULE(EngineLaunchConfig).start_time_explicit = true;
+    const auto offline_stop = rpc.error("stop_live_replay");
+    CHECK_THAT(offline_stop.at("message").get<std::string>(),
+               ContainsSubstring("live_input.replay_required@1"));
+    GET_MODULE(EngineLaunchConfig).start_time_explicit = false;
+    (void)rpc.result("stop_live_replay");
+    auto stopped = inputNamed(rpc.result("get_live_inputs"), "phase");
+    CHECK(stopped.at("value") == 0.0);
+    CHECK(stopped.at("source") == "default");
+    CHECK(rpc.result("get_status").at("live_inputs").at("replaying") == false);
+    CHECK(rpc.result("get_live_inputs").at("dropped_during_replay") == 2);
+    const auto stop_error = rpc.error("stop_live_replay");
+    CHECK_THAT(stop_error.at("message").get<std::string>(), ContainsSubstring("live_input.replay_inactive@1"));
+    (void)rpc.result("set_live_input", {{"values", {{"phase", 0.5}}}});
+    (void)rpc.result("step_frame");
+    CHECK(inputNamed(rpc.result("get_live_inputs"), "phase").at("value") == 0.5);
+}
+
+TEST_CASE("OSC-4a RPC replay resamples a recording at another fixed fps",
+          "[osc4a][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc4a_other_fps_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir);
+    const auto recording_path = dir.root / "show.live_seq";
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("render_frame");
+        (void)rpc.result("start_live_record", {{"path", recording_path.generic_string()}});
+        (void)rpc.result("step_frame");
+        for (const double phase : {0.25, 0.75, 0.75, 1.25}) {
+            (void)rpc.result("set_live_input", {{"values", {{"phase", phase}}}});
+            (void)rpc.result("step_frame");
+        }
+        const auto stop = rpc.result("stop_live_record");
+        std::cout << "OSC-4a recording writes: mean=" << stop.at("mean_write_ms")
+                  << " ms, max=" << stop.at("max_write_ms") << " ms, lines="
+                  << stop.at("lines") << '\n';
+    }
+    const auto recording = LiveInputRecording::loadFile(recording_path);
+    {
+        FastModuleContainer modules;
+        configureHeadless(root);
+        GET_MODULE(EngineTime).setup(EngineTime::Mode::fixed_step, 1.0 / 30.0);
+        Rpc rpc;
+        (void)rpc.result("load_scene", {{"name", "default_scene"}});
+        (void)rpc.result("render_frame");
+        (void)rpc.result("start_live_replay", {{"path", recording_path.generic_string()}});
+        for (std::uint64_t index = 1; index <= 6; ++index) {
+            (void)rpc.result("step_frame");
+            const auto expected_at_time = recording.valuesAtTime(
+                static_cast<double>(index) / 30.0).at("phase");
+            CHECK(inputNamed(rpc.result("get_live_inputs"), "phase").at("value") ==
+                  Catch::Approx(expected_at_time));
+        }
+        (void)rpc.result("stop_live_replay");
+    }
+}
+
+TEST_CASE("OSC-4a RPC combines input sequence and live replay without opening the reload gate",
+          "[osc4a][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc4a_combined_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    FastModuleContainer modules;
+    configureHeadless(copyLiveProject(dir));
+    Rpc rpc;
+    (void)rpc.result("render_frame");
+
+    const auto recording_path = dir.root / "combined.live_seq";
+    (void)rpc.result("start_live_record", {{"path", recording_path.generic_string()}});
+    (void)rpc.result("step_frame");
+    (void)rpc.result("set_live_input", {{"values", {{"phase", 0.5}}}});
+    (void)rpc.result("step_frame");
+    (void)rpc.result("stop_live_record");
+    const auto input_path = dir.root / "empty.input_seq";
+    {
+        std::ofstream output{input_path};
+        output << "{\"schema\":\"pelican.input_seq\",\"version\":1,\"fps\":60}\n"
+                  "{\"frame\":0}\n";
+    }
+
+    const auto input_first = rpc.error("start_input_replay", {{"path", input_path.generic_string()}});
+    CHECK_THAT(input_first.at("message").get<std::string>(),
+               ContainsSubstring("offline.live_input_unrecorded@1"));
+    (void)rpc.result("start_live_replay", {{"path", recording_path.generic_string()}});
+    (void)rpc.result("start_input_replay", {{"path", input_path.generic_string()}});
+    (void)rpc.result("step_frame");
+    CHECK(inputNamed(rpc.result("get_live_inputs"), "phase").at("source") == "replay");
+    const auto live_stop_first = rpc.error("stop_live_replay");
+    CHECK_THAT(live_stop_first.at("message").get<std::string>(),
+               ContainsSubstring("live_input.replay_required@1"));
+    CHECK(GET_MODULE(watch::ReloadGate).snapshot().reason == "replay");
+    (void)rpc.result("stop_input_replay");
+    CHECK(GET_MODULE(watch::ReloadGate).snapshot().reason == "live replay");
+    (void)rpc.result("stop_live_replay");
+    CHECK(GET_MODULE(watch::ReloadGate).snapshot().reason == "rpc driver");
+    (void)rpc.result("set_live_input", {{"values", {{"phase", 0.75}}}});
+    (void)rpc.result("step_frame");
+    CHECK(inputNamed(rpc.result("get_live_inputs"), "phase").at("value") == 0.75);
+}
+
+TEST_CASE("OSC-4a recording failures are named and never fail the frame",
+          "[osc4a][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc4a_failure_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    FastModuleContainer modules;
+    configureHeadless(copyLiveProject(dir));
+    Rpc rpc;
+    (void)rpc.result("load_scene", {{"name", "default_scene"}});
+    (void)rpc.result("render_frame");
+    const auto open = rpc.error("start_live_record",
+        {{"path", (dir.root / "absent" / "bad.live_seq").generic_string()}});
+    CHECK_THAT(open.at("message").get<std::string>(), ContainsSubstring("live_input.record_failed@1"));
+
+    const auto path = dir.root / "failure.live_seq";
+    (void)rpc.result("start_live_record", {{"path", path.generic_string()}});
+    const auto inactive = rpc.error("stop_live_replay");
+    CHECK_THAT(inactive.at("message").get<std::string>(), ContainsSubstring("live_input.replay_inactive@1"));
+    (void)rpc.result("step_frame");
+    GET_MODULE(LiveInputRecordingRuntime).failRecordingAfterLinesForTesting(2);
+    (void)rpc.result("set_live_input", {{"values", {{"phase", 0.5}}}});
+    const auto frame = rpc.result("step_frame");
+    REQUIRE(frame.contains("frame"));
+    CHECK(rpc.result("get_status").at("live_inputs").at("recording").is_null());
+    CHECK(inputNamed(rpc.result("get_live_inputs"), "phase").at("value") == 0.5);
+    const auto text = Json{{"problems", frame.at("problems")}}.dump();
+    CHECK_THAT(text, ContainsSubstring("live_input.record_failed@1"));
+    CHECK_THAT(text, ContainsSubstring("injected write failure"));
+    (void)rpc.result("step_frame");
+    CHECK(rpc.result("get_status").at("live_inputs").at("recording").is_null());
+}
+
+#if defined(PELICAN_OSC2C_PLAYER)
+TEST_CASE("OSC-4a CLI replay reproduces frozen values and simple graph pixels",
+          "[osc4a][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+                      ("pelican_osc4a_cli_" + std::to_string(
+                          std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    const auto recording_path = dir.root / "cli.live_seq";
+    const std::vector<double> phases{0.0, 0.25, 0.75, 0.75, 1.25};
+    std::vector<double> recorded_values;
+    std::vector<std::string> recorded_pixels;
+    std::vector<double> recorded_changes;
+    {
+        PlayerProcess player{root, {"--fps", "60", "--record-live",
+                                    recording_path.generic_string()}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        for (std::size_t index = 0; index < phases.size(); ++index) {
+            (void)player.result("set_live_input", {{"values", {{"phase", phases[index]}}}});
+            (void)player.result("step_frame");
+            const auto input = inputNamed(player.result("get_live_inputs"), "phase");
+            recorded_values.push_back(input.at("value").get<double>());
+            recorded_changes.push_back(input.at("changed_frame").get<double>());
+            const auto capture = dir.root / ("recorded-" + std::to_string(index) + ".png");
+            (void)player.result("capture", {{"path", capture.generic_string()}});
+            recorded_pixels.push_back(readFile(capture));
+        }
+    }
+    REQUIRE(recorded_values == phases);
+    const auto recording = LiveInputRecording::loadFile(recording_path);
+    REQUIRE(recording.end.evaluations == phases.size());
+    for (std::size_t index = 0; index < phases.size(); ++index) {
+        const auto replayed = recording.valuesAtFrame(index + 1).at("phase");
+        CHECK(replayed == recorded_values[index]);
+    }
+
+    const auto replay = [&](std::string_view label) {
+        INFO(label);
+        PlayerProcess player{root, {"--fps", "60", "--replay-live",
+                                    recording_path.generic_string()}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        std::vector<double> previous_changes;
+        for (std::size_t index = 0; index < phases.size(); ++index) {
+            (void)player.result("step_frame");
+            const auto input = inputNamed(player.result("get_live_inputs"), "phase");
+            CHECK(input.at("value").get<double>() == recorded_values[index]);
+            CHECK(input.at("changed_frame").get<double>() == recorded_changes[index]);
+            CHECK(input.at("source").get<std::string>() == "replay");
+            const auto capture = dir.root / (std::string{label} + "-" +
+                std::to_string(index) + ".png");
+            (void)player.result("capture", {{"path", capture.generic_string()}});
+            CHECK(readFile(capture) == recorded_pixels[index]);
+        }
+    };
+    replay("replay-one");
+    replay("replay-two");
 }
 #endif
 

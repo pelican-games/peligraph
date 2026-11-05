@@ -220,6 +220,7 @@ std::string_view liveInputSourceName(LiveInputSource source) noexcept {
     case LiveInputSource::none: return "default";
     case LiveInputSource::rpc: return "rpc";
     case LiveInputSource::osc: return "osc";
+    case LiveInputSource::replay: return "replay";
     }
     return "default";
 }
@@ -236,6 +237,10 @@ LiveInputs::LiveInputs() {
 
 void LiveInputs::installDeclaration(std::vector<LiveInputSpec> specs) {
     std::scoped_lock lock{mutex_};
+    if (live_recording_)
+        refuse("live_input.recording_active@1", "live input declarations cannot change while recording");
+    if (live_replaying_)
+        refuse("live_input.replay_active@1", "live input declarations cannot change while replaying");
     specs_ = std::move(specs);
     indices_.clear();
     runtime_.clear();
@@ -303,6 +308,11 @@ bool LiveInputs::normalizeValue(const LiveInputSpec &spec, double value,
 
 std::size_t LiveInputs::stageValues(const nlohmann::json &values) {
     std::scoped_lock lock{mutex_};
+    if (live_replaying_) {
+        ++dropped_during_replay_;
+        refuse("live_input.replay_active@1",
+               "set_live_input cannot be combined with live replay");
+    }
     if (replaying_) {
         ++dropped_during_replay_;
         refuse("live_input.replay@1",
@@ -391,13 +401,33 @@ LiveStageResult LiveInputs::stageBatch(std::span<const LiveInputUpdate> updates,
     return result;
 }
 
-void LiveInputs::freeze(bool replaying, std::uint64_t frame) {
+void LiveInputs::freeze(
+    bool input_sequence_replaying, std::uint64_t frame,
+    const std::map<std::string, double, std::less<>> *live_replay) {
     std::scoped_lock lock{mutex_};
+    const bool replaying = input_sequence_replaying || live_replay != nullptr;
     if (replaying != replaying_) {
         replaying_ = replaying;
         dropped_during_replay_ = 0;
         pending_.clear();
         resetFrozenLocked();
+    }
+    live_replaying_ = live_replay != nullptr;
+    if (live_replay != nullptr) {
+        dropped_during_replay_ += pending_.size();
+        pending_.clear();
+        for (auto &runtime : runtime_) {
+            const auto found = live_replay->find(runtime.spec.name);
+            const double value = found == live_replay->end()
+                ? runtime.spec.default_value : found->second;
+            if (runtime.value != value) {
+                runtime.value = value;
+                runtime.changed_frame = frame;
+            }
+            runtime.source = LiveInputSource::replay;
+            runtime.clamped = false;
+        }
+        return;
     }
     if (replaying_) {
         dropped_during_replay_ += pending_.size();
@@ -416,6 +446,28 @@ void LiveInputs::freeze(bool replaying, std::uint64_t frame) {
         runtime.clamped = pending.clamped;
     }
     pending_.clear();
+}
+
+void LiveInputs::beginLiveReplay() {
+    std::scoped_lock lock{mutex_};
+    live_replaying_ = true;
+    replaying_ = true;
+    dropped_during_replay_ = 0;
+    pending_.clear();
+    resetFrozenLocked();
+}
+
+void LiveInputs::endLiveReplay() {
+    std::scoped_lock lock{mutex_};
+    live_replaying_ = false;
+    replaying_ = false;
+    pending_.clear();
+    resetFrozenLocked();
+}
+
+void LiveInputs::setLiveRecording(bool active) {
+    std::scoped_lock lock{mutex_};
+    live_recording_ = active;
 }
 
 void LiveInputs::resetFrozenLocked() {
@@ -450,26 +502,48 @@ bool LiveInputs::isReplaying() const {
     return replaying_;
 }
 
+bool LiveInputs::isLiveReplaying() const {
+    std::scoped_lock lock{mutex_};
+    return live_replaying_;
+}
+
+bool LiveInputs::isLiveRecording() const {
+    std::scoped_lock lock{mutex_};
+    return live_recording_;
+}
+
 std::uint64_t LiveInputs::droppedDuringReplay() const {
     std::scoped_lock lock{mutex_};
     return dropped_during_replay_;
 }
 
+void LiveInputs::setGraphLiveReads(std::vector<std::string> names) {
+    std::sort(names.begin(), names.end());
+    names.erase(std::unique(names.begin(), names.end()), names.end());
+    std::scoped_lock lock{mutex_};
+    graph_live_reads_ = std::move(names);
+}
+
 void LiveInputs::noteGraphReadsLive(std::string_view name) {
     std::scoped_lock lock{mutex_};
-    if (graph_reads_live_) return;
-    graph_reads_live_ = true;
-    first_live_read_ = name;
+    if (std::find(graph_live_reads_.begin(), graph_live_reads_.end(), name) ==
+        graph_live_reads_.end())
+        graph_live_reads_.emplace_back(name);
 }
 
 bool LiveInputs::graphReadsLive() const {
     std::scoped_lock lock{mutex_};
-    return graph_reads_live_;
+    return !graph_live_reads_.empty();
 }
 
 std::string LiveInputs::firstLiveRead() const {
     std::scoped_lock lock{mutex_};
-    return first_live_read_;
+    return graph_live_reads_.empty() ? std::string{} : graph_live_reads_.front();
+}
+
+std::vector<std::string> LiveInputs::graphLiveReads() const {
+    std::scoped_lock lock{mutex_};
+    return graph_live_reads_;
 }
 
 } // namespace Pelican

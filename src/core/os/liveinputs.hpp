@@ -37,6 +37,7 @@ enum class LiveInputSource : std::uint8_t {
     none,
     rpc,
     osc,
+    replay,
 };
 
 // "default", "rpc", "osc".
@@ -106,23 +107,29 @@ DECLARE_MODULE(LiveInputs) {
     LiveStageResult stageBatch(std::span<const LiveInputUpdate> updates,
                                LiveInputSource source);
 
-    // The frame boundary. While replaying, pending writes are discarded and
-    // the snapshot stays at the declared defaults; a replay start also drops
-    // whatever was pending and resets the snapshot.
-    void freeze(bool replaying, std::uint64_t frame);
+    // The frame boundary. A live replay supplies complete post-clamp values;
+    // an input-sequence replay alone keeps the existing reset-to-default rule.
+    void freeze(bool input_sequence_replaying, std::uint64_t frame,
+                const std::map<std::string, double, std::less<>> *live_replay = nullptr);
+    void beginLiveReplay();
+    void endLiveReplay();
+    void setLiveRecording(bool active);
 
     ValueGraph::Inputs frozenInputs() const;
     std::vector<LiveInputSnapshot> snapshot() const;
 
     bool isReplaying() const;
+    bool isLiveReplaying() const;
+    bool isLiveRecording() const;
     std::uint64_t droppedDuringReplay() const;
 
-    // The render graph validation records the first live input a graph reads,
-    // so start_input_replay can refuse a project whose output depends on a
-    // value a recording cannot carry.
+    // Each validation replaces this set, so a project or graph switch cannot
+    // leave a read from the previous graph behind.
+    void setGraphLiveReads(std::vector<std::string> names);
     void noteGraphReadsLive(std::string_view name);
     bool graphReadsLive() const;
     std::string firstLiveRead() const;
+    std::vector<std::string> graphLiveReads() const;
 
   private:
     struct Runtime {
@@ -161,9 +168,10 @@ DECLARE_MODULE(LiveInputs) {
     std::vector<Runtime> runtime_;
     std::map<std::string, Pending, std::less<>> pending_;
     bool replaying_ = false;
+    bool live_replaying_ = false;
+    bool live_recording_ = false;
     std::uint64_t dropped_during_replay_ = 0;
-    bool graph_reads_live_ = false;
-    std::string first_live_read_;
+    std::vector<std::string> graph_live_reads_;
 };
 
 } // namespace Pelican

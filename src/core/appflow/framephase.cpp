@@ -12,6 +12,7 @@
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/liveinputs.hpp"
+#include "../os/liveinputrecording.hpp"
 #include "../os/window.hpp"
 #include "../ui/module.hpp"
 #include "../vkcore/rendertarget.hpp"
@@ -55,6 +56,7 @@ struct FrameStateModules {
     InputSequenceRuntime &input_sequence;
     InputState &input_state;
     LiveInputs &live_inputs;
+    LiveInputRecordingRuntime &live_recording;
     ui::UiModule *ui_module;
     RenderTarget *render_target;
 #if PELICAN_WITH_IMGUI
@@ -115,6 +117,7 @@ FrameStateModules resolveFrameStateModules() {
         GET_MODULE(InputSequenceRuntime),
         GET_MODULE(InputState),
         GET_MODULE(LiveInputs),
+        GET_MODULE(LiveInputRecordingRuntime),
         ui_module,
         render_target,
 #if PELICAN_WITH_IMGUI
@@ -209,17 +212,30 @@ void updateFrameState() {
             // delivering trips the event registerer's frame check.
             if (game_step) internal::freezePendingEventsForFrame();
             break;
-        case FramePhase::freeze_input:
+        case FramePhase::freeze_input: {
             modules.input_sequence.prepareFrame(modules.input_state, livePointerTransform());
             modules.input_state.beginFrame();
             // OSC-1a: the same boundary freezes the live-input snapshot. RPC
             // writes only the pending table, so every graph evaluation of this
             // frame reads one value, and a value set after this point applies
             // at the next frame.
+            const auto replay_clock = liveRecordingClock(
+                modules.engine_time, GET_MODULE(EngineLaunchConfig).headless ||
+                    modules.input_sequence.isReplaying()
+                    ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime);
+            modules.live_recording.prepareFrame(replay_clock);
+            const auto replay_values = modules.live_recording.replayValues(
+                modules.engine_time.evaluationIndex(), modules.engine_time.now());
             modules.live_inputs.freeze(modules.input_sequence.isReplaying(),
-                                       modules.engine_time.evaluationIndex());
+                                       modules.engine_time.evaluationIndex(),
+                                       modules.live_recording.isReplaying()
+                                           ? &replay_values : nullptr);
+            modules.live_recording.recordFrame(
+                modules.engine_time.evaluationIndex(), modules.engine_time.now(),
+                modules.live_inputs.snapshot());
             modules.input_sequence.recordFrame(modules.input_state.currentFrameInput());
             break;
+        }
         case FramePhase::freeze_actions:
 #if PELICAN_WITH_IMGUI
             if (modules.imgui_system != nullptr)

@@ -8,6 +8,7 @@ void ReloadGate::configureFromLaunch(const EngineLaunchConfig &config) {
     std::scoped_lock lock{mutex_};
     requested_ = config.shader_hot_reload;
     replay_ = config.input_replay || config.input_replay_path.has_value();
+    live_replay_ = config.live_replay_path.has_value();
     strict_ = config.strict_assets;
     rpc_ = config.rpc;
     updateLocked();
@@ -17,6 +18,7 @@ void ReloadGate::setReason(ReloadGateReason reason, bool active) {
     std::scoped_lock lock{mutex_};
     switch (reason) {
     case ReloadGateReason::replay: replay_ = active; break;
+    case ReloadGateReason::live_replay: live_replay_ = active; break;
     case ReloadGateReason::strict_assets: strict_ = active; break;
     case ReloadGateReason::rpc_driver: rpc_ = active; break;
     }
@@ -43,11 +45,12 @@ void ReloadGate::updateLocked() {
     const bool rpc_shuts = rpc_ && watch_ == WatchDeclaration::undeclared;
     const bool declared_empty = watch_ == WatchDeclaration::empty;
     const bool next =
-        !build_disabled && requested_ && !replay_ && !strict_ && !rpc_shuts && !declared_empty;
+        !build_disabled && requested_ && !replay_ && !live_replay_ && !strict_ && !rpc_shuts && !declared_empty;
     if (next != enabled_) ++epoch_;
     enabled_ = next;
     if (build_disabled) reason_ = "hot reload build disabled";
     else if (replay_) reason_ = "replay";
+    else if (live_replay_) reason_ = "live replay";
     else if (strict_) reason_ = "strict assets";
     else if (rpc_shuts) reason_ = "rpc driver";
     else if (declared_empty) reason_ = "hot_reload empty";
@@ -66,6 +69,7 @@ bool ReloadGate::shaderReloadEnabled() const { return enabled(); }
 std::string ReloadGate::explicitShaderReloadRefusal() const {
     std::scoped_lock lock{mutex_};
     if (replay_) return "replay";
+    if (live_replay_) return "live replay";
     if (strict_) return "strict assets";
     return {};
 }

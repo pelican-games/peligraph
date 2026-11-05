@@ -2547,6 +2547,7 @@ target_link_libraries(pelican_test_en2_image_source_test PRIVATE pelican_shaderc
 if(COMMAND pelican_copy_shaderc_runtime)
     pelican_copy_test_shaderc_runtime(pelican_test_en2_image_source_test)
 endif()
+pelican_define_test(live_recording_test pelican_core)
 # PM-1a: playing <-> paused, advance_frames and the evaluation index over the
 # headless RPC, with the shipped posegraph_demo as the animated scene.
 if(PELICAN_WITH_ANIMATION)
@@ -3480,6 +3481,25 @@ add_test(
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake
 )
 pelican_gpu_test_properties(offline_start_time_headless_player 300)
+add_test(
+    NAME osc4a_live_start_time_player
+    COMMAND $<TARGET_FILE:pelican_gpu_lease_run> -- ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/osc4a_live_start_time
+        -DLIVE_REPLAY_ONLY=ON
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_offline_start_time_headless.cmake
+)
+pelican_gpu_test_properties(osc4a_live_start_time_player 300)
+add_test(
+    NAME osc4a_live_args_player
+    COMMAND ${CMAKE_COMMAND}
+        -DPLAYER=$<TARGET_FILE:pelican_player>
+        -DPLAYER_DIR=$<TARGET_FILE_DIR:pelican_player>
+        -DOUT_DIR=${CMAKE_BINARY_DIR}/test_artifacts/osc4a_live_args
+        -P ${CMAKE_CURRENT_SOURCE_DIR}/run_osc4a_live_args.cmake
+)
+set_tests_properties(osc4a_live_args_player PROPERTIES TIMEOUT 60 LABELS "cpu;osc4a")
 # Parse-only acceptance reaches a later, named CLI error after an accepted
 # boundary. It never initializes Vulkan or waits through warm-up.
 add_test(

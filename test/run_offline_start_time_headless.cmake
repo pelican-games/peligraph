@@ -181,6 +181,68 @@ function(read_hex label path out_hex)
     set(${out_hex} "${hex}" PARENT_SCOPE)
 endfunction()
 
+if(LIVE_REPLAY_ONLY)
+    file(MAKE_DIRECTORY "${OUT_DIR}/project/live")
+    file(MAKE_DIRECTORY "${OUT_DIR}/live/full")
+    file(MAKE_DIRECTORY "${OUT_DIR}/live/caught_up")
+    file(MAKE_DIRECTORY "${OUT_DIR}/live/no_catch_up")
+    file(WRITE "${OUT_DIR}/project/live/inputs.json" [=[
+{"schema":"pelican.live_inputs","version":1,"inputs":[
+  {"name":"phase","type":"float","default":0.0,"min":0.0,"max":4.0}
+]}
+]=])
+    file(READ "${OUT_DIR}/project/project.json" live_project)
+    string(REPLACE
+        "\"rendering_config_json\": \"passes/main.json\","
+        "\"rendering_config_json\": \"passes/main.json\",\n    \"live_inputs_json\": \"live/inputs.json\","
+        live_project "${live_project}")
+    file(WRITE "${OUT_DIR}/project/project.json" "${live_project}")
+    file(READ "${OUT_DIR}/project/passes/main.json" live_graph)
+    string(REPLACE [=[
+    {"id": "clock", "op": "value.trigger_clock",
+     "inputs": {"time": {"node": "clock_time", "port": "value"},
+                "trigger": {"node": "always", "port": "value"}},
+     "outputs": ["value"]},]=] [=[
+    {"id": "clock", "op": "value.input",
+     "parameters": {"name": "live:phase"}, "outputs": ["value"]},]=]
+        live_graph "${live_graph}")
+    if(live_graph MATCHES "value.trigger_clock")
+        message(FATAL_ERROR "could not make the live-input start-time fixture")
+    endif()
+    file(WRITE "${OUT_DIR}/project/passes/main.json" "${live_graph}")
+    set(recording "${OUT_DIR}/live/show.live_seq")
+    file(WRITE "${recording}" [=[
+{"schema":"pelican.live_seq","version":1,"inputs":[{"name":"phase","type":"float","default":0.0,"min":0.0,"max":4.0}],"clock":"fixed","fixed_step":0.016666666666666666,"start_frame":1,"start_time":0.016666666666666666}
+{"frame":1,"time":0.016666666666666666,"values":{"phase":0.0}}
+{"frame":2,"time":0.033333333333333333,"values":{"phase":0.125}}
+{"frame":3,"time":0.050000000000000003,"values":{"phase":0.0625}}
+{"end":true,"frame":5,"time":0.083333333333333329,"evaluations":5}
+]=])
+    run_player("live replay ordinary run" TRUE live_plain_stderr
+        --replay-live "${recording}" --frames 5
+        --render-out "${OUT_DIR}/live/full/%04d.png")
+    run_player("live replay with catch-up" TRUE live_started_stderr
+        --replay-live "${recording}" --start-time 0.05 --frames 1
+        --render-out "${OUT_DIR}/live/caught_up/0003.png")
+    run_player("live replay without catch-up" TRUE live_zero_stderr
+        --replay-live "${recording}" --start-time 0.0 --frames 1
+        --render-out "${OUT_DIR}/live/no_catch_up/0001.png")
+    read_hex("ordinary live replay frame 3" "${OUT_DIR}/live/full/0003.png" live_third)
+    read_hex("ordinary live replay frame 1" "${OUT_DIR}/live/full/0001.png" live_first)
+    read_hex("caught-up live replay" "${OUT_DIR}/live/caught_up/0003.png" live_caught_up)
+    read_hex("zero-catch-up live replay" "${OUT_DIR}/live/no_catch_up/0001.png" live_zero)
+    if(NOT live_caught_up STREQUAL live_third)
+        message(FATAL_ERROR "--start-time live replay did not reproduce ordinary replay frame 3")
+    endif()
+    if(NOT live_zero STREQUAL live_first)
+        message(FATAL_ERROR "--start-time 0 live replay did not reproduce ordinary replay frame 1")
+    endif()
+    if(live_first STREQUAL live_third)
+        message(FATAL_ERROR "the live replay start-time fixture draws every tested frame identically")
+    endif()
+    return()
+endif()
+
 # The plain run is the oracle: 121 frames of the ordinary fixed-step timeline.
 run_player("plain 121 frames" TRUE plain_stderr
     --frames 121 --render-out "${OUT_DIR}/frames/%04d.png")

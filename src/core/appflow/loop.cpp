@@ -10,6 +10,9 @@
 #endif
 #include "../os/inputstate.hpp"
 #include "../os/inputsequence.hpp"
+#include "../os/liveinputs.hpp"
+#include "../os/liveinputrecording.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../os/window.hpp"
 #if PELICAN_WITH_OPENXR
 #include "../openxr/openxrcompositiontarget.hpp"
@@ -325,6 +328,8 @@ void finishLoopResources(InputSequenceRuntime &input_sequence,
         render_timing->flush();
     gpu.deletion_queue.flushAll();
     if (input_sequence.isRecording()) input_sequence.stopRecording();
+    if (auto *live = FastModuleContainer::tryGet<LiveInputRecordingRuntime>();
+        live != nullptr && live->isRecording()) live->stopRecording();
     if (camera_bake == nullptr)
         camera_bake = FastModuleContainer::tryGet<CameraBakeRecorder>();
     if (camera_bake != nullptr && camera_bake->isActive()) camera_bake->finish();
@@ -836,6 +841,17 @@ void Loop::run() {
                                : EngineTime::Mode::realtime;
     const auto timeline_fps = input_sequence.isReplaying() ? input_sequence.replayFps() : launch_config.fps;
     modules.engine_time.setup(time_mode, 1.0 / timeline_fps);
+    auto &live_recording = GET_MODULE(LiveInputRecordingRuntime);
+    const auto live_clock = liveRecordingClock(modules.engine_time, time_mode);
+    if (launch_config.live_replay_path) {
+        live_recording.startReplay(std::make_shared<const LiveInputRecording>(
+            LiveInputRecording::loadFile(*launch_config.live_replay_path)), live_clock);
+        GET_MODULE(watch::ReloadGate).setReason(watch::ReloadGateReason::live_replay, true);
+    } else if (launch_config.live_record) {
+        live_recording.startRecording(*launch_config.live_record,
+            GET_MODULE(LiveInputs).declarations(), live_clock,
+            liveRecordingProjectDigest(GET_MODULE(PathResolver).projectRoot()));
+    }
     if (launch_config.camera_bake_output) {
         modules.camera_bake->start(*launch_config.camera_bake_output, input_sequence.replayFps());
     }

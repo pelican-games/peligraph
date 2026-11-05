@@ -4,7 +4,10 @@
 #include "../../project/graphmodule.hpp"
 #include "../launchconfig.hpp"
 #include "../loader/scene.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../os/liveinputs.hpp"
+#include "../os/liveinputrecording.hpp"
+#include "../watch/problemlist.hpp"
 #include "../ecs/core.hpp"
 #include "../ecs/predefined/modelview.hpp"
 #include "../userpublic/components/predefined.hpp"
@@ -39,24 +42,75 @@ std::string liveName(std::string_view input) {
     return std::string{input.substr(std::string_view{"live:"}.size())};
 }
 
-// Validates the live:* names a graph reads, records that this project depends
-// on one, and refuses deterministic offline output that would silently use a
-// value a recording does not carry. Other names are left for the caller's old
-// unbound-frame-input refusal.
 void checkLiveInputReads(const ValueGraph::Graph &graph) {
-    auto &live = GET_MODULE(LiveInputs);
+    std::vector<std::string> reads;
     for (const auto &input : graph.inputNames()) {
         if (!input.starts_with("live:")) continue;
-        if (!live.isDeclared(liveName(input)))
+        if (!GET_MODULE(LiveInputs).isDeclared(liveName(input)))
             throw std::runtime_error("live_input.unknown@1: graph reads undeclared live input '" +
                                      liveName(input) + "'");
-        live.noteGraphReadsLive(input);
-        if (offlineLaunchReadsNoLiveInputs())
-            throw std::runtime_error(
-                "offline.live_input_unrecorded@1: rendering graph reads " + input);
+        reads.push_back(input);
     }
+    GET_MODULE(LiveInputs).setGraphLiveReads(std::move(reads));
+    validateCurrentLiveInputReplay();
 }
 } // namespace
+
+void validateCurrentLiveInputReplay(bool offline_required) {
+    auto &live = GET_MODULE(LiveInputs);
+    const auto reads = live.graphLiveReads();
+    const auto &runtime = GET_MODULE(LiveInputRecordingRuntime);
+    const auto *recording = runtime.recordingData();
+    nlohmann::json warnings = nlohmann::json::array();
+    for (const auto &input : reads) {
+        const auto name = liveName(input);
+        if (recording == nullptr) {
+            if (offline_required || offlineLaunchReadsNoLiveInputs())
+                throw std::runtime_error(
+                    "offline.live_input_unrecorded@1: rendering graph reads " + input);
+            continue;
+        }
+        const auto *recorded = recording->declaration(name);
+        if (recorded == nullptr)
+            throw std::runtime_error(
+                "offline.live_input_unrecorded@1: live recording does not declare " + input);
+        const auto current = live.declaration(name);
+        if (!current) continue;
+        if (current->type != recorded->type)
+            throw std::runtime_error(
+                "live_input.recording_mismatch@1: live recording type differs for " + input);
+        if (current->default_value != recorded->default_value ||
+            current->minimum != recorded->minimum || current->maximum != recorded->maximum) {
+            warnings.push_back({{"severity", "warning"}, {"source", "live_input_recording"},
+                {"code", "live_input.recording_stale@1"},
+                {"message", "live declaration changed since recording: " + input},
+                {"fields", {{"input", name}}}});
+        }
+    }
+    if (recording != nullptr) {
+        for (const auto &recorded : recording->inputs) {
+            if (!live.isDeclared(recorded.name)) {
+                warnings.push_back({{"severity", "warning"}, {"source", "live_input_recording"},
+                    {"code", "live_input.recording_stale@1"},
+                    {"message", "recorded live input is no longer declared: " + recorded.name},
+                    {"fields", {{"input", recorded.name}}}});
+            }
+        }
+        if (!recording->project_digest.empty()) {
+            const auto current_digest = liveRecordingProjectDigest(
+                GET_MODULE(PathResolver).projectRoot());
+            if (!current_digest.empty() && current_digest != recording->project_digest) {
+                warnings.push_back({{"severity", "warning"}, {"source", "live_input_recording"},
+                    {"code", "live_input.recording_stale@1"},
+                    {"message", "project document changed since the live recording"},
+                    {"fields", {{"project_digest", recording->project_digest},
+                                {"current_project_digest", current_digest}}}});
+            }
+        }
+    }
+    if (auto *problems = FastModuleContainer::tryGet<ProblemList>())
+        problems->replace("live_input_stale", std::move(warnings));
+}
 
 void validateGraphInputs(const ValueGraph::Graph &graph) {
     auto names = graph.inputNames();

@@ -522,6 +522,14 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("path.jsonl")
         .help("replay a pelican.input_seq file (v2, or v1 read at content scale 1)");
+    program.add_argument("--record-live")
+        .default_value(std::string{})
+        .metavar("path.jsonl")
+        .help("record frozen live inputs as pelican.live_seq v1");
+    program.add_argument("--replay-live")
+        .default_value(std::string{})
+        .metavar("path.jsonl")
+        .help("replay pelican.live_seq v1; a different clock resamples held values by time and is not frame-identical");
     program.add_argument("--input-profile")
         .default_value(std::string{})
         .metavar("name")
@@ -757,6 +765,17 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.input_replay = true;
             config.shader_hot_reload = false;
         }
+        const auto record_live = program.get<std::string>("--record-live");
+        const auto replay_live = program.get<std::string>("--replay-live");
+        if (!record_live.empty() && !replay_live.empty()) {
+            throw std::runtime_error(
+                "live_input.record_while_replaying@1: --record-live cannot be combined with --replay-live");
+        }
+        if (!record_live.empty()) config.live_record = std::filesystem::path{record_live};
+        if (!replay_live.empty()) {
+            config.live_replay_path = resolveExistingCliFile(replay_live, "--replay-live");
+            config.shader_hot_reload = false;
+        }
         const auto input_profile = program.get<std::string>("--input-profile");
         if (!input_profile.empty()) {
             config.input_profile = input_profile;
@@ -824,6 +843,8 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 {"--bake-camera-output", config.camera_bake_output.has_value()},
                 {"--replay", config.input_replay_path.has_value()},
                 {"--record-input", config.input_record.has_value()},
+                {"--replay-live", config.live_replay_path.has_value()},
+                {"--record-live", config.live_record.has_value()},
                 {"--start-time", !program.get<std::string>("--start-time").empty()},
                 {"--headless without --rpc", config.headless && !config.rpc},
             };
@@ -850,6 +871,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 {"--rpc", config.rpc},
                 {"--replay", config.input_replay_path.has_value()},
                 {"--record-input", config.input_record.has_value()},
+                {"--record-live", config.live_record.has_value()},
                 {"--bake-camera-output", config.camera_bake_output.has_value()},
             };
             for (const auto &[flag, used] : conflicts) {

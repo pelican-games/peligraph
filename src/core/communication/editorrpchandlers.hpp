@@ -15,6 +15,7 @@ struct EditorRpcHandlerHooks {
     // import_scene_snapshot do anything; it throws the refusal while a play
     // session is running. Optional.
     std::function<void(std::string_view method)> refuse_during_play_session;
+    std::function<void(std::string_view method)> refuse_during_live_replay;
 };
 
 // Registers only the editor/authoring RPC surface. Transport concerns and

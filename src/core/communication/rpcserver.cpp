@@ -44,6 +44,8 @@
 #include "../model/vertbufcontainer.hpp"
 #include "../os/inputsequence.hpp"
 #include "../os/liveinputs.hpp"
+#include "../os/liveinputrecording.hpp"
+#include "../renderingpass/graphinputs.hpp"
 #if PELICAN_WITH_OSC
 #include "../osc/oscinput.hpp"
 #include "../osc/osclistener.hpp"
@@ -378,6 +380,7 @@ struct EngineRpcModules {
     InputSequenceRuntime &input_sequence;
     InputState &input_state;
     LiveInputs &live_inputs;
+    LiveInputRecordingRuntime &live_recording;
     EngineLaunchConfig &launch_config;
     watch::ReloadGate &reload_gate;
     watch::ReloadService *reload_service;
@@ -421,6 +424,7 @@ EngineRpcModules resolveEngineRpcModules() {
         GET_MODULE(InputSequenceRuntime),
         GET_MODULE(InputState),
         GET_MODULE(LiveInputs),
+        GET_MODULE(LiveInputRecordingRuntime),
         GET_MODULE(EngineLaunchConfig),
         GET_MODULE(watch::ReloadGate),
         FastModuleContainer::tryGet<watch::ReloadService>(),
@@ -1737,8 +1741,22 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                            ? nlohmann::json(renderDocCaptureSourceName(*renderdoc.source))
                            : nlohmann::json(nullptr)},
         };
+        nlohmann::json live_status{
+            {"recording", nullptr},
+            {"replaying", modules.live_recording.isReplaying()},
+            {"replay_lines", modules.live_recording.replayLines()}};
+        if (const auto recording = modules.live_recording.recordStatus()) {
+            live_status["recording"] = {
+                {"path", weaklyCanonicalOrAbsolute(recording->path).generic_string()},
+                {"lines", recording->lines},
+                {"evaluations", recording->evaluations},
+                {"mean_write_ms", recording->lines == 0 ? 0.0
+                    : recording->total_write_ms / static_cast<double>(recording->lines)},
+                {"max_write_ms", recording->max_write_ms}};
+        }
         return nlohmann::json{
             {"instance_id", instance_id},
+            {"live_inputs", std::move(live_status)},
             {"ray_tracing", {{"procedural_oracle",
                 modules.pipelines.proceduralOracleStatus(active_pipelines)},
                 // RTL-1b: the ray layout mode this process started in
@@ -2013,6 +2031,13 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                                               std::string_view method) {
                 refuseDuringPlaySession(play_session, modules.engine_time, method);
             },
+            .refuse_during_live_replay = [&modules](std::string_view method) {
+                if (modules.live_recording.isReplaying())
+                    throw JsonRpcHandlerError(
+                        JsonRpcErrorCodes::applicationError,
+                        "live_input.replay_active@1: " + std::string{method} +
+                            " is refused during live replay");
+            },
         });
 
     server.setHandler("set_seed", [](const nlohmann::json &params) {
@@ -2127,6 +2152,84 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return result;
     });
 
+    server.setHandler("start_live_record", [&modules](const nlohmann::json &params) {
+        const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_live_record"));
+        try {
+            const auto mode = modules.launch_config.headless || modules.input_sequence.isReplaying()
+                ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
+            modules.live_recording.startRecording(path, modules.live_inputs.declarations(),
+                liveRecordingClock(modules.engine_time, mode),
+                liveRecordingProjectDigest(modules.path_resolver.projectRoot()));
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+        return nlohmann::json{{"path", weaklyCanonicalOrAbsolute(path).generic_string()}};
+    });
+
+    server.setHandler("stop_live_record", [&modules](const nlohmann::json &params) {
+        requireObjectParams(params, "stop_live_record");
+        try {
+            const auto status = modules.live_recording.recordStatus();
+            if (!status) throw std::runtime_error("live_input.record_inactive@1: no live recording is active");
+            modules.live_recording.stopRecording();
+            return nlohmann::json{
+                {"path", weaklyCanonicalOrAbsolute(status->path).generic_string()},
+                {"lines", status->lines}, {"evaluations", status->evaluations},
+                {"mean_write_ms", status->lines == 0 ? 0.0
+                    : status->total_write_ms / static_cast<double>(status->lines)},
+                {"max_write_ms", status->max_write_ms}};
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+    });
+
+    server.setHandler("start_live_replay", [&modules](const nlohmann::json &params) {
+        const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_live_replay"));
+        bool started = false;
+        try {
+            auto recording = std::make_shared<const LiveInputRecording>(
+                LiveInputRecording::loadFile(path));
+            const auto mode = modules.launch_config.headless || modules.input_sequence.isReplaying()
+                ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
+            modules.live_recording.startReplay(recording,
+                liveRecordingClock(modules.engine_time, mode));
+            started = true;
+            modules.launch_config.live_replay_path = path;
+            modules.reload_gate.setReason(watch::ReloadGateReason::live_replay, true);
+            validateCurrentLiveInputReplay();
+            return nlohmann::json{
+                {"path", weaklyCanonicalOrAbsolute(path).generic_string()},
+                {"lines", recording->frames.size()}, {"hot_reload", false}};
+        } catch (const std::exception &error) {
+            if (started) {
+                modules.live_recording.stopReplay();
+                modules.launch_config.live_replay_path.reset();
+                modules.reload_gate.setReason(watch::ReloadGateReason::live_replay, false);
+            }
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+    });
+
+    server.setHandler("stop_live_replay", [&modules](const nlohmann::json &params) {
+        requireObjectParams(params, "stop_live_replay");
+        try {
+            const bool offline = modules.launch_config.start_time_explicit ||
+                modules.launch_config.start_frames > 0 ||
+                modules.launch_config.camera_bake_output.has_value() ||
+                modules.launch_config.input_replay ||
+                modules.launch_config.input_replay_path.has_value();
+            if (offline && modules.live_inputs.graphReadsLive())
+                throw std::runtime_error(
+                    "live_input.replay_required@1: offline graph still requires live replay");
+            modules.live_recording.stopReplay();
+            modules.launch_config.live_replay_path.reset();
+            modules.reload_gate.setReason(watch::ReloadGateReason::live_replay, false);
+            return nlohmann::json{{"stopped", true}};
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+    });
+
     server.setHandler("start_input_record", [&modules](const nlohmann::json &params) {
         refuseInputSequenceInEditLaunch("start_input_record");
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_input_record"));
@@ -2160,14 +2263,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 throw std::runtime_error(
                     "start_input_replay cannot begin while inject_input events are pending");
             }
-            // OSC-1a: a recording can carry injected input, not a live value.
-            // A project whose graph reads one cannot be replayed to the same
-            // output, so refuse rather than silently freeze the default.
-            if (modules.live_inputs.graphReadsLive()) {
-                throw std::runtime_error(
-                    "offline.live_input_unrecorded@1: rendering graph reads " +
-                    modules.live_inputs.firstLiveRead());
-            }
+            validateCurrentLiveInputReplay(true);
             const auto pose_action_names = internal::poseInputActionNames();
             modules.input_sequence.startReplay(path, pose_action_names);
             editor_rpc.forceAbortPreview("replay");
@@ -2177,6 +2273,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             modules.reload_gate.setReason(watch::ReloadGateReason::replay, true);
             config.fps = modules.input_sequence.replayFps();
             modules.engine_time.setup(EngineTime::Mode::fixed_step, 1.0 / config.fps);
+            if (modules.live_recording.isReplaying()) {
+                modules.live_recording.setReplayClock(liveRecordingClock(
+                    modules.engine_time, EngineTime::Mode::fixed_step));
+            }
         } catch (const std::exception &error) {
             throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
         }
@@ -2213,6 +2313,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     });
 
     server.setHandler("set_time", [&modules](const nlohmann::json &params) {
+        if (modules.live_recording.isRecording() || modules.live_recording.isReplaying())
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+                "live_input.time_change_refused@1: set_time is unavailable while recording or replaying live inputs");
         const auto t = requireNumberParam(params, "t", "set_time");
         modules.engine_time.setTime(t);
         modules.renderer.resetTemporalHistory();
