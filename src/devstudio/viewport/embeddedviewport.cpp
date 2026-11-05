@@ -859,7 +859,9 @@ void EmbeddedViewport::emitStatus(qint64 request_id, const QByteArray &result_js
 
 void EmbeddedViewport::markRpcReady() {
     readiness_request_ = 0;
-    if (rpc_ready_) {
+    // An engine being stopped for a restart can finish starting up meanwhile.
+    // It's still the one going away: the gate opens for its replacement.
+    if (rpc_ready_ || restart_after_stop_) {
         return;
     }
     rpc_ready_ = true;
