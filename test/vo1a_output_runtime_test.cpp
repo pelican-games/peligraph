@@ -540,7 +540,7 @@ class PlayerRpc {
                      {"method", std::string{method}},
                      {"params", params}};
         writeAll(request.dump() + "\n");
-        CAPTURE(method);
+        CAPTURE(std::string{method});
         const auto response = nextLine();
         INFO(response.dump());
         REQUIRE(response.contains("id"));
