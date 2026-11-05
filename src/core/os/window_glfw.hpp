@@ -4,6 +4,7 @@
 // code that talks to GLFW itself (window_glfw.cpp, windowsurface_glfw.cpp and
 // the ImGui GLFW backend).
 
+#include "renderwindow.hpp"
 #include "window.hpp"
 
 struct GLFWwindow;
@@ -15,6 +16,10 @@ inline GLFWwindow *glfwWindowOf(NativeWindow *window) noexcept {
 }
 
 inline GLFWwindow *glfwWindowOf(const Window &window) noexcept {
+    return glfwWindowOf(window.nativeHandle());
+}
+
+inline GLFWwindow *glfwWindowOf(const RenderWindow &window) noexcept {
     return glfwWindowOf(window.nativeHandle());
 }
 

@@ -7,7 +7,7 @@
 
 namespace Pelican {
 
-class Window;
+class RenderWindow;
 
 using SurfaceEpochId = std::uint64_t;
 
@@ -45,11 +45,11 @@ struct PreparedWindowSurface {
 // surface-lost recovery always creates a fresh object.
 class WindowSurfaceFactory {
     vk::Instance instance_;
-    Window *window_ = nullptr;
+    RenderWindow *window_ = nullptr;
 
   public:
     WindowSurfaceFactory(
-        vk::Instance instance, Window &window) noexcept;
+        vk::Instance instance, RenderWindow &window) noexcept;
 
     PreparedWindowSurface create() const;
 };

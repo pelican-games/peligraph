@@ -195,6 +195,12 @@ struct FrameTargetStatus {
     bool asynchronous_maintenance = false;
     bool exact_present_retirement = false;
     std::string device_rebuild_reason = "none";
+    // MD-1a0 diagnostics. Successful submits and the present mode the target
+    // actually created; main-path users ignore them.
+    std::uint64_t submitted_frame_count = 0;
+    vk::PresentModeKHR present_mode =
+        vk::PresentModeKHR::eFifo;
+    double present_ms_max = 0.0;
 };
 
 std::string_view frameTargetLifecycleStateName(

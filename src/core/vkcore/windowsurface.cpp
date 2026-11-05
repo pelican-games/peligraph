@@ -1,5 +1,7 @@
 #include "windowsurface.hpp"
 
+#include "../os/renderwindow.hpp"
+
 #include <algorithm>
 #include <vector>
 
@@ -8,7 +10,7 @@ namespace Pelican {
 // WindowSurfaceFactory::create() is per platform: windowsurface_glfw.cpp
 // (desktop) and windowsurface_android.cpp.
 WindowSurfaceFactory::WindowSurfaceFactory(
-    vk::Instance instance, Window &window) noexcept
+    vk::Instance instance, RenderWindow &window) noexcept
     : instance_{instance}, window_{&window} {}
 
 SurfaceQueueBinding selectSurfacePresentationQueue(

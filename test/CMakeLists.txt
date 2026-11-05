@@ -4385,6 +4385,15 @@ if(PELICAN_WITH_RPC AND WIN32)
         PELICAN_RTL1B_PLAYER="$<TARGET_FILE:pelican_player>")
     add_dependencies(pelican_test_rtl1b_ray_layout_restart_test pelican_player)
 endif()
+if(PELICAN_WITH_RPC AND UNIX)
+    # MD-1a0: the diagnostic second window, observed through a real windowed
+    # --rpc player on an X display (the GPU lease holder starts Xvfb).
+    pelican_define_test(output_window_test GPU pelican_project stb)
+    target_include_directories(pelican_test_output_window_test PRIVATE ${stb_SOURCE_DIR})
+    target_compile_definitions(pelican_test_output_window_test PRIVATE
+        PELICAN_MD1A_PLAYER="$<TARGET_FILE:pelican_player>")
+    add_dependencies(pelican_test_output_window_test pelican_player)
+endif()
 
 if(PELICAN_WITH_RPC AND PELICAN_WITH_VIDEO_OUTPUT)
     # VO-1a: output.file through a real headless --rpc player.

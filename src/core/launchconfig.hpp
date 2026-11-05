@@ -47,6 +47,17 @@ enum class EngineStartState {
     edit,
 };
 
+// MD-1a0 (--output-window*): a second, diagnostic output window. A monitor
+// index is present when the option was given; size is absent for the
+// borderless full-monitor default. The pattern switch is required in this
+// slice because there is no real picture to show yet.
+struct OutputWindowLaunchOptions {
+    bool enabled = false;
+    std::uint32_t monitor = 0;
+    std::optional<vk::Extent2D> size;
+    bool pattern = false;
+};
+
 DECLARE_MODULE(EngineLaunchConfig) {
   public:
     bool headless = false;
@@ -133,6 +144,7 @@ DECLARE_MODULE(EngineLaunchConfig) {
     bool seq_loop = false;
     std::optional<EngineLaunchCameraOverride> camera_override;
     std::optional<std::filesystem::path> game_logic_dll;
+    OutputWindowLaunchOptions output_window;
 };
 
 } // namespace Pelican

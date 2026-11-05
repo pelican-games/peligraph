@@ -35,6 +35,9 @@
 #include "../userpublic/deterministicrng.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/deletionqueue.hpp"
+#if !defined(__ANDROID__)
+#include "../vkcore/outputwindowsink.hpp"
+#endif
 #include "../vkcore/renderer.hpp"
 #include "../vkcore/rendertarget.hpp"
 #include "../vkcore/rendertiming.hpp"
@@ -714,6 +717,11 @@ void runInteractive(LoopModules &modules, XrRuntime &xr,
     auto interactive = resolveInteractiveLoopModules();
     auto &window = interactive.window;
     auto &framerate_adjuster = interactive.framerate_adjuster;
+#if !defined(__ANDROID__)
+    // MD-1a0: the output sink is a sibling of the main target, not part of
+    // the render graph. It runs on this thread after the main flat frame.
+    auto &output_sink = GET_MODULE(OutputWindowSink);
+#endif
 
     // The single point that means "this frame's state update is finished".
     // Both the flat and the XR frame call it, which is why it is a lambda
@@ -779,6 +787,9 @@ void runInteractive(LoopModules &modules, XrRuntime &xr,
         step.update([&] { update_interactive_state(false); });
         step.render(GraphVariantSelection::renderer_selects,
                     [&] { renderFlatFrameWithOptionalCapture(modules, window); });
+#if !defined(__ANDROID__)
+        output_sink.presentFrame();
+#endif
 #if defined(__ANDROID__)
         if (Android::acceptedPresentCount() == android_present_before) {
             std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -835,6 +846,17 @@ void Loop::run() {
     // Built here rather than inside runInteractive(): the XR objects pull
     // modules, and creation is frozen a few lines below.
     auto xr = createXrRuntime(launch_config);
+    if (launch_config.output_window.enabled && launch_config.xr_active) {
+        throw std::runtime_error(
+            "output_window.xr_unsupported@1: --output-window is not "
+            "supported while an XR session is active");
+    }
+#if !defined(__ANDROID__)
+    // Construct even when disabled: creation is frozen below and the RPC
+    // status must be able to resolve this module on every windowed run.
+    GET_MODULE(OutputWindowSink).configure(
+        launch_config.output_window);
+#endif
     dumpFramePlanIfRequested(launch_config, modules.renderer);
     modules.startup_metrics.finishAndLog();
     FastModuleContainer::freezeCreation();
@@ -867,6 +889,12 @@ void Loop::run() {
     runInteractive(modules, xr, rpc_pump);
     finishLoopResources(input_sequence, modules.camera_bake, modules.render_timing,
                         modules.renderdoc_capture, TimingFlush::flush);
+#if !defined(__ANDROID__)
+    // Item 9 order: the device-wide wait above covers the output target's
+    // slot and presentation fences. The sink, target, surface and window are
+    // destroyed only after that wait, before the main modules go away.
+    GET_MODULE(OutputWindowSink).shutdown();
+#endif
 }
 
 } // namespace Pelican

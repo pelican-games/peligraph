@@ -1,10 +1,26 @@
 #pragma once
 
 #include "frametarget.hpp"
+#include "windowsurface.hpp"
 
+#include <cstdint>
 #include <memory>
 
 namespace Pelican {
+
+class RenderWindow;
+
+// MD-1a0: a second SwapchainFrameTarget over a window that is not the engine's
+// Window module. The caller supplies the window and a fresh surface it owns;
+// the target then consumes neither the main window's bootstrap surface nor its
+// camera extent. Recovery preparation still uses the same WSI machinery.
+struct ExternalWindowTargetConfig {
+    RenderWindow *window = nullptr;
+    PreparedWindowSurface surface;
+    std::uint32_t presentation_queue_family =
+        VK_QUEUE_FAMILY_IGNORED;
+    vk::Fence slot_fence_override_for_testing;
+};
 
 class SwapchainFrameTarget final : public IFrameTarget {
     struct Impl;
@@ -12,6 +28,8 @@ class SwapchainFrameTarget final : public IFrameTarget {
 
   public:
     SwapchainFrameTarget();
+    explicit SwapchainFrameTarget(
+        ExternalWindowTargetConfig config);
     ~SwapchainFrameTarget() override;
 
     SwapchainFrameTarget(

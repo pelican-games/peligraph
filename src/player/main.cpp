@@ -3,6 +3,7 @@
 #include "../core/playerdiagnostics.hpp"
 #include "../platform/playerconsole.hpp"
 #include <array>
+#include <charconv>
 #include <cmath>
 #include <cstdint>
 #include <cstdlib>
@@ -89,6 +90,24 @@ vk::Extent2D parseExtent(const std::string &value) {
 
     return vk::Extent2D{parsePositiveUint(value.substr(0, separator), "width"),
                         parsePositiveUint(value.substr(separator + 1), "height")};
+}
+
+std::uint32_t parseOutputMonitorIndex(const std::string &value) {
+    if (value.empty()) {
+        throw std::runtime_error(
+            "output_window.config_invalid@1: --output-window requires a "
+            "non-negative monitor index");
+    }
+    std::uint64_t index = 0;
+    const auto *end = value.data() + value.size();
+    const auto parsed = std::from_chars(value.data(), end, index);
+    if (parsed.ec != std::errc{} || parsed.ptr != end ||
+        index > std::numeric_limits<std::uint32_t>::max()) {
+        throw std::runtime_error(
+            "output_window.config_invalid@1: --output-window requires a "
+            "non-negative monitor index: " + value);
+    }
+    return static_cast<std::uint32_t>(index);
 }
 
 std::vector<double> parseCommaNumbers(const std::string &value, size_t expected_count, const std::string &name) {
@@ -423,6 +442,22 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .help("headless: replay up to this time, then render --frames frames from there (seconds <= " +
               std::to_string(kMaxOfflineStartSeconds) + "; nearest frame)");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
+    // MD-1a0: a diagnostic second window. It is not the real output yet, so
+    // this slice requires an explicit pattern and never consumes the main
+    // window's bootstrap surface.
+    program.add_argument("--output-window")
+        .nargs(argparse::nargs_pattern::optional)
+        .default_value(std::string{})
+        .metavar("monitor")
+        .help("show the MD-1a0 diagnostic pattern on this glfwGetMonitors index");
+    program.add_argument("--output-window-size")
+        .nargs(argparse::nargs_pattern::optional)
+        .default_value(std::string{})
+        .metavar("WxH")
+        .help("windowed output size; omitted means the monitor's borderless video mode");
+    program.add_argument("--output-window-pattern")
+        .flag()
+        .help("required in MD-1a0: draw a frame-number-dependent diagnostic pattern");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--output-dir")
         .default_value(std::string{})
@@ -626,6 +661,55 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         }
 
         config.headless_extent = parseExtent(program.get<std::string>("--size"));
+
+        const bool output_window_used =
+            program.is_used("--output-window");
+        const bool output_window_size_used =
+            program.is_used("--output-window-size");
+        const bool output_window_pattern =
+            program.get<bool>("--output-window-pattern");
+        if (!output_window_used) {
+            if (output_window_size_used || output_window_pattern) {
+                throw std::runtime_error(
+                    "output_window.config_invalid@1: --output-window-size "
+                    "and --output-window-pattern require --output-window");
+            }
+        } else {
+            if (config.headless) {
+                throw std::runtime_error(
+                    "output_window.headless@1: --output-window is not "
+                    "available with --headless");
+            }
+            if (config.xr_mode == Pelican::XrMode::on) {
+                throw std::runtime_error(
+                    "output_window.xr_unsupported@1: --output-window is not "
+                    "supported while XR is requested");
+            }
+            if (!output_window_pattern) {
+                throw std::runtime_error(
+                    "output_window.config_invalid@1: real output is not "
+                    "implemented yet; --output-window-pattern is required in "
+                    "MD-1a0");
+            }
+            config.output_window.enabled = true;
+            config.output_window.monitor =
+                parseOutputMonitorIndex(
+                    program.get<std::string>("--output-window"));
+            config.output_window.pattern = true;
+            if (output_window_size_used) {
+                try {
+                    config.output_window.size = parseExtent(
+                        program.get<std::string>(
+                            "--output-window-size"));
+                } catch (const std::exception &error) {
+                    throw std::runtime_error(
+                        "output_window.config_invalid@1: "
+                        "--output-window-size must be formatted as WxH with "
+                        "positive dimensions: " +
+                        std::string{error.what()});
+                }
+            }
+        }
 
         parsed.log_file = program.get<std::string>("--log-file");
         const auto render_out = program.get<std::string>("--render-out");

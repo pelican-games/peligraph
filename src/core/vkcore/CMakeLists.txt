@@ -31,7 +31,7 @@ target_sources(pelican_core PRIVATE
 if(ANDROID)
 target_sources(pelican_core PRIVATE windowsurface_android.cpp)
 else()
-target_sources(pelican_core PRIVATE windowsurface_glfw.cpp)
+target_sources(pelican_core PRIVATE windowsurface_glfw.cpp outputwindowsink.cpp)
 endif()
 
 # This translation unit exceeds COFF's 16-bit section count in MSVC Debug.

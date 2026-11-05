@@ -11,7 +11,7 @@ if(ANDROID)
 target_sources(pelican_core PRIVATE window_android.cpp ../../platform/android/inputqueue.cpp)
 target_include_directories(pelican_core PRIVATE "${ANDROID_NDK}/sources/android/native_app_glue")
 else()
-target_sources(pelican_core PRIVATE window_glfw.cpp)
+target_sources(pelican_core PRIVATE window_glfw.cpp outputwindow.cpp)
 endif()
 
 if(PLATFORM_DESKTOP)

@@ -3,6 +3,7 @@
 
 #include "framebuffersnapshot.hpp"
 #include "inputstate.hpp"
+#include "renderwindow.hpp"
 
 #include <vulkan/vulkan.hpp>
 
@@ -14,9 +15,7 @@ namespace Pelican {
 
 // The platform's window, never defined: a GLFWwindow on the desktop
 // (window_glfw.cpp) and an ANativeWindow on Android (window_android.cpp).
-struct NativeWindow;
-
-DECLARE_MODULE(Window) {
+class Window : public ModuleBase<Window>, public RenderWindow {
     NativeWindow *window;
     std::vector<InputEvent> input_events;
     GamepadEventPoller gamepad_poller;
@@ -28,7 +27,7 @@ DECLARE_MODULE(Window) {
     Window();
     ~Window();
 
-    FramebufferExtentSnapshot framebufferSnapshot() const;
+    FramebufferExtentSnapshot framebufferSnapshot() const override;
     vk::Extent2D framebufferExtent() const;
     vk::Extent2D logicalExtent() const;
     // GP-4: this window's live window-to-framebuffer conversion.
@@ -38,7 +37,7 @@ DECLARE_MODULE(Window) {
     // Call on the main thread; it changes the GLFW mode only when the
     // effective mode changes. Returns what is in effect.
     CursorModeStatus applyCursorMode(CursorMode requested, bool rpc);
-    NativeWindow *nativeHandle() const noexcept { return window; }
+    NativeWindow *nativeHandle() const noexcept override { return window; }
     void *renderDocCaptureHandle() const noexcept;
     std::vector<const char *> getRequiredVulkanInstanceExts();
 

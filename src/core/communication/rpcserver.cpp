@@ -70,6 +70,9 @@
 #include "../renderdoc/renderdoccapture.hpp"
 #include "../renderer/spritescene.hpp"
 #include "../renderer/camera.hpp"
+#if !defined(__ANDROID__)
+#include "../vkcore/outputwindowsink.hpp"
+#endif
 #include "../renderer/gizmo.hpp"
 #include "../renderer/modaltransform.hpp"
 #include "../renderer/polygoninstancecontainer.hpp"
@@ -993,7 +996,35 @@ nlohmann::json playStatusJson(const EngineTime &engine_time, const Camera &camer
         {"view_camera", viewCameraName(camera.viewCamera())},
         {"session", session.active()},
         {"recorded_edits", recordedEditsJson(session.recordedEdits(editor))},
+        // MD-1a0: the main camera extent is the assertion surface for "the
+        // output target did not call setScreenSize".
+        {"camera",
+         {{"viewport_width", camera.viewportWidth()},
+          {"viewport_height", camera.viewportHeight()}}},
     };
+}
+
+nlohmann::json outputWindowStatusForRpc() {
+#if !defined(__ANDROID__)
+    if (auto *sink =
+            FastModuleContainer::tryGet<
+                OutputWindowSink>()) {
+        return sink->statusJson();
+    }
+    return outputWindowOffStatusJson();
+#else
+    return nlohmann::json{
+        {"state", "off"},
+        {"monitor", nullptr},
+        {"width", 0},
+        {"height", 0},
+        {"present_mode", nullptr},
+        {"presented", 0},
+        {"dropped", 0},
+        {"last_error", nullptr},
+        {"present_ms_max", 0.0},
+    };
+#endif
 }
 
 // PM-2. A play session starts and ends only between scene edits: a ticket
@@ -1784,7 +1815,14 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                    .quarantined_resource_count},
               {"device_rebuild_reason",
                output_status
-                   .device_rebuild_reason}}},
+                   .device_rebuild_reason},
+              // MD-1a0: the main target's successful submits. The liveness
+              // test compares this with the output sink's presented count.
+              {"submits",
+               output_status
+                   .submitted_frame_count}}},
+            {"output_window",
+             outputWindowStatusForRpc()},
             {"input", {{"recording", modules.input_sequence.isRecording()},
                        {"replaying", modules.input_sequence.isReplaying()},
                        {"replay_frame", modules.input_sequence.replayFrameIndex()},

@@ -1,7 +1,7 @@
 #include "windowsurface.hpp"
 
 #include "../log.hpp"
-#include "../os/window.hpp"
+#include "../os/renderwindow.hpp"
 #include "../os/window_glfw.hpp"
 
 #include <stdexcept>

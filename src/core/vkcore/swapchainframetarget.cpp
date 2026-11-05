@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
 #include <condition_variable>
 #include <cstdlib>
 #include <exception>
@@ -232,7 +233,8 @@ SwapchainWithFormat createSwapchain(
     WindowWsiCallSite *active_call_site,
     WindowWsiFaultScriptForTesting
         *fault_script,
-    WindowWsiFaultContext fault_context) {
+    WindowWsiFaultContext fault_context,
+    bool mailbox_then_fifo = false) {
     if (framebuffer.extent.width == 0 ||
         framebuffer.extent.height == 0) {
         throw std::invalid_argument(
@@ -293,9 +295,13 @@ SwapchainWithFormat createSwapchain(
         });
     std::stable_sort(
         present_modes.begin(), present_modes.end(),
-        [](const auto left, const auto right) {
-            return (left == vk::PresentModeKHR::eMailbox) >
-                   (right == vk::PresentModeKHR::eMailbox);
+        [mailbox_then_fifo](const auto left, const auto right) {
+            const auto rank = [mailbox_then_fifo](vk::PresentModeKHR mode) {
+                if (mode == vk::PresentModeKHR::eMailbox) return 2;
+                if (mailbox_then_fifo && mode == vk::PresentModeKHR::eFifo) return 1;
+                return 0;
+            };
+            return rank(left) > rank(right);
         });
 
     const auto selected_extent =
@@ -859,12 +865,18 @@ struct SwapchainFrameTarget::Impl {
     };
 
     VulkanManageCore &core;
-    Window &window;
+    RenderWindow &window;
     WindowSurfaceFactory surface_factory;
+    // MD-1a0: the engine's Window target owns the camera extent; an external
+    // output target leaves the main camera exactly as it found it.
+    bool update_camera_extent = true;
+    vk::Fence slot_fence_override_for_testing;
     std::unique_ptr<
         WindowWsiFaultScriptForTesting>
         wsi_fault_script;
     Camera &camera;
+    std::uint64_t submitted_frame_count = 0;
+    double present_ms_max = 0.0;
     vk::Device device;
     vk::PhysicalDevice physical_device;
     vk::Queue graphics_queue;
@@ -1062,10 +1074,19 @@ struct SwapchainFrameTarget::Impl {
     }
 
     Impl()
+        : Impl(ExternalWindowTargetConfig{}) {}
+
+    explicit Impl(ExternalWindowTargetConfig config)
         : core{GET_MODULE(VulkanManageCore)},
-          window{GET_MODULE(Window)},
+          window{config.window != nullptr
+                     ? *config.window
+                     : static_cast<RenderWindow &>(
+                           GET_MODULE(Window))},
           surface_factory{
               core.getInstance(), window},
+          update_camera_extent{config.window == nullptr},
+          slot_fence_override_for_testing{
+              config.slot_fence_override_for_testing},
           camera{GET_MODULE(Camera)},
           device{core.getDevice()},
           physical_device{core.getPhysDevice()},
@@ -1073,8 +1094,10 @@ struct SwapchainFrameTarget::Impl {
           graphics_queue_family{
               core.getGraphicsQueueFamilyIndex()},
           current_presentation_queue_family{
-              core
-                  .getBootstrapPresentationQueueFamilyIndex()},
+              config.window != nullptr
+                  ? config.presentation_queue_family
+                  : core
+                        .getBootstrapPresentationQueueFamilyIndex()},
           created_queue_families{
               core.createdQueueFamilyIndices()},
           maintenance1{
@@ -1117,7 +1140,11 @@ struct SwapchainFrameTarget::Impl {
             return;
         }
 #else
-        auto initial_surface = core.takeInitialWindowSurface();
+        auto initial_surface =
+            config.surface.surface
+                ? std::optional<PreparedWindowSurface>{
+                      std::move(config.surface)}
+                : core.takeInitialWindowSurface();
 #endif
         if (!initial_surface) {
             throw std::runtime_error(
@@ -1176,9 +1203,11 @@ struct SwapchainFrameTarget::Impl {
             WindowOutputRecoveryStateMachine>(
             active_epoch->id,
             active_epoch->recovery_key);
-        camera.setScreenSize(
-            active_epoch->output_facts.extent.width,
-            active_epoch->output_facts.extent.height);
+        if (update_camera_extent) {
+            camera.setScreenSize(
+                active_epoch->output_facts.extent.width,
+                active_epoch->output_facts.extent.height);
+        }
 
 #if defined(__ANDROID__)
         startAndroidMaintenance();
@@ -1331,7 +1360,8 @@ struct SwapchainFrameTarget::Impl {
                         request.epoch_id,
                     .recovery_attempt =
                         request.policy.attempt,
-                });
+                },
+                !update_camera_extent);
         } else {
             std::scoped_lock lock{
                 request.surface_epoch->host_access};
@@ -1352,7 +1382,8 @@ struct SwapchainFrameTarget::Impl {
                         request.epoch_id,
                     .recovery_attempt =
                         request.policy.attempt,
-                });
+                },
+                !update_camera_extent);
         }
         // vkCreateSwapchainKHR success retires oldSwapchain immediately.
         // Preserve the new handle before creating any dependent object so a
@@ -1983,11 +2014,13 @@ struct SwapchainFrameTarget::Impl {
         recovery->preparationSucceeded(
             active_epoch->id,
             active_epoch->recovery_key);
-        camera.setScreenSize(
-            active_epoch->output_facts
-                .extent.width,
-            active_epoch->output_facts
-                .extent.height);
+        if (update_camera_extent) {
+            camera.setScreenSize(
+                active_epoch->output_facts
+                    .extent.width,
+                active_epoch->output_facts
+                    .extent.height);
+        }
         const bool output_facts_changed =
             previous_fingerprint !=
             outputCompileFactsFingerprint(
@@ -2487,9 +2520,13 @@ struct SwapchainFrameTarget::Impl {
         const auto slot = epoch->next_slot;
         const auto &command_buffer =
             epoch->command_buffers[slot];
+        const auto slot_fence =
+            slot_fence_override_for_testing
+                ? slot_fence_override_for_testing
+                : command_buffer.getFence();
         const auto fence_result =
             device.waitForFences(
-                {command_buffer.getFence()}, VK_TRUE,
+                {slot_fence}, VK_TRUE,
 #if defined(__ANDROID__)
                 nonblocking ? 0 : (Android::nativeWindowSlot().release_requested.load() ? 16'000'000 : 250'000'000));
         if (fence_result == vk::Result::eTimeout) {
@@ -2918,6 +2955,7 @@ struct SwapchainFrameTarget::Impl {
                 active.slot, std::move(lease));
             epoch->submission_pending[active.slot] =
                 true;
+            ++submitted_frame_count;
 
         } catch (...) {
             abandonFrameSerial(active.serial);
@@ -2973,9 +3011,14 @@ struct SwapchainFrameTarget::Impl {
 
             vk::Result present_result =
                 vk::Result::eErrorUnknown;
+            double queue_present_ms = 0.0;
             {
                 std::scoped_lock lock{
                     epoch->host_access};
+                const auto present_start =
+                    update_camera_extent
+                        ? std::chrono::steady_clock::time_point{}
+                        : std::chrono::steady_clock::now();
                 try {
                     present_result =
                         epoch->surface_epoch
@@ -2988,6 +3031,16 @@ struct SwapchainFrameTarget::Impl {
                     present_result =
                         resultFromSystemError(
                             error);
+                }
+                if (!update_camera_extent) {
+                    queue_present_ms =
+                        std::chrono::duration<double, std::milli>(
+                            std::chrono::steady_clock::now() -
+                            present_start)
+                            .count();
+                    present_ms_max =
+                        std::max(present_ms_max,
+                                 queue_present_ms);
                 }
                 // Present errors still enqueue the semaphore wait operation.
                 // Perform the real call before overriding its returned result
@@ -3141,9 +3194,8 @@ struct SwapchainFrameTarget::Impl {
                         FrameSubmitDisposition::
                             output_stale};
             }
-            return {
-                .disposition =
-                    FrameSubmitDisposition::presented};
+            return {.disposition =
+                        FrameSubmitDisposition::presented};
         } catch (...) {
             abandonFrameSerial(active.serial);
             throw;
@@ -3228,6 +3280,11 @@ struct SwapchainFrameTarget::Impl {
                 std::string{
                     surfaceDeviceRebuildReasonName(
                         device_rebuild_reason)},
+            .submitted_frame_count =
+                submitted_frame_count,
+            .present_mode =
+                last_present_configuration.present_mode,
+            .present_ms_max = present_ms_max,
         };
         switch (recovery->kind()) {
         case WindowOutputStateKind::no_surface:
@@ -3407,6 +3464,11 @@ struct SwapchainFrameTarget::Impl {
 
 SwapchainFrameTarget::SwapchainFrameTarget()
     : impl_{std::make_unique<Impl>()} {}
+
+SwapchainFrameTarget::SwapchainFrameTarget(
+    ExternalWindowTargetConfig config)
+    : impl_{std::make_unique<Impl>(
+          std::move(config))} {}
 
 SwapchainFrameTarget::~SwapchainFrameTarget() =
     default;
