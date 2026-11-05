@@ -15234,6 +15234,9 @@ void GraphCanvasWidget::importSounds(const std::vector<std::filesystem::path> &f
 }
 
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
+    // REV-1: the old project's hand on a live band doesn't survive the switch,
+    // or its next move would send a value to the new engine.
+    impl_->scene->endLiveKnobFocusLost();
     // OT-1: the graph history survives an engine restart, not a project
     // switch.
     if (impl_->project_root != project_root) {
