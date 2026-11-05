@@ -1,20 +1,36 @@
 #include "outputwindowsink.hpp"
 
+#include "../fullscreenpass/fullscreenpasscontainer.hpp"
+#include "../loader/pathresolver.hpp"
 #include "../log.hpp"
 #include "../os/outputwindow.hpp"
+#include "../renderer/frameresources.hpp"
+#include "../renderer/fullscreenpassrenderer.hpp"
+#include "../renderingpass/computetask.hpp"
+#include "../renderingpass/renderingpasscontainer.hpp"
+#include "../renderingpass/framegraphruntime.hpp"
+#include "../renderingpass/renderingpassruntimecompiler.hpp"
+#include "../renderingpass/rendertargetcontainer.hpp"
+#include "../renderingpass/rendertargetimageviewresolver.hpp"
+#include "../renderingpass/rendertargetmetadataresolver.hpp"
+#include "../shader/shaderlibrary.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/core.hpp"
+#include "render_target_layout_tracker.hpp"
+#include "rendertarget.hpp"
 #include "swapchainframetarget.hpp"
 #include "windowsurface.hpp"
 
 #include <algorithm>
 #include <array>
 #include <charconv>
+#include <cmath>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <span>
 #include <system_error>
+#include <thread>
 
 namespace Pelican {
 namespace {
@@ -92,12 +108,21 @@ nlohmann::json outputWindowStatusJson(
          status.present_mode.empty()
              ? nlohmann::json(nullptr)
              : nlohmann::json(status.present_mode)},
+        {"source", status.source},
+        {"surface_format", status.surface_format},
         {"presented", status.presented},
         {"dropped", status.dropped},
+        {"capture_skipped", status.capture_skipped},
+        {"captures", status.captures},
+        {"capture_aborted", status.capture_aborted},
+        {"capture_fence_waits", status.capture_fence_waits},
         {"last_error",
          status.last_error
              ? nlohmann::json(*status.last_error)
              : nlohmann::json(nullptr)},
+        {"copy_gpu_ms_max", status.copy_gpu_ms_max},
+        {"copy_gpu_samples", status.copy_gpu_samples},
+        {"submit_ms_max", status.submit_ms_max},
         {"present_ms_max", status.present_ms_max},
     };
 }
@@ -105,6 +130,26 @@ nlohmann::json outputWindowStatusJson(
 nlohmann::json outputWindowOffStatusJson() {
     return outputWindowStatusJson(
         OutputWindowStatus{});
+}
+
+std::optional<vk::Rect2D> outputWindowLetterboxRect(
+    vk::Extent2D source, vk::Extent2D destination) {
+    if (source.width == 0 || source.height == 0 ||
+        destination.width == 0 || destination.height == 0) {
+        return std::nullopt;
+    }
+    const double scale = std::min(
+        static_cast<double>(destination.width) / source.width,
+        static_cast<double>(destination.height) / source.height);
+    const auto width = std::max(1u, std::min(destination.width,
+        static_cast<std::uint32_t>(std::floor(source.width * scale))));
+    const auto height = std::max(1u, std::min(destination.height,
+        static_cast<std::uint32_t>(std::floor(source.height * scale))));
+    return vk::Rect2D{
+        vk::Offset2D{
+            static_cast<std::int32_t>((destination.width - width) / 2),
+            static_cast<std::int32_t>((destination.height - height) / 2)},
+        vk::Extent2D{width, height}};
 }
 
 struct OutputWindowSink::PendingCapture {
@@ -135,12 +180,6 @@ void OutputWindowSink::configure(
     monitor_ = options_.monitor;
     present_mode_ = "FIFO";
 
-    if (!options_.pattern) {
-        fail("output_window.config_invalid@1: real output is not "
-             "implemented yet; --output-window-pattern is required");
-        return;
-    }
-
     if (const auto count = environmentUint(
             "PELICAN_MD1A_BEGIN_UNAVAILABLE_FRAMES")) {
         forced_drop_frames_ = *count;
@@ -153,6 +192,12 @@ void OutputWindowSink::configure(
             "PELICAN_MD1A_REQUEST_CLOSE_AFTER_FRAMES")) {
         close_after_frames_ = *count;
     }
+    forced_capture_busy_frames_ = environmentUint(
+        "PELICAN_MD1A_CAPTURE_BUSY_FRAMES").value_or(0);
+    forced_abort_before_submit_frames_ = environmentUint(
+        "PELICAN_MD1A_ABORT_BEFORE_SUBMIT_FRAMES").value_or(0);
+    sink_submission_delay_ms_ = environmentUint(
+        "PELICAN_MD1A_DELAY_SINK_GPU_MS").value_or(0);
     force_blocking_begin_ =
         std::getenv(
             "PELICAN_MD1A_FORCE_BLOCKING_BEGIN") !=
@@ -168,6 +213,24 @@ void OutputWindowSink::configure(
     }
 
     core_ = &GET_MODULE(VulkanManageCore);
+    try {
+        if (options_.enabled && !options_.pattern) {
+            const auto queue_families = core_->getPhysDevice().getQueueFamilyProperties();
+            const auto queue_family = core_->getGraphicsQueueFamilyIndex();
+            if (queue_family < queue_families.size() &&
+                queue_families[queue_family].timestampValidBits != 0) {
+                copy_query_pool_ = core_->getDevice().createQueryPoolUnique(
+                    {vk::QueryPoolCreateFlags{}, vk::QueryType::eTimestamp, 256});
+                copy_query_pending_.assign(128, false);
+                timestamp_period_ns_ =
+                    core_->getPhysDevice().getProperties().limits.timestampPeriod;
+            }
+        }
+    } catch (const std::exception &error) {
+        fail("output_window.config_invalid@1: copy timing initialization failed: " +
+             std::string{error.what()});
+        return;
+    }
     try {
         window_ = std::make_unique<OutputWindow>(
             options_.monitor, options_.size);
@@ -254,11 +317,17 @@ void OutputWindowSink::configure(
                 target_->status().present_mode)};
         state_ =
             OutputWindowLifecycleState::running;
-        LOG_INFO(logger,
-                 "diagnostic output_window running: monitor={} "
-                 "extent={}x{} present_mode={}",
-                 options_.monitor, captured_width_,
-                 captured_height_, present_mode_);
+        if (!options_.pattern) {
+            initializeDisplayOutput();
+        }
+        if (running()) {
+            LOG_INFO(logger,
+                     "output_window running: monitor={} source={} "
+                     "extent={}x{} present_mode={}",
+                     options_.monitor,
+                     options_.pattern ? "pattern" : "display",
+                     captured_width_, captured_height_, present_mode_);
+        }
     } catch (const std::exception &error) {
         fail(
             "output_window.present_failed@1: output target "
@@ -268,11 +337,288 @@ void OutputWindowSink::configure(
 }
 
 void OutputWindowSink::fail(
-    std::string message) {
+    std::string message) noexcept {
     state_ = OutputWindowLifecycleState::failed;
     last_error_ = std::move(message);
     LOG_INFO(logger, "diagnostic output_window failed: {}",
              last_error_);
+}
+
+void OutputWindowSink::waitForCaptureForTesting() {
+    ++capture_fence_waits_;
+    core_->waitIdle();
+}
+
+void OutputWindowSink::initializeDisplayOutput() {
+    const auto facts = target_->caps().compile_facts;
+    const bool supported_format =
+        facts.color_format == vk::Format::eR8G8B8A8Unorm ||
+        facts.color_format == vk::Format::eR8G8B8A8Srgb ||
+        facts.color_format == vk::Format::eB8G8R8A8Unorm ||
+        facts.color_format == vk::Format::eB8G8R8A8Srgb;
+    if (!supported_format ||
+        facts.color_space != vk::ColorSpaceKHR::eSrgbNonlinear) {
+        fail("output_window.format_unsupported@1: second-window output "
+             "requires an 8-bit SDR RGBA/BGRA UNORM or SRGB surface");
+        return;
+    }
+
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    bridge_id_ = targets.getRenderTargetIdByName(
+        std::string{output_window_bridge_name});
+    if (!isConcreteRenderTarget(bridge_id_)) {
+        fail("output_window.source_unavailable@1: output_window_bridge "
+             "was not materialized");
+        return;
+    }
+
+    PassDefinition pass;
+    pass.name = "output_transform";
+    pass.output_color = {swapchainRenderTargetId()};
+    pass.input_targets = {bridge_id_};
+    pass.input_target_history = {false};
+    FullscreenPassInfo fullscreen;
+    fullscreen.vert_shader =
+        makeShaderReference("engine://fullscreen", ShaderStage::vertex);
+    fullscreen.frag_shader =
+        makeShaderReference("engine://output_transform", ShaderStage::fragment);
+    pass.pass_info = std::move(fullscreen);
+    const RenderTargetMetadataResolver metadata{targets};
+    const RenderTargetImageViewResolver views{targets};
+    const RenderingPassDefinition definition{
+        "__output_window_sink", std::vector<PassDefinition>{std::move(pass)}};
+    auto compiled = compileRenderingPassRuntime(
+        definition,
+        RenderingPassRuntimeDependencies{
+            .render_target = &GET_MODULE(RenderTarget),
+            .render_target_metadata = &metadata,
+            .render_target_views = &views,
+            .shader_library = &GET_MODULE(ShaderLibrary),
+            .fullscreen_pass_container = &GET_MODULE(FullscreenPassContainer),
+            .frame_graph_resources = &GET_MODULE(FrameGraphResourceContainer),
+            .path_resolver = &GET_MODULE(PathResolver),
+            .swapchain_format_override = facts.color_format,
+        });
+    if (compiled.passes.size() != 1) {
+        fail("output_window.format_unsupported@1: output_transform did not "
+             "compile for the second-window surface");
+        return;
+    }
+    output_transform_ = std::make_unique<CompiledPass>(
+        std::move(compiled.passes.front()));
+}
+
+void OutputWindowSink::pollCopyGpuTiming() noexcept {
+    if (!copy_query_pool_ || core_ == nullptr) return;
+    try {
+        for (std::uint32_t slot = 0; slot < copy_query_pending_.size(); ++slot) {
+            if (!copy_query_pending_[slot]) continue;
+            std::array<std::uint64_t, 4> values{};
+            (void)core_->getDevice().getQueryPoolResults(
+                copy_query_pool_.get(), slot * 2, 2,
+                values.size() * sizeof(values.front()), values.data(),
+                2 * sizeof(values.front()),
+                vk::QueryResultFlagBits::e64 |
+                    vk::QueryResultFlagBits::eWithAvailability);
+            if (values[3] == 0 || values[1] == 0) continue;
+            const auto begin = values[0];
+            const auto end = values[2];
+            copy_query_pending_[slot] = false;
+            if (end >= begin) {
+                const auto elapsed = static_cast<double>(end - begin) *
+                                     timestamp_period_ns_ / 1.0e6;
+                copy_gpu_ms_max_ = std::max(copy_gpu_ms_max_, elapsed);
+                ++copy_gpu_samples_;
+            }
+        }
+    } catch (...) {
+    }
+}
+
+bool OutputWindowSink::recordDisplayCapture(
+    const FrameRenderContext &context,
+    RenderTargetContainer &targets,
+    VulkanUtils &vk_utils,
+    RenderTargetLayoutTracker &layout_tracker,
+    GlobalRenderTargetId display,
+    vk::ImageLayout next_layout,
+    std::shared_ptr<const RendererRuntimeGeneration>
+        runtime_generation) noexcept {
+    if (!wantsDisplayCapture()) {
+        return false;
+    }
+    if (!output_transform_ || !target_ || !runtime_generation) {
+        refuseDisplayCapture();
+        return false;
+    }
+    if (capture_recorded_ || capture_ready_) {
+        return false;
+    }
+    try {
+        pollCopyGpuTiming();
+        if (forced_capture_busy_frames_ > 0) {
+            --forced_capture_busy_frames_;
+            ++capture_skipped_;
+            return false;
+        }
+        if (!target_->gpuSubmissionsComplete()) {
+            ++capture_skipped_;
+            return false;
+        }
+        if (!isConcreteRenderTarget(display)) {
+            refuseDisplayCapture();
+            return false;
+        }
+        const auto latest_bridge = targets.getRenderTargetIdByName(
+            std::string{output_window_bridge_name});
+        const auto source = targets.getMetadata(display);
+        if (!isConcreteRenderTarget(latest_bridge)) {
+            refuseDisplayCapture();
+            return false;
+        }
+        const auto bridge = targets.getMetadata(latest_bridge);
+        const vk::Extent2D source_extent{
+            source.extent.width, source.extent.height};
+        const bool source_valid =
+            source.usage.contains(ImageUsageBit::transfer_src) &&
+            !source.usage.contains(ImageUsageBit::transient_attachment) &&
+            source.storage_mode == RenderTargetStorageMode::materialized &&
+            !source.alias_group && source.samples == 1 &&
+            source.mip_levels == 1 && source.array_layers == 1 &&
+            source.dimension == ImageResourceDimension::two_d &&
+            toVulkanFormat(source.format) != vk::Format::eUndefined &&
+            source_extent.width != 0 && source_extent.height != 0;
+        const bool bridge_valid =
+            bridge.usage.contains(ImageUsageBit::transfer_dst) &&
+            bridge.usage.contains(ImageUsageBit::sampled) &&
+            !bridge.usage.contains(ImageUsageBit::transient_attachment) &&
+            bridge.storage_mode == RenderTargetStorageMode::materialized &&
+            !bridge.alias_group && bridge.samples == 1 &&
+            bridge.mip_levels == 1 && bridge.array_layers == 1 &&
+            bridge.dimension == ImageResourceDimension::two_d;
+        if (!source_valid || !bridge_valid ||
+            (next_layout != vk::ImageLayout::eColorAttachmentOptimal &&
+             next_layout != vk::ImageLayout::eShaderReadOnlyOptimal)) {
+            refuseDisplayCapture();
+            return false;
+        }
+        if (bridge.format != source.format ||
+            bridge.extent.width != source.extent.width ||
+            bridge.extent.height != source.extent.height) {
+            return false;
+        }
+
+        auto &fullscreen = GET_MODULE(FullscreenPassContainer);
+        const auto expected = targets.getImageView(latest_bridge);
+        const auto bound = fullscreen.boundInputImageViewsForTesting(
+            output_transform_->pass_id);
+        if (bound.size() != 1 || bound.front() != expected) {
+            const RenderTargetImageViewResolver views{targets};
+            fullscreen.setInputTextures(output_transform_->pass_id,
+                                        {latest_bridge}, views);
+        }
+        bridge_id_ = latest_bridge;
+        display_generation_ = std::move(runtime_generation);
+        display_source_extent_ = source_extent;
+        display_submission_lease_ =
+            std::make_shared<DisplaySubmissionLease>(
+                DisplaySubmissionLease{display_generation_,
+                                       targets.resourceLeases()});
+        active_copy_query_slot_ = -1;
+        if (copy_query_pool_ && timestamp_period_ns_ > 0.0F) {
+            for (std::uint32_t attempt = 0;
+                 attempt < copy_query_pending_.size(); ++attempt) {
+                const auto slot = (next_copy_query_slot_ + attempt) %
+                                  copy_query_pending_.size();
+                if (copy_query_pending_[slot]) continue;
+                active_copy_query_slot_ = static_cast<std::int32_t>(slot);
+                next_copy_query_slot_ = (slot + 1) % copy_query_pending_.size();
+                context.cmd_buf.resetQueryPool(copy_query_pool_.get(), slot * 2, 2);
+                context.cmd_buf.writeTimestamp(
+                    vk::PipelineStageFlagBits::eTopOfPipe,
+                    copy_query_pool_.get(), slot * 2);
+                break;
+            }
+        }
+        layout_tracker.transition(context.cmd_buf, targets, vk_utils,
+                                  display, vk::ImageLayout::eTransferSrcOptimal);
+        layout_tracker.transition(context.cmd_buf, targets, vk_utils,
+                                  bridge_id_, vk::ImageLayout::eTransferDstOptimal,
+                                  false, RenderTargetImageKind::resolved,
+                                  vk::PipelineStageFlagBits::eFragmentShader);
+        vk::ImageCopy copy;
+        copy.srcSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        copy.dstSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+        copy.extent = vk::Extent3D{source_extent, 1};
+        context.cmd_buf.copyImage(
+            targets.getImage(display).image.get(),
+            vk::ImageLayout::eTransferSrcOptimal,
+            targets.getImage(bridge_id_).image.get(),
+            vk::ImageLayout::eTransferDstOptimal, copy);
+        layout_tracker.transition(context.cmd_buf, targets, vk_utils,
+                                  bridge_id_,
+                                  vk::ImageLayout::eShaderReadOnlyOptimal,
+                                  false, RenderTargetImageKind::resolved,
+                                  vk::PipelineStageFlagBits::eFragmentShader);
+        layout_tracker.transition(context.cmd_buf, targets, vk_utils,
+                                  display, next_layout, false,
+                                  RenderTargetImageKind::resolved,
+                                  vk::PipelineStageFlagBits::eFragmentShader);
+        if (active_copy_query_slot_ >= 0) {
+            const auto slot = static_cast<std::uint32_t>(active_copy_query_slot_);
+            context.cmd_buf.writeTimestamp(
+                vk::PipelineStageFlagBits::eBottomOfPipe,
+                copy_query_pool_.get(), slot * 2 + 1);
+            copy_query_pending_[slot] = true;
+        }
+        recorded_bridge_id_ = bridge_id_;
+        capture_recorded_ = true;
+        return true;
+    } catch (...) {
+        refuseDisplayCapture();
+        return false;
+    }
+}
+
+void OutputWindowSink::beginDisplayCaptureFrame() noexcept {
+    if (!wantsDisplayCapture()) return;
+    capture_recorded_ = false;
+    capture_ready_ = false;
+    recorded_bridge_id_ = noRenderTargetId();
+    display_generation_.reset();
+    display_submission_lease_.reset();
+}
+
+bool OutputWindowSink::abortDisplayCaptureBeforeSubmitForTesting() noexcept {
+    if (!capture_recorded_ || forced_abort_before_submit_frames_ == 0) return false;
+    --forced_abort_before_submit_frames_;
+    ++capture_aborted_;
+    return true;
+}
+
+void OutputWindowSink::publishDisplayCapture() noexcept {
+    if (!capture_recorded_) {
+        return;
+    }
+    capture_recorded_ = false;
+    capture_ready_ = true;
+    active_copy_query_slot_ = -1;
+    ++captures_;
+}
+
+void OutputWindowSink::cancelDisplayCapture() noexcept {
+    if (active_copy_query_slot_ >= 0) {
+        copy_query_pending_[static_cast<std::size_t>(active_copy_query_slot_)] = false;
+        active_copy_query_slot_ = -1;
+    }
+    capture_recorded_ = false;
+    recorded_bridge_id_ = noRenderTargetId();
+}
+
+void OutputWindowSink::refuseDisplayCapture() noexcept {
+    cancelDisplayCapture();
+    fail("output_window.source_unavailable@1: display is not a unique, "
+         "copyable, materialized single-sample source at the pre-UI boundary");
 }
 
 void OutputWindowSink::presentFrame() {
@@ -295,10 +641,18 @@ void OutputWindowSink::presentFrame() {
         return;
     }
     window_->process();
+    if (target_->gpuSubmissionsComplete()) {
+        retired_captures_.clear();
+    }
+    std::unique_ptr<PendingCapture> capture;
 
     if (forced_drop_frames_ > 0 &&
         observed_frames_ > forced_drop_after_frames_) {
         --forced_drop_frames_;
+        ++dropped_;
+        return;
+    }
+    if (!options_.pattern && !capture_ready_) {
         ++dropped_;
         return;
     }
@@ -308,7 +662,10 @@ void OutputWindowSink::presentFrame() {
                 ? FrameBeginMode::blocking
                 : FrameBeginMode::nonblocking;
         auto begin = target_->beginFrame(
-            {}, {}, begin_mode);
+            options_.pattern ? nullptr : display_generation_,
+            options_.pattern ? GpuSubmissionLease{} :
+                               GpuSubmissionLease{display_submission_lease_},
+            begin_mode);
         if (begin.disposition ==
             FrameBeginDisposition::unavailable) {
             if (begin.reason ==
@@ -349,24 +706,52 @@ void OutputWindowSink::presentFrame() {
         }
 
         auto frame = std::move(*begin.frame);
+        if (!options_.pattern && sink_submission_delay_ms_ > 0 &&
+            delayed_sink_submissions_ == 0) {
+            constexpr vk::DeviceSize size = 64 * 1024 * 1024;
+            sink_delay_buffer_ = core_->allocBuf(
+                size, vk::BufferUsageFlagBits::eTransferDst,
+                vma::MemoryUsage::eGpuOnly, {});
+            for (std::uint64_t i = 0; i < sink_submission_delay_ms_; ++i) {
+                frame.context().cmd_buf.fillBuffer(
+                    sink_delay_buffer_->buffer.get(), 0, size, 0);
+                vk::BufferMemoryBarrier dependency{
+                    vk::AccessFlagBits::eTransferWrite,
+                    vk::AccessFlagBits::eTransferWrite, VK_QUEUE_FAMILY_IGNORED,
+                    VK_QUEUE_FAMILY_IGNORED, sink_delay_buffer_->buffer.get(), 0,
+                    size};
+                frame.context().cmd_buf.pipelineBarrier(
+                    vk::PipelineStageFlagBits::eTransfer,
+                    vk::PipelineStageFlagBits::eTransfer, {}, {}, dependency, {});
+            }
+            ++delayed_sink_submissions_;
+            LOG_INFO(logger,
+                     "PELICAN_MD1A_SINK_SUBMISSION_DELAY: real submission pending");
+        }
         const auto pattern_frame = pattern_frame_;
-        recordPattern(
-            frame.context().cmd_buf,
-            frame.context(), pattern_frame);
-        ++pattern_frame_;
+        if (options_.pattern) {
+            recordPattern(frame.context().cmd_buf, frame.context(),
+                          pattern_frame);
+            ++pattern_frame_;
+        } else {
+            recordDisplay(frame.context().cmd_buf, frame.context());
+            capture_ready_ = false;
+        }
 
-        std::unique_ptr<PendingCapture> capture;
         if (!dump_directory_.empty() &&
             dumps_written_ < dump_count_) {
             capture = recordCapture(
-                      frame.context().cmd_buf,
-                          frame.context(),
-                          pattern_frame);
+                frame.context().cmd_buf, frame.context(),
+                options_.pattern ? pattern_frame : captures_ - 1);
         }
 
-        const auto result =
-            target_->submit(std::move(frame));
+        const auto result = target_->submit(std::move(frame));
+        if (!options_.pattern) {
+            display_submission_lease_.reset();
+            display_generation_.reset();
+        }
         const auto target_status = target_->status();
+        submit_ms_max_ = target_status.submit_ms_max;
         present_ms_max_ = target_status.present_ms_max;
         if (target_status.last_wsi_result == vk::Result::eSuccess ||
             target_status.last_wsi_result ==
@@ -384,6 +769,9 @@ void OutputWindowSink::presentFrame() {
         }
         if (result.disposition ==
             FrameSubmitDisposition::output_stale) {
+            if (capture) {
+                retired_captures_.push_back(std::move(capture));
+            }
             if (target_status.last_wsi_result ==
                 vk::Result::eErrorDeviceLost) {
                 fail("output_window.device_lost@1: output target present lost the device");
@@ -394,35 +782,63 @@ void OutputWindowSink::presentFrame() {
                 fail("output_window.present_failed@1: output window lost its surface");
                 return;
             }
-            // The target's own WSI recovery owns the old swapchain and its
-            // present semaphores. The sink only has to retire a diagnostic
-            // staging read before dropping it.
-            if (capture) {
-                core_->waitIdle();
-                capture.reset();
-            }
             return;
-        }
-        if (capture) {
-            core_->waitIdle();
         }
         fail("output_window.present_failed@1: queue present "
              "was not issued");
     } catch (const OutputWindowDeviceLost &) {
+        if (capture) {
+            retired_captures_.push_back(std::move(capture));
+        }
         // Match the main target's terminal device-loss path instead of
         // continuing to submit work on the lost device.
         throw;
     } catch (const std::exception &error) {
-        if (core_ != nullptr) {
-            try {
-                core_->waitIdle();
-            } catch (...) {
-            }
+        if (capture) {
+            retired_captures_.push_back(std::move(capture));
         }
         fail(
             "output_window.present_failed@1: " +
             std::string{error.what()});
     }
+}
+
+void OutputWindowSink::recordDisplay(
+    vk::CommandBuffer command_buffer,
+    const FrameRenderContext &context) {
+    if (!output_transform_ ||
+        !isConcreteRenderTarget(bridge_id_)) {
+        throw std::runtime_error("output window has no captured display source");
+    }
+    const auto letterbox = outputWindowLetterboxRect(
+        display_source_extent_, context.extent);
+    if (!letterbox) {
+        throw std::runtime_error("output window display has a zero extent");
+    }
+    vk::RenderingAttachmentInfo attachment;
+    attachment.imageView = context.color_attachment;
+    attachment.imageLayout = vk::ImageLayout::eColorAttachmentOptimal;
+    attachment.loadOp = vk::AttachmentLoadOp::eClear;
+    attachment.storeOp = vk::AttachmentStoreOp::eStore;
+    attachment.clearValue.color = vk::ClearColorValue{
+        std::array<float, 4>{0.0f, 0.0f, 0.0f, 1.0f}};
+    vk::RenderingInfo rendering;
+    rendering.renderArea = vk::Rect2D{{0, 0}, context.extent};
+    rendering.layerCount = 1;
+    rendering.setColorAttachments(attachment);
+    command_buffer.beginRendering(rendering);
+    command_buffer.setViewport(0, vk::Viewport{
+        static_cast<float>(letterbox->offset.x),
+        static_cast<float>(letterbox->offset.y),
+        static_cast<float>(letterbox->extent.width),
+        static_cast<float>(letterbox->extent.height), 0.0f, 1.0f});
+    command_buffer.setScissor(0, *letterbox);
+    GET_MODULE(FullscreenPassRenderer).render(
+        command_buffer, output_transform_->pass_id,
+        output_transform_->definition,
+        FullscreenPassRendererDependencies{
+            GET_MODULE(FullscreenPassContainer), GET_MODULE(FrameResources)});
+    command_buffer.endRendering();
 }
 
 void OutputWindowSink::recordPattern(
@@ -677,6 +1093,8 @@ void OutputWindowSink::shutdown() noexcept {
         }
         target_.reset();
     }
+    copy_query_pool_.reset();
+    copy_query_pending_.clear();
     window_.reset();
     core_ = nullptr;
     if (state_ ==
@@ -692,8 +1110,18 @@ OutputWindowStatus OutputWindowSink::status() const {
     status.monitor = monitor_;
     status.width = captured_width_;
     status.height = captured_height_;
+    status.source = options_.enabled
+        ? (options_.pattern ? "pattern" : "display")
+        : "";
     status.presented = presented_;
     status.dropped = dropped_;
+    status.capture_skipped = capture_skipped_;
+    status.captures = captures_;
+    status.capture_aborted = capture_aborted_;
+    status.capture_fence_waits = capture_fence_waits_;
+    status.copy_gpu_ms_max = copy_gpu_ms_max_;
+    status.copy_gpu_samples = copy_gpu_samples_;
+    status.submit_ms_max = submit_ms_max_;
     status.present_ms_max = present_ms_max_;
     if (!last_error_.empty()) {
         status.last_error = last_error_;
@@ -706,6 +1134,12 @@ OutputWindowStatus OutputWindowSink::status() const {
             target_->caps().compile_facts.extent.width;
         status.height =
             target_->caps().compile_facts.extent.height;
+        const auto format = target_->caps().compile_facts.color_format;
+        status.surface_format =
+            format == vk::Format::eR8G8B8A8Srgb ||
+                    format == vk::Format::eB8G8R8A8Srgb
+                ? "SRGB"
+                : "UNORM";
     } else if (
         state_ !=
         OutputWindowLifecycleState::off) {

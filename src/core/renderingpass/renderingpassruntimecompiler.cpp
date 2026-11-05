@@ -109,6 +109,7 @@ struct FullscreenRuntimeDependencies {
     const PathResolver &path_resolver;
     std::vector<std::string> shader_defines;
     bool warn_backend_specific_shader_refs = false;
+    std::optional<vk::Format> swapchain_format_override;
 };
 
 struct DebugDrawRuntimeDependencies {
@@ -1263,7 +1264,8 @@ void validatePassAttachmentViews(
 }
 
 vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget &rt_module,
-                                   const RenderTargetMetadataResolver &rt_metadata) {
+                                   const RenderTargetMetadataResolver &rt_metadata,
+                                   std::optional<vk::Format> swapchain_format_override = std::nullopt) {
     if (pass_def.output_color.empty()) {
         throw std::runtime_error("Render pass has no color output: " + pass_def.name);
     }
@@ -1273,21 +1275,22 @@ vk::Format resolveFirstColorFormat(const PassDefinition &pass_def, RenderTarget 
         return toVulkanFormat(
             rt_metadata.get(first_color).format);
     }
-    return rt_module.getSwapchainFormat();
+    return swapchain_format_override.value_or(rt_module.getSwapchainFormat());
 }
 
 vk::Format resolvePhysicalColorFormat(
     GlobalRenderTargetId target,
     RenderTarget &render_target,
     const RenderTargetMetadataResolver
-        &metadata) {
+        &metadata,
+    std::optional<vk::Format> swapchain_format_override) {
     if (isConcreteRenderTarget(target)) {
         return toVulkanFormat(
             metadata.get(target).format);
     }
     if (isSwapchainRenderTarget(target)) {
-        return render_target
-            .getSwapchainFormat();
+        return swapchain_format_override.value_or(
+            render_target.getSwapchainFormat());
     }
     throw std::runtime_error(
         "physical rendering scope has an invalid color target");
@@ -1300,13 +1303,14 @@ resolvePhysicalColorFormats(
         &rendering,
     RenderTarget &render_target,
     const RenderTargetMetadataResolver
-        &metadata) {
+        &metadata,
+    std::optional<vk::Format> swapchain_format_override = std::nullopt) {
     if (rendering.color_attachments.empty()) {
         if (pass.output_color.empty()) {
             return {};
         }
         return {resolveFirstColorFormat(
-            pass, render_target, metadata)};
+            pass, render_target, metadata, swapchain_format_override)};
     }
     std::vector<vk::Format> result;
     result.reserve(
@@ -1316,7 +1320,7 @@ resolvePhysicalColorFormats(
         result.push_back(
             resolvePhysicalColorFormat(
                 target, render_target,
-                metadata));
+                metadata, swapchain_format_override));
     }
     return result;
 }
@@ -1393,6 +1397,7 @@ FullscreenRuntimeDependencies requireFullscreenDependencies(
         *dependencies.path_resolver,
         dependencies.shader_defines,
         dependencies.warn_backend_specific_shader_refs,
+        dependencies.swapchain_format_override,
     };
 }
 
@@ -2249,8 +2254,8 @@ PassId registerFullscreenPipeline(
         resolvePhysicalColorFormats(
             pass_def, rendering,
             dependencies.render_target,
-            dependencies
-                .render_target_metadata);
+            dependencies.render_target_metadata,
+            dependencies.swapchain_format_override);
     const auto depth_format =
         resolvePhysicalDepthFormat(
             rendering,
@@ -2362,7 +2367,8 @@ PassId registerGenericRasterPipeline(
         resolvePhysicalColorFormats(
             pass_def, rendering,
             dependencies.render_target,
-            dependencies.render_target_metadata);
+            dependencies.render_target_metadata,
+            dependencies.swapchain_format_override);
     const auto depth_format =
         resolvePhysicalDepthFormat(
             rendering,

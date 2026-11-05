@@ -80,6 +80,7 @@
 #include "renderer_config.hpp"
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
+#include "outputwindowsink.hpp"
 #include "shaderresolution.hpp"
 #include "util.hpp"
 #if PELICAN_WITH_OPENXR
@@ -1582,6 +1583,8 @@ struct FrameGraphExecutionRequest {
     // none.
     MaterialPassDrawTally *drawn_materials = nullptr;
     std::vector<std::uint8_t> *completed_logical_nodes = nullptr;
+    OutputWindowSink *output_window_sink = nullptr;
+    std::shared_ptr<const RendererRuntimeGeneration> runtime_generation;
 };
 
 void executePlannedFrameGraph(
@@ -1705,6 +1708,65 @@ void executePlannedFrameGraph(
             if (invocation.node_index < completed_nodes.size())
                 completed_nodes[invocation.node_index] = 0;
     }
+
+    const auto ui_pass = [](const CompiledPass &pass) {
+        const auto &definition = pass.definition;
+        bool result = definition.isUi() || definition.isDebugDraw() ||
+                      definition.isGizmo() || definition.isDebugText();
+#if PELICAN_WITH_IMGUI
+        result = result || definition.isImGui();
+#endif
+        return result;
+    };
+    const auto writes_display = [&](std::size_t node_index) {
+        if (node_index >= request.frame_graph.plan.nodes.size()) return false;
+        const auto &node = request.frame_graph.nodes[node_index];
+        if (node.kind == FramePlanNodeKind::render &&
+            ui_pass(request.rendering_pass.passes.at(node.index))) return false;
+        const auto &writes = request.frame_graph.plan.nodes[node_index].writes;
+        return std::find(writes.begin(), writes.end(), "display") != writes.end();
+    };
+    const auto scheduled_node_runs = [&](const LogicalFrameNodeInvocation &invocation) {
+        if (invocation.no_selected_view ||
+            (invocation.node_index < request.once_skipped.size() &&
+             request.once_skipped[invocation.node_index] != 0)) return false;
+        const auto &node = request.frame_graph.nodes[invocation.node_index];
+        return !request.frame_graph.value_graph ||
+               request.frame_graph.value_graph->nodeActive(
+                   node.name, request.inactive_graph_scopes);
+    };
+    bool output_capture_attempted = false;
+    bool output_capture_recorded = false;
+    const auto refuse_output_capture = [&] {
+        if (request.output_window_sink != nullptr &&
+            request.output_window_sink->wantsDisplayCapture()) {
+            request.output_window_sink->refuseDisplayCapture();
+        }
+    };
+    const auto capture_before = [&](vk::ImageLayout next_layout) {
+        if (request.output_window_sink == nullptr ||
+            !request.output_window_sink->wantsDisplayCapture() ||
+            output_capture_attempted) return;
+        output_capture_attempted = true;
+        if (rendering_scope_active || native_scope_active ||
+            output_capture_recorded) {
+            refuse_output_capture();
+            return;
+        }
+        const auto display = boundRenderTarget(request.frame_graph, "display");
+        output_capture_recorded = request.output_window_sink->recordDisplayCapture(
+            request.render_ctx, request.modules.render_target_container,
+            request.modules.vk_utils, request.layout_tracker, display,
+            next_layout, request.runtime_generation);
+        if (request.trace_out != nullptr) {
+            request.trace_out->push_back({
+                {"name", "output_window_capture"},
+                {"kind", "engine_copy"},
+                {"recorded", output_capture_recorded},
+                {"source", "display"},
+                {"destination", "output_window_bridge"}});
+        }
+    };
 
     for (std::size_t schedule_position = 0;
          schedule_position < schedule.size();
@@ -2216,6 +2278,27 @@ void executePlannedFrameGraph(
                 static_cast<std::uint32_t>(
                     timing_query_index),
                 GpuTimingSubrange::body);
+        }
+
+        if (request.output_window_sink != nullptr &&
+            request.output_window_sink->wantsDisplayCapture()) {
+            if (render_pass != nullptr && ui_pass(*render_pass)) {
+                bool later_graph_write = false;
+                for (std::size_t later = schedule_position + 1;
+                     later < schedule.size(); ++later) {
+                    if (scheduled_node_runs(schedule[later]) &&
+                        writes_display(schedule[later].node_index)) {
+                        later_graph_write = true;
+                        break;
+                    }
+                }
+                if (later_graph_write) refuse_output_capture();
+                else capture_before(vk::ImageLayout::eColorAttachmentOptimal);
+            } else if (execution_node.kind == FramePlanNodeKind::output_transform) {
+                capture_before(vk::ImageLayout::eShaderReadOnlyOptimal);
+            } else if (output_capture_recorded && writes_display(node_index)) {
+                refuse_output_capture();
+            }
         }
 
         if (native_scope_executor != nullptr) {
@@ -4504,6 +4587,10 @@ void appendFramePlanMemoryJson(
 #if PELICAN_WITH_OPENXR
         bound(std::string{OpenXr::xr_mirror_intermediate_name});
 #endif
+        if (GET_MODULE(EngineLaunchConfig).output_window.enabled &&
+            !GET_MODULE(EngineLaunchConfig).output_window.pattern) {
+            bound(std::string{output_window_bridge_name});
+        }
     }
     // Every render target the generation registered, once, as it is now, and
     // (RC-7e) the declared ones it did not register, with the payload
@@ -5779,6 +5866,7 @@ class Renderer::LogicalFrameRecorder {
     // the compiled program that generation selects. Throws before any GPU work
     // when the program is missing or has no compiled render pipeline.
     LogicalFrameRecorder(Renderer &renderer, ILogicalFrameTarget &target);
+    ~LogicalFrameRecorder();
 
     // The steps of one logical frame, in the order renderLogicalFrame calls
     // them.
@@ -6020,6 +6108,19 @@ Renderer::LogicalFrameRecorder::LogicalFrameRecorder(
           .projection_jitter = frame_projection_jitter,
       } {
     submission_resources->runtime_generation = runtime_generation;
+#if !defined(__ANDROID__)
+    if (renderer.active_graph_variant == RenderGraphVariant::flat) {
+        GET_MODULE(OutputWindowSink).beginDisplayCaptureFrame();
+    }
+#endif
+}
+
+Renderer::LogicalFrameRecorder::~LogicalFrameRecorder() {
+#if !defined(__ANDROID__)
+    if (renderer.active_graph_variant == RenderGraphVariant::flat) {
+        GET_MODULE(OutputWindowSink).cancelDisplayCapture();
+    }
+#endif
 }
 
 void Renderer::LogicalFrameRecorder::recordGraphDeformation(
@@ -7006,6 +7107,13 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
                 view_index);
     }
 
+    OutputWindowSink *output_window_sink = nullptr;
+#if !defined(__ANDROID__)
+    if (renderer.active_graph_variant == RenderGraphVariant::flat &&
+        view_index == 0 && GET_MODULE(OutputWindowSink).wantsDisplayCapture()) {
+        output_window_sink = &GET_MODULE(OutputWindowSink);
+    }
+#endif
     nlohmann::json node_trace;
     nlohmann::json *node_trace_ptr = nullptr;
     if (renderer.execution_tracing_for_testing) {
@@ -7040,6 +7148,8 @@ void Renderer::LogicalFrameRecorder::recordOneExecution(
             .once_skipped = once_skipped,
             .drawn_materials = &drawn_materials,
             .completed_logical_nodes = &completed_logical_nodes,
+            .output_window_sink = output_window_sink,
+            .runtime_generation = runtime_generation,
         },
         view_family_states, per_view_sort);
     if (external_depth_submission_active) {
@@ -7100,7 +7210,18 @@ void Renderer::LogicalFrameRecorder::submitFrame() {
         injectRayTracingJointTransactionPoint(
             RayTracingJointTransactionPoint::submit);
     }
+#if !defined(__ANDROID__)
+    if (renderer.active_graph_variant == RenderGraphVariant::flat &&
+        GET_MODULE(OutputWindowSink).abortDisplayCaptureBeforeSubmitForTesting()) {
+        throw OutputTemporarilyUnavailable{};
+    }
+#endif
     target.submitLogicalFrame(submission_lease);
+#if !defined(__ANDROID__)
+    if (renderer.active_graph_variant == RenderGraphVariant::flat) {
+        GET_MODULE(OutputWindowSink).publishDisplayCapture();
+    }
+#endif
     sealRetirementBatch();
 }
 

@@ -3,6 +3,7 @@
 #include "../../project/framegraphbufferdefinition.hpp"
 #include "renderingpass.hpp"
 #include <functional>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -49,6 +50,7 @@ struct RenderingPassRuntimeDependencies {
     std::function<Gizmo &()> gizmo_provider;
     std::function<DebugText &()> debug_text_provider;
     const VulkanTargetPlan *target_plan = nullptr;
+    std::optional<vk::Format> swapchain_format_override;
 };
 
 CompiledRenderingPass compileRenderingPassRuntime(const RenderingPassDefinition &definition,

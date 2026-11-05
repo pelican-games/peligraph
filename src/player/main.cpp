@@ -442,14 +442,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .help("headless: replay up to this time, then render --frames frames from there (seconds <= " +
               std::to_string(kMaxOfflineStartSeconds) + "; nearest frame)");
     program.add_argument("--size").default_value(std::string{"1280x720"}).metavar("WxH").help("headless render size");
-    // MD-1a0: a diagnostic second window. It is not the real output yet, so
-    // this slice requires an explicit pattern and never consumes the main
-    // window's bootstrap surface.
     program.add_argument("--output-window")
         .nargs(argparse::nargs_pattern::optional)
         .default_value(std::string{})
         .metavar("monitor")
-        .help("show the MD-1a0 diagnostic pattern on this glfwGetMonitors index");
+        .help("show the rendered picture without UI on this glfwGetMonitors index");
     program.add_argument("--output-window-size")
         .nargs(argparse::nargs_pattern::optional)
         .default_value(std::string{})
@@ -457,7 +454,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .help("windowed output size; omitted means the monitor's borderless video mode");
     program.add_argument("--output-window-pattern")
         .flag()
-        .help("required in MD-1a0: draw a frame-number-dependent diagnostic pattern");
+        .help("draw a diagnostic pattern that inverts every frame; WARNING: never run it full screen on a real monitor");
     program.add_argument("--render-out").default_value(std::string{}).metavar("path").help("render output path");
     program.add_argument("--output-dir")
         .default_value(std::string{})
@@ -693,17 +690,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                     "output_window.xr_unsupported@1: --output-window is not "
                     "supported while XR is requested");
             }
-            if (!output_window_pattern) {
-                throw std::runtime_error(
-                    "output_window.config_invalid@1: real output is not "
-                    "implemented yet; --output-window-pattern is required in "
-                    "MD-1a0");
-            }
             config.output_window.enabled = true;
             config.output_window.monitor =
                 parseOutputMonitorIndex(
                     program.get<std::string>("--output-window"));
-            config.output_window.pattern = true;
+            config.output_window.pattern = output_window_pattern;
             if (output_window_size_used) {
                 try {
                     config.output_window.size = parseExtent(

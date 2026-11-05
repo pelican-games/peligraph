@@ -2,6 +2,8 @@
 #include "editorruntimefactory.hpp"
 #include "../registrationownerhost.hpp"
 
+#include <cstdlib>
+
 #include "editorcommandservice.hpp"
 #include "editorassetqueryruntime.hpp"
 #include "renderconfigeditor.hpp"
@@ -2846,7 +2848,8 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                         .origin = std::move(origin),
                     };
                 },
-            .install_commit_hook = true,
+            .install_commit_hook = options.render_config_editing ||
+                                   std::getenv("PELICAN_MD1A_FORCE_IMGUI") == nullptr,
             .prefab_registry = [runtime] {
                 return runtime->modules.project_config.resolvedScene()
                     .prefabRegistry();

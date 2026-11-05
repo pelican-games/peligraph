@@ -876,6 +876,7 @@ struct SwapchainFrameTarget::Impl {
         wsi_fault_script;
     Camera &camera;
     std::uint64_t submitted_frame_count = 0;
+    double submit_ms_max = 0.0;
     double present_ms_max = 0.0;
     vk::Device device;
     vk::PhysicalDevice physical_device;
@@ -2934,13 +2935,18 @@ struct SwapchainFrameTarget::Impl {
                 epoch->present_semaphores[
                     active.image_index]
                     .get();
+            const auto acquire_semaphore =
+                epoch->acquire_semaphores[active.slot].get();
+            const auto submit_start =
+                std::chrono::steady_clock::now();
             command_buffer.recordEndSubmit(
-                {present_semaphore},
-                {epoch->acquire_semaphores[
-                     active.slot]
-                     .get()},
-                {vk::PipelineStageFlagBits::
-                     eTopOfPipe});
+                {present_semaphore}, {acquire_semaphore},
+                {vk::PipelineStageFlagBits::eTopOfPipe});
+            submit_ms_max = std::max(
+                submit_ms_max,
+                std::chrono::duration<double, std::milli>(
+                    std::chrono::steady_clock::now() - submit_start)
+                    .count());
             active_frame->phase =
                 ActiveFramePhase::submitted;
             auto lease =
@@ -3242,6 +3248,20 @@ struct SwapchainFrameTarget::Impl {
         return published_caps;
     }
 
+    bool gpuSubmissionsComplete() {
+        bool complete = true;
+        if (active_epoch) {
+            complete = active_epoch->pollGpuCompletion() && complete;
+        }
+        for (const auto &epoch : retired_epochs) {
+            complete = epoch->pollGpuCompletion() && complete;
+        }
+        if (recovery_anchor && recovery_anchor != active_epoch) {
+            complete = recovery_anchor->pollGpuCompletion() && complete;
+        }
+        return complete;
+    }
+
     FrameTargetStatus status() const {
         FrameTargetStatus result{
             .surface_epoch =
@@ -3285,6 +3305,7 @@ struct SwapchainFrameTarget::Impl {
             .present_mode =
                 last_present_configuration.present_mode,
             .present_ms_max = present_ms_max,
+            .submit_ms_max = submit_ms_max,
         };
         switch (recovery->kind()) {
         case WindowOutputStateKind::no_surface:
@@ -3522,6 +3543,10 @@ FrameTargetCaps SwapchainFrameTarget::caps() const {
 
 FrameTargetStatus SwapchainFrameTarget::status() const {
     return impl_->status();
+}
+
+bool SwapchainFrameTarget::gpuSubmissionsComplete() {
+    return impl_->gpuSubmissionsComplete();
 }
 
 std::vector<std::uint8_t>

@@ -201,6 +201,7 @@ struct FrameTargetStatus {
     vk::PresentModeKHR present_mode =
         vk::PresentModeKHR::eFifo;
     double present_ms_max = 0.0;
+    double submit_ms_max = 0.0;
 };
 
 std::string_view frameTargetLifecycleStateName(

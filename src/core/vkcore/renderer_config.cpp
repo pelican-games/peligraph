@@ -29,6 +29,7 @@
 #include "../shader/pipelinefactory.hpp"
 #include "../ui/module.hpp"
 #include "core.hpp"
+#include "outputwindowsink.hpp"
 #include "rendertarget.hpp"
 #include "rendertiming.hpp"
 #include "../../project/renderfeatureoverlay.hpp"
@@ -416,6 +417,36 @@ void registerXrMirrorIntermediate(vk::Extent2D extent) {
 }
 #endif
 
+void registerOutputWindowBridge(vk::Extent2D extent) {
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto display = targets.getRenderTargetIdByName("display");
+    if (!isConcreteRenderTarget(display)) {
+        throw std::runtime_error(
+            "output window requires the canonical engine-owned display intermediate");
+    }
+    const auto metadata = targets.getMetadata(display);
+    targets.registerRenderTarget(
+        RenderTargetDefinition{
+            .name = std::string{output_window_bridge_name},
+            .format_class =
+                "explicit(" + std::string{imageFormatName(metadata.format)} + ")",
+            .role = "color",
+            .extent_scale = 1.0f,
+            .format = metadata.format,
+            .usage = ImageUsageBit::transfer_dst |
+                     ImageUsageBit::sampled,
+            .history = false,
+            .history_clear_color = {0.0, 0.0, 0.0, 0.0},
+            .samples = 1,
+            .mip_levels = ImageMipLevelCount{},
+            .array_layers = 1,
+            .dimension = ImageResourceDimension::two_d,
+            .storage_mode = RenderTargetStorageMode::materialized,
+            .alias_group = std::nullopt,
+        },
+        extent, vma::MemoryUsage::eAutoPreferDevice);
+}
+
 } // namespace
 
 std::string renderPipelineFallbackConfigJson(
@@ -696,6 +727,11 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         std::move(hooks.after_publish);
     flat_options.after_rollback_prepared_generation =
         std::move(hooks.after_rollback);
+    const auto &output_window = GET_MODULE(EngineLaunchConfig).output_window;
+    if (output_window.enabled && !output_window.pattern) {
+        flat_options.prepare_additional_gpu_resources =
+            [base_extent] { registerOutputWindowBridge(base_extent); };
+    }
 #if PELICAN_WITH_OPENXR
     const bool xr_active =
         GET_MODULE(EngineLaunchConfig).xr_active;

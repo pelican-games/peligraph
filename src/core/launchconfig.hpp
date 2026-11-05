@@ -47,10 +47,9 @@ enum class EngineStartState {
     edit,
 };
 
-// MD-1a0 (--output-window*): a second, diagnostic output window. A monitor
-// index is present when the option was given; size is absent for the
-// borderless full-monitor default. The pattern switch is required in this
-// slice because there is no real picture to show yet.
+// A monitor index is present when the option was given; size is absent for
+// the borderless full-monitor default. The pattern switch selects the
+// diagnostic instead of the rendered picture.
 struct OutputWindowLaunchOptions {
     bool enabled = false;
     std::uint32_t monitor = 0;

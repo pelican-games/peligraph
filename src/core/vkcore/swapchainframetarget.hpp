@@ -55,6 +55,7 @@ class SwapchainFrameTarget final : public IFrameTarget {
         FrameTargetFrame frame) noexcept override;
     FrameTargetCaps caps() const override;
     FrameTargetStatus status() const override;
+    bool gpuSubmissionsComplete();
     std::vector<std::uint8_t>
     readbackLastFrameRGBA8() override;
 };

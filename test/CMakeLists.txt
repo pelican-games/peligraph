@@ -4433,6 +4433,12 @@ if(PELICAN_WITH_RPC AND UNIX)
         PELICAN_MD1A_PLAYER="$<TARGET_FILE:pelican_player>")
     add_dependencies(pelican_test_output_window_test pelican_player)
 endif()
+if(PELICAN_WITH_RPC AND WIN32)
+    pelican_define_test(output_window_windows_test GPU pelican_project)
+    target_compile_definitions(pelican_test_output_window_windows_test PRIVATE
+        PELICAN_MD1A_PLAYER="$<TARGET_FILE:pelican_player>")
+    add_dependencies(pelican_test_output_window_windows_test pelican_player)
+endif()
 
 if(PELICAN_WITH_RPC AND PELICAN_WITH_VIDEO_OUTPUT)
     # VO-1a: output.file through a real headless --rpc player.

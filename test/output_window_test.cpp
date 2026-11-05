@@ -6,6 +6,7 @@
 #include "../src/project/projecttemplate.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
 #include <nlohmann/json.hpp>
 // The decoder is this executable's own: it links no engine library that has it.
@@ -94,6 +95,22 @@ struct TempProject {
         std::error_code ec;
         std::filesystem::remove_all(root, ec);
     }
+    void writeDisplayShader(const char *fragment) const {
+        std::filesystem::create_directories(root / "shaders");
+        std::ofstream output{root / "shaders" / "md1a_display.frag", std::ios::trunc};
+        output << fragment;
+        output.close();
+        const auto path = root / "passes" / "main_rendering_config.json";
+        std::ifstream input{path};
+        Json config;
+        input >> config;
+        auto &passes = config.at("rendering").at("rendering_passes").at(0).at("passes");
+        passes.at(0).at("shader").at("fragment") = "project://shaders/md1a_display";
+        std::ofstream rewritten{path, std::ios::trunc};
+        rewritten << config.dump(2) << '\n';
+        REQUIRE(output.good());
+    }
+
     TempProject(const TempProject &) = delete;
     TempProject &operator=(const TempProject &) = delete;
 };
@@ -486,6 +503,11 @@ Json normalizedFramePlan(const Json &plan) {
             {"reads_history", node.at("reads_history")},
             {"schedule", node.contains("schedule") ? node.at("schedule") : Json{}},
             {"declaration_index", node.at("declaration_index")},
+            {"pass_inputs", node.contains("pass_inputs") ? node.at("pass_inputs") : Json{}},
+            {"resource_bindings", node.contains("resource_bindings") ? node.at("resource_bindings") : Json{}},
+            {"incoming_barriers", node.contains("incoming_barriers") ? node.at("incoming_barriers") : Json{}},
+            {"view_family", node.contains("view_family") ? node.at("view_family") : Json{}},
+            {"execution", node.contains("execution") ? node.at("execution") : Json{}},
         });
     }
     return Json{
@@ -495,12 +517,23 @@ Json normalizedFramePlan(const Json &plan) {
     };
 }
 
-std::vector<std::pair<std::string, std::string>> outputEnvironment(bool dump_pattern = false,
-                                                                  const std::filesystem::path &dump_dir = {}) {
+bool hasRegisteredTarget(const Json &plan, std::string_view name) {
+    if (!plan.contains("gpu_resource_arena")) return false;
+    for (const auto &scope : plan.at("gpu_resource_arena").at("scopes")) {
+        for (const auto &resource : scope.at("resources")) {
+            if (resource.value("kind", "") == "render_target" &&
+                resource.value("name", "") == name) return true;
+        }
+    }
+    return false;
+}
+
+std::vector<std::pair<std::string, std::string>> outputEnvironment(
+    bool dump_pattern = false, const std::filesystem::path &dump_dir = {}, int dump_count = 2) {
     std::vector<std::pair<std::string, std::string>> environment;
     if (dump_pattern) {
         environment.emplace_back("PELICAN_MD1A_PATTERN_DUMP_DIR", dump_dir.generic_string());
-        environment.emplace_back("PELICAN_MD1A_PATTERN_DUMP_COUNT", "2");
+        environment.emplace_back("PELICAN_MD1A_PATTERN_DUMP_COUNT", std::to_string(dump_count));
     }
     return environment;
 }
@@ -514,6 +547,12 @@ std::vector<std::string> outputFlagsWithFrames(int frames) {
     auto arguments = output_flags;
     arguments.push_back("--frames");
     arguments.push_back(std::to_string(frames));
+    return arguments;
+}
+
+std::vector<std::string> displayOutputFlagsWithFrames(int frames) {
+    auto arguments = outputFlagsWithFrames(frames);
+    arguments.erase(std::find(arguments.begin(), arguments.end(), "--output-window-pattern"));
     return arguments;
 }
 
@@ -537,15 +576,6 @@ TEST_CASE("MD-1a0 output_window option errors are named and headless/XR are refu
         INFO(result.output);
         CHECK(result.code != 0);
         CHECK_THAT(result.output, Catch::Matchers::ContainsSubstring("output_window.xr_unsupported@1"));
-    }
-
-    SECTION("without the pattern the real-output slice says it is not implemented") {
-        const auto result = runToExit(project, {"--output-window", "0"}, log);
-        INFO(result.output);
-        CHECK(result.code != 0);
-        CHECK_THAT(result.output, Catch::Matchers::ContainsSubstring("output_window.config_invalid@1"));
-        CHECK_THAT(result.output,
-                   Catch::Matchers::ContainsSubstring("real output is not implemented yet"));
     }
 
     SECTION("a bad monitor index is a named configuration error") {
@@ -606,8 +636,13 @@ TEST_CASE("MD-1a0 output_window is off without the option and does not change th
     CHECK(off.at("present_mode").is_null());
     CHECK(off.at("presented") == 0);
     CHECK(off.at("dropped") == 0);
+    CHECK(off.at("captures") == 0);
+    CHECK(off.at("capture_skipped") == 0);
+    CHECK(off.at("capture_fence_waits") == 0);
     CHECK(off.at("last_error").is_null());
     CHECK(off.at("present_ms_max") == 0.0);
+    CHECK_FALSE(hasRegisteredTarget(off_plan, "output_window_bridge"));
+    CHECK(off_plan.at("nodes").dump().find("output_window_capture") == std::string::npos);
     CHECK(off_status.at("play").at("camera").at("viewport_width") == kMainWidth);
     CHECK(off_status.at("play").at("camera").at("viewport_height") == kMainHeight);
 
@@ -636,10 +671,29 @@ TEST_CASE("MD-1a0 output_window is off without the option and does not change th
     CHECK((present_mode == "FIFO" || present_mode == "MAILBOX"));
     CHECK(present_mode != "IMMEDIATE");
     CHECK(on.at("presented").get<std::uint64_t>() >= 3);
+    CHECK(on.at("captures") == 0);
+    CHECK(on.at("capture_skipped") == 0);
     CHECK(on.at("last_error").is_null());
     CHECK(on_status.at("play").at("camera").at("viewport_width") == kMainWidth);
     CHECK(on_status.at("play").at("camera").at("viewport_height") == kMainHeight);
+    CHECK_FALSE(hasRegisteredTarget(on_plan, "output_window_bridge"));
     CHECK(normalizedFramePlan(on_plan) == normalizedFramePlan(off_plan));
+
+    Json display_plan;
+    {
+        PlayerRpc player{project, project.root / "display-plan.stderr.log",
+                         displayOutputFlagsWithFrames(600)};
+        (void)player.waitFor("display captures", [](const Json &status) {
+            return status.at("output_window").at("captures").get<std::uint64_t>() >= 3;
+        });
+        display_plan = player.result("get_frame_plan");
+        player.close();
+        CHECK(player.exitCode() == 0);
+    }
+    CHECK(hasRegisteredTarget(display_plan, "output_window_bridge"));
+    CHECK(normalizedFramePlan(display_plan) == normalizedFramePlan(off_plan));
+    CHECK(display_plan.at("physical_target_plan").dump().find("output_window_bridge") ==
+          std::string::npos);
 }
 
 TEST_CASE("MD-1a0 output_window pattern bars follow the frame number and main pixels stay unchanged",
@@ -741,6 +795,210 @@ TEST_CASE("MD-1a0 output_window pattern bars follow the frame number and main pi
     CHECK(difference_count == 0);
 }
 
+TEST_CASE("MD-1a1 output_window copies display before the UI", "[md1a1]") {
+    TempProject project;
+    Image main_picture;
+    {
+        PlayerRpc player{project, project.root / "display-main.stderr.log", {"--frames", "120"}};
+        (void)player.waitFor("the main loop", [](const Json &status) {
+            return status.at("window_output").at("submits").get<std::uint64_t>() >= 5;
+        });
+        main_picture = captureMain(player, project.root / "display-main.png");
+        player.close();
+        CHECK(player.exitCode() == 0);
+    }
+    const auto dump_dir = project.root / "display-output";
+    std::filesystem::create_directories(dump_dir);
+    PlayerRpc player{project, project.root / "display.stderr.log", displayOutputFlagsWithFrames(120),
+                     outputEnvironment(true, dump_dir)};
+    const auto status = player.waitFor("display captures and output presents", [](const Json &s) {
+        const auto &window = s.at("output_window");
+        return window.at("state") == "running" && window.at("captures").get<std::uint64_t>() >= 3 &&
+               window.at("presented").get<std::uint64_t>() >= 3;
+    });
+    INFO(status.at("output_window").dump());
+    CHECK(status.at("output_window").at("source") == "display");
+    CHECK(status.at("output_window").at("last_error").is_null());
+    std::vector<std::filesystem::path> dumps;
+    for (const auto &entry : std::filesystem::directory_iterator{dump_dir}) {
+        if (entry.path().extension() == ".ppm") dumps.push_back(entry.path());
+    }
+    REQUIRE(dumps.size() >= 2);
+    std::sort(dumps.begin(), dumps.end());
+    const auto output = readPpm(dumps.back());
+    REQUIRE(output.width == kOutputWidth);
+    REQUIRE(output.height == kOutputHeight);
+    for (const auto [x, y] : {std::pair{30u, 30u}, {100u, 75u}, {170u, 120u}}) {
+        const auto expected = ppmAt({static_cast<std::uint32_t>(main_picture.width),
+                                     static_cast<std::uint32_t>(main_picture.height),
+                                     [&] {
+                                         std::vector<unsigned char> rgb;
+                                         for (std::size_t i = 0; i < main_picture.rgba.size(); i += 4) {
+                                             rgb.insert(rgb.end(), main_picture.rgba.begin() + static_cast<std::ptrdiff_t>(i),
+                                                        main_picture.rgba.begin() + static_cast<std::ptrdiff_t>(i + 3));
+                                         }
+                                         return rgb;
+                                     }()},
+                                    x * kMainWidth / kOutputWidth, y * kMainHeight / kOutputHeight);
+        const auto actual = ppmAt(output, x, y);
+        INFO("pixel " << x << ',' << y << " expected=" << static_cast<int>(expected[0]) << ','
+                      << static_cast<int>(expected[1]) << ',' << static_cast<int>(expected[2]) << " actual="
+                      << static_cast<int>(actual[0]) << ',' << static_cast<int>(actual[1]) << ','
+                      << static_cast<int>(actual[2]));
+        for (int channel = 0; channel < 3; ++channel) {
+            CHECK(std::abs(static_cast<int>(actual[channel]) - static_cast<int>(expected[channel])) <= 3);
+        }
+    }
+    const auto with_option = captureMain(player, project.root / "display-main-with.png");
+    CHECK(with_option.rgba == main_picture.rgba);
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("MD-1a1 output_window known colors use the output surface encoding", "[md1a1]") {
+    const auto shader = GENERATE(
+        "outColor = vec4(0.0, 0.0, 0.0, 1.0);",
+        "outColor = vec4(1.0, 1.0, 1.0, 1.0);",
+        "outColor = vec4(0.18, 0.18, 0.18, 1.0);");
+    const int expected = std::string{shader}.find("0.18") != std::string::npos
+        ? 117
+        : (std::string{shader}.find("1.0,") != std::string::npos ? 255 : 0);
+    TempProject project;
+    const std::string fragment =
+        "#version 460\nlayout(location = 0) out vec4 outColor;\nvoid main() { " +
+        std::string{shader} + " }\n";
+    project.writeDisplayShader(fragment.c_str());
+    const auto dump_dir = project.root / "known-color";
+    std::filesystem::create_directories(dump_dir);
+    PlayerRpc player{project, project.root / "known-color.stderr.log",
+                     displayOutputFlagsWithFrames(120), outputEnvironment(true, dump_dir)};
+    const auto status = player.waitFor("known-color readback", [](const Json &s) {
+        return s.at("output_window").at("presented").get<std::uint64_t>() >= 3;
+    });
+    INFO(status.at("output_window").dump());
+    const auto output = readPpm(dump_dir / "pattern_0.ppm");
+    const auto pixel = ppmAt(output, output.width / 2, output.height / 2);
+    for (const auto channel : pixel) {
+        CHECK(std::abs(static_cast<int>(channel) - expected) <= 2);
+    }
+    CHECK((status.at("output_window").at("surface_format") == "UNORM" ||
+           status.at("output_window").at("surface_format") == "SRGB"));
+    CHECK(status.at("output_window").at("copy_gpu_samples").get<std::uint64_t>() >= 1);
+    CHECK(std::isfinite(status.at("output_window").at("copy_gpu_ms_max").get<double>()));
+    CHECK(status.at("output_window").at("copy_gpu_ms_max").get<double>() >= 0.0);
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("MD-1a1 output_window generations move forward without replay", "[md1a1]") {
+    TempProject project;
+    project.writeDisplayShader(R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+#include "pelican_frame.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);
+void main() {
+    outColor = vec4(0.0, float(pelicanFrame.frame_index.x & 127u) / 255.0,
+                    inUV.x, 1.0);
+}
+)glsl");
+    const auto dump_dir = project.root / "generations";
+    std::filesystem::create_directories(dump_dir);
+    PlayerRpc player{project, project.root / "generations.stderr.log",
+                     displayOutputFlagsWithFrames(500), outputEnvironment(true, dump_dir, 8)};
+    const auto status = player.waitFor("eight distinct output generations", [](const Json &s) {
+        return s.at("output_window").at("captures").get<std::uint64_t>() >= 8 &&
+               s.at("output_window").at("presented").get<std::uint64_t>() >= 8;
+    });
+    uint64_t previous = 0;
+    for (int generation = 0; generation < 8; ++generation) {
+        const auto output = readPpm(dump_dir / ("pattern_" + std::to_string(generation) + ".ppm"));
+        const auto current = ppmAt(output, output.width / 2, output.height / 2)[1];
+        INFO("generation " << generation << " green " << static_cast<int>(current));
+        if (generation != 0) CHECK(current > previous);
+        previous = current;
+    }
+    CHECK(status.at("output_window").at("presented").get<std::uint64_t>() <=
+          status.at("output_window").at("captures").get<std::uint64_t>());
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("MD-1a1 output_window excludes a real ImGui overlay", "[md1a1]") {
+    TempProject project;
+    project.writeDisplayShader(R"(#version 450
+layout(location = 0) out vec4 color;
+void main() { color = vec4(0.2, 0.4, 0.6, 1.0); }
+)");
+    Image graph_only;
+    {
+        PlayerRpc player{project, project.root / "ui-off-main.stderr.log", {"--frames", "120"}};
+        (void)player.waitFor("main without UI", [](const Json &s) {
+            return s.at("window_output").at("submits").get<std::uint64_t>() >= 5;
+        });
+        graph_only = captureMain(player, project.root / "ui-off-main.png");
+        player.close();
+        CHECK(player.exitCode() == 0);
+    }
+    const auto dump_dir = project.root / "ui-output";
+    std::filesystem::create_directories(dump_dir);
+    auto environment = outputEnvironment(true, dump_dir);
+    environment.emplace_back("PELICAN_MD1A_FORCE_IMGUI", "1");
+    PlayerRpc player{project, project.root / "ui-on.stderr.log",
+                     displayOutputFlagsWithFrames(120), environment};
+    (void)player.waitFor("UI output captures", [](const Json &s) {
+        return s.at("output_window").at("captures").get<std::uint64_t>() >= 3 &&
+               s.at("output_window").at("presented").get<std::uint64_t>() >= 3;
+    });
+    const auto plan = player.result("get_frame_plan");
+    REQUIRE(plan.at("nodes").dump().find("imgui") != std::string::npos);
+    const auto with_ui = captureMain(player, project.root / "ui-on-main.png");
+    REQUIRE(with_ui.rgba.size() == graph_only.rgba.size());
+    std::size_t changed = 0;
+    for (std::size_t i = 0; i < with_ui.rgba.size(); i += 4) {
+        changed += !std::equal(with_ui.rgba.begin() + static_cast<std::ptrdiff_t>(i),
+                               with_ui.rgba.begin() + static_cast<std::ptrdiff_t>(i + 3),
+                               graph_only.rgba.begin() + static_cast<std::ptrdiff_t>(i));
+    }
+    CHECK(changed > 0);
+    const auto output = readPpm(dump_dir / "pattern_1.ppm");
+    for (std::uint32_t y = 0; y < output.height; y += 15) {
+        for (std::uint32_t x = 0; x < output.width; x += 15) {
+            const auto source_x = x * kMainWidth / kOutputWidth;
+            const auto source_y = y * kMainHeight / kOutputHeight;
+            const auto source_offset = (static_cast<std::size_t>(source_y) * kMainWidth + source_x) * 4;
+            const auto actual = ppmAt(output, x, y);
+            for (int channel = 0; channel < 3; ++channel) {
+                CHECK(std::abs(static_cast<int>(actual[channel]) -
+                               static_cast<int>(graph_only.rgba[source_offset + channel])) <= 3);
+            }
+        }
+    }
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("MD-1a1 aborted producer reservations never publish a generation", "[md1a1]") {
+    TempProject project;
+    auto environment = outputEnvironment();
+    environment.emplace_back("PELICAN_MD1A_ABORT_BEFORE_SUBMIT_FRAMES", "1000000");
+    PlayerRpc player{project, project.root / "abort.stderr.log",
+                     displayOutputFlagsWithFrames(120), environment};
+    const auto status = player.waitFor("aborted capture reservations", [](const Json &s) {
+        return s.at("output_window").at("capture_aborted").get<std::uint64_t>() >= 3;
+    });
+    CHECK(status.at("output_window").at("captures") == 0);
+    CHECK(status.at("output_window").at("presented") == 0);
+    CHECK(status.at("output_window").at("dropped").get<std::uint64_t>() >= 3);
+    CHECK(status.at("output_window").at("capture_fence_waits") == 0);
+    CHECK(status.at("window_output").at("submits") == 0);
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
 TEST_CASE("MD-1a0 output_window liveness tracks main submits and dropped frames", "[md1a]") {
     TempProject project;
     constexpr std::uint64_t kForcedDrops = 30;
@@ -806,6 +1064,131 @@ TEST_CASE("MD-1a0 output_window liveness tracks main submits and dropped frames"
     }
     std::cout << "MD1A_FRAME_TIME main_only_ms=" << without_output_ms
               << " with_output_ms=" << with_output_ms << std::endl;
+}
+
+TEST_CASE("MD-1a1 output_window skips a busy bridge without blocking or replaying generations", "[md1a1]") {
+    TempProject project;
+    const auto dump_dir = project.root / "busy-output";
+    std::filesystem::create_directories(dump_dir);
+    auto environment = outputEnvironment(true, dump_dir);
+    environment.emplace_back("PELICAN_MD1A_CAPTURE_BUSY_FRAMES", "20");
+    PlayerRpc player{project, project.root / "busy.stderr.log", displayOutputFlagsWithFrames(240), environment};
+    const auto skipped = player.waitFor("deterministic busy capture skips", [](const Json &status) {
+        return status.at("output_window").at("capture_skipped").get<std::uint64_t>() >= 10;
+    });
+    const auto main_submits = skipped.at("window_output").at("submits").get<std::uint64_t>();
+    const auto skipped_status = skipped.at("output_window");
+    CHECK(skipped_status.at("captures") == 0);
+    CHECK(skipped_status.at("presented") == 0);
+    CHECK(skipped_status.at("capture_fence_waits") == 0);
+    const auto resumed = player.waitFor("display capture recovery", [&](const Json &status) {
+        return status.at("window_output").at("submits").get<std::uint64_t>() >= main_submits + 10 &&
+               status.at("output_window").at("captures").get<std::uint64_t>() >= 3 &&
+               status.at("output_window").at("presented").get<std::uint64_t>() >= 3;
+    });
+    CHECK(resumed.at("output_window").at("capture_skipped") == 20);
+    CHECK(resumed.at("output_window").at("capture_fence_waits") == 0);
+    CHECK(resumed.at("output_window").at("presented").get<std::uint64_t>() <=
+          resumed.at("output_window").at("captures").get<std::uint64_t>());
+    REQUIRE(!std::filesystem::is_empty(dump_dir));
+    const auto output = readPpm(dump_dir / "pattern_0.ppm");
+    CHECK(output.width == kOutputWidth);
+    CHECK(output.height == kOutputHeight);
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("MD-1a1 output_window capture follows the last of several graph passes",
+          "[md1a1]") {
+    TempProject project;
+    project.writeDisplayShader(R"(#version 450
+layout(location = 0) out vec4 color;
+void main() { color = vec4(1.0, 0.0, 0.0, 1.0); }
+)");
+    std::ofstream second_shader{project.root / "shaders" / "md1a_second.frag", std::ios::trunc};
+    second_shader << R"(#version 450
+layout(location = 0) out vec4 color;
+void main() { color = vec4(0.0, 1.0, 0.0, 1.0); }
+)";
+    second_shader.close();
+    REQUIRE(second_shader.good());
+    const auto config_path = project.root / "passes" / "main_rendering_config.json";
+    std::ifstream input{config_path};
+    Json config;
+    input >> config;
+    auto &passes = config.at("rendering").at("rendering_passes").at(0).at("passes");
+    passes.push_back(passes.at(0));
+    passes.back().at("name") = "present_second";
+    passes.back().at("shader").at("fragment") = "project://shaders/md1a_second";
+    config["rendering"]["frame_node_order"]["main_render"] = {"present", "present_second"};
+    std::ofstream output_config{config_path, std::ios::trunc};
+    output_config << config.dump(2) << '\n';
+    output_config.close();
+    REQUIRE(output_config.good());
+
+    const auto dump_dir = project.root / "multiple-passes";
+    auto player = PlayerRpc{project, project.root / "multiple-passes.stderr.log",
+                            displayOutputFlagsWithFrames(400), outputEnvironment(true, dump_dir)};
+    (void)player.waitFor("captures after multiple graph passes", [](const Json &status) {
+        return status.at("output_window").at("presented").get<std::uint64_t>() >= 3;
+    });
+    const auto plan = player.result("get_frame_plan");
+    CHECK(plan.at("nodes").dump().find("imgui") == std::string::npos);
+    const auto image = readPpm(dump_dir / "pattern_0.ppm");
+    const auto pixel = ppmAt(image, image.width / 2, image.height / 2);
+    CHECK(std::abs(static_cast<int>(pixel[0])) <= 2);
+    CHECK(std::abs(static_cast<int>(pixel[1]) - 255) <= 2);
+    CHECK(std::abs(static_cast<int>(pixel[2])) <= 2);
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("MD-1a1 output_window real pending reads survive acquire drops, generations and teardown",
+          "[md1a1]") {
+    TempProject project;
+    project.writeDisplayShader(R"(#version 450
+layout(location = 0) out vec4 color;
+void main() { color = vec4(0.0, 0.0, 1.0, 1.0); }
+)");
+    auto environment = outputEnvironment();
+    environment.emplace_back("PELICAN_MD1A_DELAY_SINK_GPU_MS", "400");
+    environment.emplace_back("PELICAN_MD1A_BEGIN_UNAVAILABLE_FRAMES", "5");
+    environment.emplace_back("PELICAN_MD1A_BEGIN_UNAVAILABLE_AFTER_FRAMES", "2");
+    {
+        PlayerRpc player{project, project.root / "pending.stderr.log",
+                         displayOutputFlagsWithFrames(0), environment};
+        const auto pending = player.waitFor("a really pending sink submission", [](const Json &status) {
+            return status.at("output_window").at("capture_skipped").get<std::uint64_t>() >= 1;
+        }, 20s);
+        CHECK(pending.at("output_window").at("captures") == 1);
+        CHECK(pending.at("output_window").at("presented") == 1);
+        CHECK(pending.at("output_window").at("capture_fence_waits") == 0);
+        project.writeDisplayShader(R"(#version 450
+layout(location = 0) out vec4 color;
+void main() { color = vec4(1.0, 1.0, 1.0, 1.0); }
+)");
+        CHECK(player.result("reload_shaders").at("committed") == true);
+        const auto resumed = player.waitFor("new-generation captures after the sink read completes", [](const Json &status) {
+            return status.at("output_window").at("captures").get<std::uint64_t>() >= 3 &&
+                   status.at("output_window").at("presented").get<std::uint64_t>() >= 3;
+        }, 30s);
+        CHECK(resumed.at("output_window").at("dropped").get<std::uint64_t>() >= 5);
+        CHECK(resumed.at("output_window").at("last_error").is_null());
+        player.close();
+        CHECK(player.exitCode() == 0);
+        CHECK(player.stderrText().find("PELICAN_MD1A_SINK_SUBMISSION_DELAY") != std::string::npos);
+    }
+    {
+        auto teardown_environment = outputEnvironment();
+        teardown_environment.emplace_back("PELICAN_MD1A_DELAY_SINK_GPU_MS", "20000");
+        auto teardown_flags = displayOutputFlagsWithFrames(2);
+        PlayerRpc player{project, project.root / "pending-teardown.stderr.log",
+                         teardown_flags, teardown_environment};
+        player.close(30);
+        CHECK(player.exitCode() == 0);
+        CHECK(player.stderrText().find("PELICAN_MD1A_SINK_SUBMISSION_DELAY") !=
+              std::string::npos);
+    }
 }
 
 TEST_CASE("MD-1a0 output_window closes independently while the main target keeps presenting",
@@ -882,18 +1265,31 @@ TEST_CASE("MD-1a0 output_window begin is nonblocking and the main loop keeps pro
     CHECK(player.exitCode() == 0);
 }
 
-TEST_CASE("MD-1a0 output_window validation layers see no output-target message over 3000 frames",
-          "[md1a]") {
+TEST_CASE("MD-1a1 output_window display passes synchronization validation for 3000 frames",
+          "[md1a1]") {
     TempProject project;
-    // Synchronization validation is available on this build; the startup log
-    // says which, and the report keeps that answer.
+    const auto dump_dir = project.root / "validation-output";
+    std::filesystem::create_directories(dump_dir);
+    auto flags = displayOutputFlagsWithFrames(3000);
+    flags.insert(flags.end(), {"--vulkan-validation", "on"});
+    Json status;
     {
-        PlayerRpc player{project, project.root / "validation.stderr.log",
-                         {"--output-window", "0", "--output-window-size", "200x150",
-                          "--output-window-pattern", "--frames", "3000", "--vulkan-validation", "on"}};
+        PlayerRpc player{project, project.root / "validation.stderr.log", flags,
+                         outputEnvironment(true, dump_dir)};
+        status = player.waitFor("a captured, presented and read back output", [](const Json &s) {
+            const auto &window = s.at("output_window");
+            return window.at("captures").get<std::uint64_t>() >= 1 &&
+                   window.at("presented").get<std::uint64_t>() >= 1;
+        });
         player.close(360);
         CHECK(player.exitCode() == 0);
     }
+    CHECK(status.at("output_window").at("captures").get<std::uint64_t>() >= 1);
+    CHECK(status.at("output_window").at("presented").get<std::uint64_t>() >= 1);
+    REQUIRE(!std::filesystem::is_empty(dump_dir));
+    const auto output = readPpm(dump_dir / "pattern_0.ppm");
+    CHECK(output.width == kOutputWidth);
+    CHECK(output.height == kOutputHeight);
 
     const auto stderr = readFile(project.root / "validation.stderr.log");
     INFO("validation log size " << stderr.size());
