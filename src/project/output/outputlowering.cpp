@@ -192,6 +192,7 @@ struct ParsedSink {
     std::string name;
     std::uint64_t every_n = 1;
     bool enabled = true;
+    std::string format = "raw";
     SourceTarget source;
     std::string source_node;
     std::string source_port;
@@ -231,7 +232,8 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         };
         for (const auto &[key, value] : values.items()) {
             (void)value;
-            if (key != "name" && key != "every_n" && key != "enabled")
+            if (key != "name" && key != "every_n" && key != "enabled" &&
+                key != "format")
                 invalid(key, "unknown_parameter");
         }
         sink.name = stringAt(values, "name");
@@ -263,6 +265,19 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         if (const auto enabled = values.find("enabled"); enabled != values.end()) {
             if (!enabled->is_boolean()) invalid("enabled", "not_a_bool");
             sink.enabled = enabled->get<bool>();
+        }
+        if (const auto format = values.find("format"); format != values.end()) {
+            // VO-1b: only the two encodings this writer implements. Anything
+            // else, including a non-string, is refused by name rather than
+            // silently treated as raw.
+            if (!format->is_string() ||
+                (format->get<std::string>() != "raw" &&
+                 format->get<std::string>() != "png")) {
+                throw GraphRegistryError(
+                    "output.file_format_unknown@1",
+                    {{"node", sink.id}, {"format", *format}});
+            }
+            sink.format = format->get<std::string>();
         }
         parsed.push_back(std::move(sink));
     }
@@ -391,6 +406,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         spec.kind = "file";
         spec.every_n = sink.every_n;
         spec.enabled = true;
+        spec.format = sink.format;
         spec.graph = sink.source.graph;
         spec.target = sink.source.target;
         spec.source_node = sink.source_node;
@@ -401,6 +417,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
             {{"name", sink.name},
              {"kind", "file"},
              {"every_n", sink.every_n},
+             {"format", sink.format},
              {"graph", sink.source.graph},
              {"target", sink.source.target}});
     }

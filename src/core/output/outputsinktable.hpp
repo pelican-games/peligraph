@@ -16,6 +16,8 @@ struct OutputSinkSpec {
     std::string kind = "file";
     std::uint64_t every_n = 1;
     bool enabled = true;
+    // VO-1b: "raw" (PVO1) or "png". Lowering refuses anything else.
+    std::string format = "raw";
     std::string graph;
     std::string target;
     std::string source_node;

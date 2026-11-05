@@ -2,9 +2,12 @@
 // last-writer rule, without a GPU.
 #include "../src/core/output/outputfile.hpp"
 #include "../src/core/output/outputreadback.hpp"
+#include "../src/core/output/outputsinks.hpp"
+#include "../src/core/watch/problemlist.hpp"
 #include "../src/project/graphmodule.hpp"
 #include "../src/project/output/outputlowering.hpp"
 #include "../src/project/output/outputplanning.hpp"
+#include "../src/project/renderconfigdocument.hpp"
 #include "../src/project/renderpipeline.hpp"
 #include "../src/project/targetrenderplanning.hpp"
 #include "../src/core/renderingpass/renderingsamplecount.hpp"
@@ -12,13 +15,16 @@
 #include "render_graph_ir_test_support.hpp"
 
 #include <catch2/catch_test_macros.hpp>
+#include <stb_image.h>
 
 #include <algorithm>
 #include <chrono>
 #include <filesystem>
 #include <fstream>
 #include <iterator>
+#include <limits>
 #include <optional>
+#include <set>
 
 #include <nlohmann/json.hpp>
 
@@ -146,6 +152,59 @@ std::vector<std::uint8_t> pattern() {
         }
     }
     return pixels;
+}
+
+std::vector<std::uint8_t> bgraBytes(std::vector<std::uint8_t> rgba) {
+    for (std::size_t at = 0; at + 3 < rgba.size(); at += 4)
+        std::swap(rgba[at], rgba[at + 2]);
+    return rgba;
+}
+
+struct DecodedPng {
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    std::vector<std::uint8_t> rgba;
+};
+
+DecodedPng decodePng(const std::filesystem::path &path) {
+    const auto bytes = readBytes(path);
+    REQUIRE(bytes.size() <=
+            static_cast<std::size_t>((std::numeric_limits<int>::max)()));
+    int width = 0;
+    int height = 0;
+    int channels = 0;
+    auto *pixels = stbi_load_from_memory(
+        reinterpret_cast<const stbi_uc *>(bytes.data()),
+        static_cast<int>(bytes.size()), &width, &height, &channels, 4);
+    REQUIRE(pixels != nullptr);
+    DecodedPng png;
+    png.width = width;
+    png.height = height;
+    png.channels = channels;
+    png.rgba.assign(pixels, pixels + static_cast<std::size_t>(width) *
+                                         height * 4);
+    stbi_image_free(pixels);
+    return png;
+}
+
+bool pngHasChunk(const std::vector<std::uint8_t> &bytes,
+                 std::string_view type) {
+    if (bytes.size() < 8) return false;
+    std::size_t at = 8;
+    while (at + 12 <= bytes.size()) {
+        const auto length = (static_cast<std::uint32_t>(bytes.at(at)) << 24) |
+                            (static_cast<std::uint32_t>(bytes.at(at + 1)) << 16) |
+                            (static_cast<std::uint32_t>(bytes.at(at + 2)) << 8) |
+                            static_cast<std::uint32_t>(bytes.at(at + 3));
+        if (at + 12 + length > bytes.size()) return false;
+        if (std::string_view{
+                reinterpret_cast<const char *>(bytes.data() + at + 4), 4} ==
+            type)
+            return true;
+        at += 12 + length;
+    }
+    return false;
 }
 
 std::uint32_t le32(const std::vector<std::uint8_t> &bytes, std::size_t at) {
@@ -310,7 +369,8 @@ TEST_CASE("VO-1a output.file lowers to a report and a retained target", "[vo1a][
                                        {"kind", "file"},
                                        {"every_n", 1},
                                        {"graph", "main_render"},
-                                       {"target", "target"}}})}});
+                                       {"target", "target"},
+                                       {"format", "raw"}}})}});
     REQUIRE(lowered.sinks.sinks.size() == 1);
     const auto &sink = lowered.sinks.sinks.front();
     CHECK(sink.name == "shot");
@@ -322,6 +382,7 @@ TEST_CASE("VO-1a output.file lowers to a report and a retained target", "[vo1a][
     CHECK(sink.source_node == "fill");
     CHECK(sink.source_port == "color");
     CHECK(sink.error_code.empty());
+    CHECK(sink.format == "raw");
     CHECK(lowered.document.at("rendering").at("target_planning").at("graphs").at("main_render")
               .at("resources").at("target").at("retain") == true);
 }
@@ -395,8 +456,34 @@ TEST_CASE("VO-1a output.file refuses names and parameters", "[vo1a][output-lower
         CHECK(refusal(graph) == "output.parameter_invalid@1");
     }
     SECTION("an unknown parameter is refused") {
-        auto graph = document(Json{{"name", "shot"}, {"format", "R8G8B8A8_UNORM"}});
+        auto graph = document(Json{{"name", "shot"}, {"colour_space", "srgb"}});
         CHECK(refusal(graph) == "output.parameter_invalid@1");
+    }
+    SECTION("format accepts raw and png only") {
+        for (const auto &format : Json::array({"raw", "png"})) {
+            INFO(format.dump());
+            auto graph = document(Json{{"name", "shot"}, {"format", format}});
+            const auto lowered = Pelican::lowerOutputNodes(graph);
+            REQUIRE(lowered.report.at("sinks").size() == 1);
+            CHECK(lowered.report.at("sinks").at(0).at("format") == format);
+            REQUIRE(lowered.sinks.sinks.size() == 1);
+            CHECK(lowered.sinks.sinks.front().format == format.get<std::string>());
+        }
+        for (const auto &format : Json::array({1, true, nullptr, "PNG",
+                                                "R8G8B8A8_UNORM", "Raw"})) {
+            INFO(format.dump());
+            auto graph = document(Json{{"name", "shot"}, {"format", format}});
+            CHECK(refusal(graph) == "output.file_format_unknown@1");
+        }
+    }
+    SECTION("the absent format is the raw format") {
+        const auto implicit = Pelican::lowerOutputNodes(document());
+        const auto explicit_raw = Pelican::lowerOutputNodes(
+            document(Json{{"name", "shot"}, {"format", "raw"}}));
+        CHECK(implicit.report == explicit_raw.report);
+        CHECK(implicit.sinks.sinks.front().format == "raw");
+        CHECK(Pelican::renderConfigSourceDigest(implicit.document.dump()) ==
+              "c8ab8e70722b8dd8595980c3daf64a85b900b3fe776b69a2292ab6d592a12841");
     }
     SECTION("names are unique") {
         auto graph = document();
@@ -587,4 +674,212 @@ TEST_CASE("VO-1a the writer check follows physical source nodes", "[vo1a][output
     auto table = sinkTable();
     Pelican::validateOutputSinkWriters(table, plan);
     CHECK(table.sinks.at(0).error_code == "output.source_overwritten@1");
+}
+
+TEST_CASE("VO-1b PNG output keeps the four straight channels and row 0 first",
+          "[vo1b][output-file]") {
+    TemporaryDirectory directory;
+    const auto pixels = pattern();
+
+    SECTION("RGBA8 UNORM and RGBA8 SRGB write the same bytes") {
+        std::uint64_t frame = 3;
+        for (const auto format : {Pelican::OutputFileFormat::rgba8_unorm,
+                                  Pelican::OutputFileFormat::rgba8_srgb}) {
+            INFO(static_cast<int>(format));
+            const auto written = Pelican::writeOutputFrameFile(
+                directory.path, "shot", frame,
+                Pelican::OutputFileImage{.width = 4,
+                                         .height = 4,
+                                         .format = format,
+                                         .pixels = pixels},
+                Pelican::OutputFileEncoding::png);
+            REQUIRE(written.status == Pelican::OutputFileWriteStatus::written);
+            const auto path = directory.path /
+                              ("shot_" + std::to_string(1000000 + frame).substr(1) +
+                               ".png");
+            REQUIRE(std::filesystem::is_regular_file(path));
+            CHECK(written.bytes_written ==
+                  std::filesystem::file_size(path));
+            const auto bytes = readBytes(path);
+            REQUIRE(bytes.size() >= 26);
+            CHECK(bytes.at(25) == 6);
+            CHECK_FALSE(pngHasChunk(bytes, "sRGB"));
+            CHECK_FALSE(pngHasChunk(bytes, "gAMA"));
+            const auto png = decodePng(path);
+            CHECK(png.width == 4);
+            CHECK(png.height == 4);
+            CHECK(png.rgba == pixels);
+            CHECK_FALSE(std::filesystem::exists(
+                directory.path /
+                ("shot_" + std::to_string(1000000 + frame).substr(1) +
+                 ".png.partial")));
+            ++frame;
+        }
+    }
+
+    SECTION("a BGRA8 readback is swapped to RGBA, not reinterpreted") {
+        std::uint64_t frame = 4;
+        for (const auto format : {Pelican::OutputFileFormat::bgra8_unorm,
+                                  Pelican::OutputFileFormat::bgra8_srgb}) {
+            const auto written = Pelican::writeOutputFrameFile(
+                directory.path, "shot", frame,
+                Pelican::OutputFileImage{.width = 4,
+                                         .height = 4,
+                                         .format = format,
+                                         .pixels = bgraBytes(pixels)},
+                Pelican::OutputFileEncoding::png);
+            REQUIRE(written.status == Pelican::OutputFileWriteStatus::written);
+            const auto path = directory.path /
+                              ("shot_00000" + std::to_string(frame) + ".png");
+            const auto bytes = readBytes(path);
+            CHECK_FALSE(pngHasChunk(bytes, "sRGB"));
+            CHECK_FALSE(pngHasChunk(bytes, "gAMA"));
+            CHECK(decodePng(path).rgba == pixels);
+            ++frame;
+        }
+    }
+}
+
+TEST_CASE("VO-1b a PNG budget is the real encoded size, and a refused file leaves nothing",
+          "[vo1b][output-file]") {
+    TemporaryDirectory directory;
+    const auto pixels = pattern();
+    const Pelican::OutputFileImage image{.width = 4,
+                                         .height = 4,
+                                         .format =
+                                             Pelican::OutputFileFormat::rgba8_unorm,
+                                         .pixels = pixels};
+    const auto probe = Pelican::writeOutputFrameFile(
+        directory.path, "probe", 0, image, Pelican::OutputFileEncoding::png);
+    REQUIRE(probe.status == Pelican::OutputFileWriteStatus::written);
+    REQUIRE(probe.bytes_written > 0);
+    const auto encoded_size = probe.bytes_written;
+    CHECK(encoded_size ==
+          std::filesystem::file_size(directory.path / "probe_000000.png"));
+
+    const auto exact = Pelican::writeOutputFrameFile(
+        directory.path, "shot", 1, image, Pelican::OutputFileEncoding::png,
+        encoded_size);
+    REQUIRE(exact.status == Pelican::OutputFileWriteStatus::written);
+    CHECK(exact.bytes_written == encoded_size);
+
+    const auto short_budget = Pelican::writeOutputFrameFile(
+        directory.path, "shot", 2, image, Pelican::OutputFileEncoding::png,
+        encoded_size - 1);
+    CHECK(short_budget.status ==
+          Pelican::OutputFileWriteStatus::limit_reached);
+    CHECK(short_budget.bytes_written == 0);
+    CHECK(short_budget.message.find("needs") != std::string::npos);
+    CHECK(short_budget.message.find("remain") != std::string::npos);
+    CHECK_FALSE(std::filesystem::exists(directory.path / "shot_000002.png"));
+    CHECK_FALSE(std::filesystem::exists(
+        directory.path / "shot_000002.png.partial"));
+
+    const auto accumulated = Pelican::writeOutputFrameFile(
+        directory.path, "shot", 3, image, Pelican::OutputFileEncoding::png,
+        encoded_size);
+    REQUIRE(accumulated.status == Pelican::OutputFileWriteStatus::written);
+    const auto exhausted = Pelican::writeOutputFrameFile(
+        directory.path, "shot", 4, image, Pelican::OutputFileEncoding::png, 0);
+    CHECK(exhausted.status == Pelican::OutputFileWriteStatus::limit_reached);
+    CHECK_FALSE(std::filesystem::exists(directory.path / "shot_000004.png"));
+
+    const auto raw_probe = Pelican::writeOutputFrameFile(
+        directory.path, "raw_probe", 0, image);
+    REQUIRE(raw_probe.status == Pelican::OutputFileWriteStatus::written);
+    CHECK(raw_probe.bytes_written == 16 + pixels.size());
+    const auto raw_exact = Pelican::writeOutputFrameFile(
+        directory.path, "raw_shot", 1, image, Pelican::OutputFileEncoding::raw,
+        raw_probe.bytes_written);
+    REQUIRE(raw_exact.status == Pelican::OutputFileWriteStatus::written);
+    const auto raw_short = Pelican::writeOutputFrameFile(
+        directory.path, "raw_shot", 2, image, Pelican::OutputFileEncoding::raw,
+        raw_probe.bytes_written - 1);
+    CHECK(raw_short.status == Pelican::OutputFileWriteStatus::limit_reached);
+    CHECK_FALSE(std::filesystem::exists(directory.path / "raw_shot_000002.rgba"));
+}
+
+TEST_CASE("VO-1b one problem per refused or limit-stopped sink, keyed by graph and sink",
+          "[vo1b][output-problem]") {
+    using Pelican::OutputSinks;
+
+    OutputSinks::State refused;
+    refused.name = "shot";
+    refused.kind = "file";
+    refused.graph = "main_render";
+    refused.state = "refused";
+    refused.last_error = "output.write_failed@1: /tmp/shot_000000.png.partial: file exists";
+
+    OutputSinks::State limited;
+    limited.name = "shot";
+    limited.kind = "file";
+    limited.graph = "other_render";
+    limited.state = "finished";
+    limited.stop_reason = "max_frames";
+    limited.stop_value = 7;
+
+    const auto problems =
+        Pelican::outputSinkProblems({refused, limited});
+    REQUIRE(problems.size() == 2);
+    CHECK(problems.at(0).at("code") == "output.write_failed@1");
+    CHECK(problems.at(0).at("severity") == "error");
+    CHECK(problems.at(0).at("source") == "runtime");
+    CHECK(problems.at(0).at("scope") == "main_render");
+    CHECK(problems.at(0).at("node") == "shot");
+    CHECK(problems.at(0).at("fields").at("graph") == "main_render");
+    CHECK(problems.at(0).at("fields").at("sink") == "shot");
+    CHECK(problems.at(1).at("code") == "output.limit_reached@1");
+    CHECK(problems.at(1).at("fields").at("graph") == "other_render");
+    CHECK(problems.at(1).at("fields").at("sink") == "shot");
+    CHECK(problems.at(1).at("fields").at("limit") == "max_frames");
+    CHECK(problems.at(1).at("fields").at("value") == 7);
+    CHECK(problems.at(1).at("message").get<std::string>().find("max_frames") !=
+          std::string::npos);
+
+    // The two same-named sinks are in different graphs, so they are two
+    // problems, and their ids differ.
+    Pelican::ProblemList list;
+    list.replace("output", problems);
+    const auto stored = list.problemsOf("output");
+    REQUIRE(stored.size() == 2);
+    CHECK(stored.at(0).at("id") != stored.at(1).at("id"));
+
+    // Rewriting the same states does not move the revision or change ids.
+    const auto revision = list.revision();
+    list.replace("output", Pelican::outputSinkProblems({refused, limited}));
+    CHECK(list.revision() == revision);
+    CHECK(list.problemsOf("output") == stored);
+
+    // Running, inactive and finished-by-every_n sinks contribute no problem.
+    auto running = refused;
+    running.state = "running";
+    running.last_error.clear();
+    auto inactive = refused;
+    inactive.state = "inactive";
+    inactive.last_error.clear();
+    auto finished = limited;
+    finished.stop_reason = "none";
+    finished.stop_value = 0;
+    CHECK(Pelican::outputSinkProblems({running, inactive, finished}).empty());
+
+    // Replacing the domain with an empty list withdraws the problems.
+    const auto before_withdrawal = list.revision();
+    list.replace("output", {});
+    CHECK(list.revision() > before_withdrawal);
+    CHECK(list.problemsOf("output").empty());
+}
+
+TEST_CASE("VO-1b a refused sink's code is the runtime's own code",
+          "[vo1b][output-problem]") {
+    using Pelican::OutputSinks;
+    OutputSinks::State state;
+    state.name = "shot";
+    state.graph = "main_render";
+    state.state = "refused";
+    state.last_error = "output.format_unsupported@1: VK_FORMAT_R16G16B16A16_SFLOAT";
+    const auto problems = Pelican::outputSinkProblems({state});
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.at(0).at("code") == "output.format_unsupported@1");
+    CHECK(problems.at(0).at("message") ==
+          "output.format_unsupported@1: VK_FORMAT_R16G16B16A16_SFLOAT");
 }

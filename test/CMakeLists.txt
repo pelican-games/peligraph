@@ -4092,6 +4092,7 @@ target_link_libraries(pelican_test_png_nonuniform_check PRIVATE stb)
 if(PELICAN_WITH_VIDEO_OUTPUT)
     # VO-1a: output.file lowering and the plan-time last-writer rule.
     pelican_define_test(output_lowering_test pelican_project pelican_core)
+    target_link_libraries(pelican_test_output_lowering_test PRIVATE stb)
 endif()
 
 if(PELICAN_WITH_CANVAS)
@@ -4387,9 +4388,10 @@ endif()
 
 if(PELICAN_WITH_RPC AND PELICAN_WITH_VIDEO_OUTPUT)
     # VO-1a: output.file through a real headless --rpc player.
-    pelican_define_test(vo1a_output_runtime_test GPU pelican_project)
+    pelican_define_test(vo1a_output_runtime_test GPU pelican_project pelican_core)
     target_compile_definitions(pelican_test_vo1a_output_runtime_test PRIVATE
         PELICAN_VO1A_PLAYER="$<TARGET_FILE:pelican_player>")
+    target_link_libraries(pelican_test_vo1a_output_runtime_test PRIVATE stb)
     add_dependencies(pelican_test_vo1a_output_runtime_test pelican_player)
 endif()
 
