@@ -16,6 +16,7 @@
 #include <vector>
 
 namespace Pelican { class GameContext; class GraphModuleRegistry; struct SampleTable; }
+namespace Pelican::Animation { class BezierCurve; }
 namespace Pelican::ValueGraph {
 
 // AB-1: value.sample_table's table could not be read when the graph was
@@ -308,6 +309,7 @@ class PELICAN_API Graph {
         double constant{};
         std::vector<std::size_t> dependencies;
         std::optional<Animation::ScalarCurve> curve;
+        std::shared_ptr<const Animation::BezierCurve> bezier_curve;
         // sample_table (AB-1): the table, read when the graph was built, and
         // the feature row.
         std::shared_ptr<const SampleTable> table;

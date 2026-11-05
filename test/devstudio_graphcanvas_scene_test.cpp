@@ -35,6 +35,7 @@
 #include "problemsmodel.hpp"
 #include "studiotheme.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -11510,6 +11511,124 @@ TEST_CASE("UX-8 decision 4: a curve's Keys table, its small curve and the Timeli
     ux8Mouse(strip, QEvent::MouseButtonRelease, QPointF{right * 0.5, 10.0});
     CHECK(tab.reads("set_time") == 1);
     CHECK(tab.reads("edit_graph_document") == 3);
+}
+
+TEST_CASE("CB-1 the interpolation combo writes explicit defaults and + Key splits a Bezier",
+          "[studio][graph-canvas][scene][cb1]") {
+    (void)application();
+    Ux2Tab tab{false};
+    auto document = ux8CurveDocument();
+    auto &authored_keys = document["nodes"][1]["parameters"]["keys"];
+    authored_keys[0]["interpolation"] = "cubic";
+    authored_keys[0]["out_tangent"] = 0.8;
+    authored_keys[1]["in_tangent"] = -0.4;
+    const auto original_keys = authored_keys;
+    tab.read(document, "cb1-ui-0");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+
+    auto *combo = tab.field<QComboBox>("pelican.graphCanvasCurve.key0.interpolation");
+    REQUIRE(combo != nullptr);
+    CHECK(combo->itemText(combo->findData(QStringLiteral("bezier"))) == QStringLiteral("Bezier"));
+    CHECK(combo->sizeHint().width() >= combo->fontMetrics().horizontalAdvance(QStringLiteral("Bezier")));
+    const int bezier = combo->findData(QStringLiteral("bezier"));
+    REQUIRE(bezier >= 0);
+    combo->setCurrentIndex(bezier);
+    Q_EMIT combo->activated(bezier);
+    QCoreApplication::processEvents();
+    const auto changed = ux8Keys(tab, 1);
+    REQUIRE(changed.size() == 2);
+    CHECK(changed[0].at("interpolation") == "bezier");
+    CHECK(std::abs(changed[0].at("out_handle")[0].get<double>() - 1.0 / 3.0) < 1e-12);
+    CHECK(std::abs(changed[0].at("out_handle")[1].get<double>() - 0.8 / 3.0) < 1e-12);
+    CHECK(std::abs(changed[1].at("in_handle")[0].get<double>() + 1.0 / 3.0) < 1e-12);
+    CHECK(std::abs(changed[1].at("in_handle")[1].get<double>() - 0.4 / 3.0) < 1e-12);
+    const auto before_change = PelicanStudio::curveKeysFromParameters(Json{{"keys", original_keys}});
+    const auto after_change = PelicanStudio::curveKeysFromParameters(Json{{"keys", changed}});
+    REQUIRE(before_change);
+    REQUIRE(after_change);
+    for (int index = 0; index < 200; ++index)
+        CHECK(PelicanStudio::sampleCurve(*after_change, index / 199.0) ==
+              Catch::Approx(PelicanStudio::sampleCurve(*before_change, index / 199.0)).margin(1e-12));
+
+    auto split_document = document;
+    split_document["nodes"][1]["parameters"]["keys"] = changed;
+    tab.commit(split_document, "cb1-ui-1");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->model().canUndo());
+    REQUIRE(tab.widget->model().undo());
+    tab.widget->poll();
+    const auto undo_ops = ux7Ops(tab, 2);
+    REQUIRE(undo_ops.size() == 1);
+    CHECK(undo_ops[0].at("op") == "replace_node");
+    CHECK(undo_ops[0].at("node").at("id") == "curve");
+    CHECK(undo_ops[0].at("node").at("parameters").at("keys") == original_keys);
+    tab.commit(document, "cb1-ui-undo");
+    QCoreApplication::processEvents();
+    REQUIRE(tab.widget->model().setNodeParameter("curve", "keys", changed));
+    tab.widget->poll();
+    QCoreApplication::processEvents();
+    CHECK(ux8Keys(tab, 3) == changed);
+    tab.commit(split_document, "cb1-ui-bezier-again");
+    QCoreApplication::processEvents();
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+
+    auto *table = tab.field<QTableWidget>("pelican.graphCanvasCurve.keys");
+    REQUIRE(table != nullptr);
+    REQUIRE(table->rowCount() == 2);
+    table->setCurrentCell(0, 0);
+    auto *add = tab.field<QPushButton>("pelican.graphCanvasCurve.add");
+    REQUIRE(add != nullptr);
+    add->click();
+    QCoreApplication::processEvents();
+    const auto split = ux8Keys(tab, 4);
+    REQUIRE(split.size() == 3);
+    CHECK(split[1].at("time") == 0.5);
+    CHECK(split[1].at("interpolation") == "bezier");
+    CHECK(split[1].contains("in_handle"));
+    CHECK(split[1].contains("out_handle"));
+    const auto original =
+        PelicanStudio::curveKeysFromParameters(Json{{"keys", changed}});
+    const auto after_split =
+        PelicanStudio::curveKeysFromParameters(Json{{"keys", split}});
+    REQUIRE(original);
+    REQUIRE(after_split);
+    using Catch::Approx;
+    for (const double time : {0.1, 0.25, 0.5, 0.75, 0.9})
+        CHECK(PelicanStudio::sampleCurve(*after_split, time) ==
+              Approx(PelicanStudio::sampleCurve(*original, time)).margin(1.0e-12));
+
+    // A middle with no representable double is refused with a notice; no
+    // set_node_parameters is sent and the curve is unchanged.
+    auto adjacent = document;
+    adjacent["nodes"][1]["parameters"]["keys"] =
+        Json::array({{{"time", std::nextafter(1.0, 0.0)}, {"value", 0.0}},
+                     {{"time", 1.0}, {"value", 1.0}}});
+    tab.commit(adjacent, "cb1-ui-2");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+    const int before = tab.reads("edit_graph_document");
+    table = tab.field<QTableWidget>("pelican.graphCanvasCurve.keys");
+    REQUIRE(table != nullptr);
+    REQUIRE(table->rowCount() == 2);
+    table->setCurrentCell(0, 0);
+    add = tab.field<QPushButton>("pelican.graphCanvasCurve.add");
+    REQUIRE(add != nullptr);
+    add->click();
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("edit_graph_document") == before);
+    auto *note = tab.field<QLabel>("pelican.graphCanvasValueFields.note");
+    REQUIRE(note != nullptr);
+    CHECK(note->isVisible());
+    CHECK(note->text() == QStringLiteral("A key cannot be added: the segment's middle is not "
+                                         "representable."));
+    // Leave no field focused: its editingFinished would otherwise run from
+    // the focus-out while the canvas is being destroyed.
+    if (QWidget *focus = QApplication::focusWidget(); focus != nullptr) focus->clearFocus();
+    QCoreApplication::processEvents();
 }
 
 TEST_CASE("UX-8 decisions 7 and 8: audio.volume asks which voice it drives; what one addition "
@@ -27804,6 +27923,44 @@ TEST_CASE("SDK-2a c: paths walk the keys once: linear, step at the next key's x,
     }
 }
 
+TEST_CASE("CB-1 a Bezier segment's frame and path use its time-weighted handles",
+          "[devstudio][graph-canvas][scene][cb1]") {
+    using namespace PelicanStudio;
+    const auto keys = curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"bezier",
+         "out_handle":[0.25,3],"in_handle":[-0.25,0]},
+        {"time":1,"value":0,"in_handle":[-0.25,3]}]})"));
+    REQUIRE(keys.has_value());
+    const QRectF frame = Sdk2aGeometry::curveFrame(*keys);
+    CHECK(std::abs(frame.top() - (-0.27)) < 1e-12);
+    CHECK(std::abs(frame.bottom() - 2.52) < 1e-12);
+    // The same shape as the Hermite cubic with out=9, in=-9: the defaults
+    // divide a handle's dv by w/3.
+    const auto cubic = curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"cubic","out_tangent":9},
+        {"time":1,"value":0,"interpolation":"cubic","in_tangent":-9}]})"));
+    REQUIRE(cubic.has_value());
+    CHECK(Sdk2aGeometry::curveFrame(*cubic) == frame);
+
+    const QRectF plot{0.0, 0.0, 64.0, 64.0};
+    const auto paths = Sdk2aGeometry::curvePaths(*keys, frame, plot);
+    CHECK(paths.curve.elementCount() > 20);
+    for (int index = 1; index + 1 < paths.curve.elementCount(); ++index) {
+        const auto point = paths.curve.elementAt(index);
+        const double time =
+            frame.left() + (point.x - plot.left()) / plot.width() * frame.width();
+        const double value =
+            frame.top() + (plot.bottom() - point.y) / plot.height() * frame.height();
+        // Inverting the drawn x through the flat cubic costs a few 1e-9 near
+        // its extremum; the plot's time-to-value agreement is within one pixel.
+        CHECK(std::abs(value - sampleCurve(*keys, time)) < 5e-9);
+    }
+    const auto mid = paths.curve.elementAt(paths.curve.elementCount() / 2);
+    const double mid_value =
+        frame.top() + (plot.bottom() - mid.y) / plot.height() * frame.height();
+    CHECK(std::abs(mid_value - 2.25) < 1e-9);
+}
+
 TEST_CASE("SDK-2a d: the open plot is fixed at 72 px and only the open view has one",
           "[devstudio][graph-canvas][scene][sdk2a]") {
     (void)application();
@@ -30057,4 +30214,24 @@ TEST_CASE("GT-1 pass-input designated lines are not tie candidates",
     CHECK(f.model.editNotice().message == "A tie needs at least two lines; this crossed 1.");
     CHECK(f.scene.layout().ties.empty());
     (void)f.model.takeRpcRequests();
+}
+
+TEST_CASE("CB-1 a handled Bezier graph is stable across a full scene rebuild",
+          "[devstudio][graph-canvas][scene][cb1]") {
+    (void)application();
+    Ux2Tab tab{false};
+    tab.widget->model().setDomainShown("value", true);
+    auto document = ux8CurveDocument();
+    document["nodes"][1]["parameters"]["keys"] = Json::array({
+        {{"time", 0.0}, {"value", 0.0}, {"interpolation", "bezier"},
+         {"out_handle", {0.25, 3.0}}},
+        {{"time", 1.0}, {"value", 0.0}, {"in_handle", {-0.25, 3.0}}}});
+    tab.read(document, "cb1-rebuild");
+    tab.answer("get_graph_catalog", engineCatalog());
+    tab.widget->scene().selectNode("curve");
+    QCoreApplication::processEvents();
+    auto *combo = tab.field<QComboBox>("pelican.graphCanvasCurve.key0.interpolation");
+    CHECK(combo->currentText() == QStringLiteral("Bezier"));
+    CHECK(tab.field<QWidget>("pelican.graphCanvasCurve.graph")->isVisible());
+    gs3aSameAsRebuilt(tab.widget->scene());
 }

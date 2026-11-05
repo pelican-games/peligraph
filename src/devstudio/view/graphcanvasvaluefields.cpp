@@ -218,7 +218,15 @@ GraphCanvasValueFields::GraphCanvasValueFields(GraphCanvasModel &model,
         const int row = keys_->currentRow();
         const auto after = row >= 0 ? static_cast<std::size_t>(row)
                                     : (shown_keys_.empty() ? 0 : shown_keys_.size() - 1);
-        commitKeys(GraphCanvasModel::curveKeysWithAdded(shown_keys_, after));
+        auto added = GraphCanvasModel::curveKeysWithAdded(shown_keys_, after);
+        if (!added) {
+            model_.setEditNotice({InspectorNoticeKind::Error,
+                                  tr("A key cannot be added: the segment's middle is not "
+                                     "representable.").toStdString()});
+            afterCommit(false);
+            return;
+        }
+        commitKeys(*added);
     });
     layout->addWidget(curve_);
     curve_->hide();
@@ -486,8 +494,11 @@ void GraphCanvasValueFields::loadCurve(bool force) {
         }
         auto *interpolation = new QComboBox(keys_);
         interpolation->setObjectName(name("interpolation"));
-        for (const auto &kind : GraphCanvasModel::curveInterpolations())
-            interpolation->addItem(qtext(kind), qtext(kind));
+        for (const auto &kind : GraphCanvasModel::curveInterpolations()) {
+            auto label = qtext(kind);
+            label.front() = label.front().toUpper();
+            interpolation->addItem(label, qtext(kind));
+        }
         interpolation->setCurrentIndex(
             std::max(0, interpolation->findData(qtext(keys[index].interpolation))));
         interpolation->setToolTip(tr("How the curve runs from this key to the next"));
@@ -525,11 +536,12 @@ void GraphCanvasValueFields::commitRow(int row) {
     auto *value = qobject_cast<QDoubleSpinBox *>(keys_->cellWidget(row, 1));
     auto *interpolation = qobject_cast<QComboBox *>(keys_->cellWidget(row, 2));
     if (time == nullptr || value == nullptr || interpolation == nullptr) return;
-    auto keys = shown_keys_;
+    auto keys = GraphCanvasModel::curveKeysWithInterpolation(
+        shown_keys_, static_cast<std::size_t>(row),
+        interpolation->currentData().toString().toStdString());
     auto &key = keys[static_cast<std::size_t>(row)];
     key.time = time->value();
     key.value = value->value();
-    key.interpolation = interpolation->currentData().toString().toStdString();
     if (keys == shown_keys_) return;
     commitKeys(keys);
 }

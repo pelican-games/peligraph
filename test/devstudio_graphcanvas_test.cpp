@@ -1,21 +1,26 @@
 #include "audioanalysistables.hpp"
 #include "graphcanvasmodel.hpp"
+#include "graphcanvascurve.hpp"
 #include "tabeditorder.hpp"
 #include "graphcomposition.hpp"
 #include "graphmodule.hpp"
 #include "graphpartition.hpp"
+#include "../src/core/animation/beziercurve.hpp"
 
+#include <catch2/catch_approx.hpp>
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/generators/catch_generators.hpp>
 
 #include <algorithm>
 #include <filesystem>
+#include <limits>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <vector>
 
 namespace {
+using Catch::Approx;
 using Json = nlohmann::json;
 using PelicanStudio::GraphCanvasModel;
 using PelicanStudio::GraphCanvasNode;
@@ -3908,7 +3913,7 @@ TEST_CASE("UX-8 decision 4: a curve's keys are edited a row or a drag at a time,
           "[studio][graph-canvas][ux8]") {
     using Key = PelicanStudio::GraphCanvasCurveKey;
     CHECK(GraphCanvasModel::curveInterpolations() ==
-          std::vector<std::string>{"linear", "step", "cubic"});
+          std::vector<std::string>{"linear", "step", "cubic", "bezier"});
     const std::vector<Key> keys{{0.0, 0.0}, {1.0, 1.0}};
     // A drag past a neighbour stops just short of it; the value goes along.
     const auto moved = GraphCanvasModel::curveKeysWithMoved(keys, 0, 5.0, 0.25);
@@ -3917,10 +3922,13 @@ TEST_CASE("UX-8 decision 4: a curve's keys are edited a row or a drag at a time,
     CHECK(moved[0].value == 0.25);
     // A key added halfway takes the curve's value there.
     const auto added = GraphCanvasModel::curveKeysWithAdded(keys, 0);
-    REQUIRE(added.size() == 3);
-    CHECK(added[1].time == 0.5);
-    CHECK(added[1].value == 0.5);
-    CHECK(GraphCanvasModel::curveKeysWithAdded(keys, 1)[2].time == 2.0);
+    REQUIRE(added);
+    REQUIRE(added->size() == 3);
+    CHECK((*added)[1].time == 0.5);
+    CHECK((*added)[1].value == 0.5);
+    const auto appended = GraphCanvasModel::curveKeysWithAdded(keys, 1);
+    REQUIRE(appended);
+    CHECK((*appended)[2].time == 2.0);
     CHECK(GraphCanvasModel::curveKeysRefusal({{1.0, 0.0}, {1.0, 1.0}}) ==
           "The keys' times have to rise: key 2 is not later than key 1.");
     CHECK(GraphCanvasModel::curveKeysRefusal({}) == "A curve needs at least one key.");
@@ -5341,4 +5349,259 @@ TEST_CASE("OSC-3a a live-input reply before or after the catalog reads the same,
     none.live_reply = Json{{"inputs", Json::array({{{"name", "a"}, {"type", "float"}}})}};
     none.open(context(), false);
     CHECK(none.model.valueInputNamesFor() == expected);
+}
+
+TEST_CASE("CB-1 Studio parses Bezier handles the engine validates and draws the same curve",
+          "[studio][graph-canvas][cb1]") {
+    using Key = PelicanStudio::GraphCanvasCurveKey;
+    using Json = nlohmann::json;
+    const Json parameters{{"keys", Json::array({
+        {{"time", 0}, {"value", 1}, {"interpolation", "bezier"},
+         {"out_handle", {0.25, 0}}, {"in_handle", {-0.25, 0}}},
+        {{"time", 1}, {"value", 3}, {"in_handle", {-0.25, -2}}},
+    })}};
+    const auto parsed = PelicanStudio::curveKeysFromParameters(parameters);
+    REQUIRE(parsed);
+    REQUIRE(parsed->size() == 2);
+    CHECK((*parsed)[0].rest.at("out_handle") == Json::array({0.25, 0}));
+    CHECK((*parsed)[1].rest.at("in_handle") == Json::array({-0.25, -2}));
+    CHECK(PelicanStudio::sampleCurve(*parsed, 0.5) == Approx(1.25));
+
+    // Omitted handles take the cubic-equivalent defaults, not [0, 0].
+    const auto defaults = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"bezier","out_tangent":9},
+        {"time":1,"value":0,"interpolation":"bezier","in_tangent":-9}]})"));
+    const auto hermite = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"cubic","out_tangent":9},
+        {"time":1,"value":0,"interpolation":"cubic","in_tangent":-9}]})"));
+    REQUIRE(defaults);
+    REQUIRE(hermite);
+    for (const double time : {0.1, 0.5, 0.9})
+        CHECK(PelicanStudio::sampleCurve(*defaults, time) ==
+              Approx(PelicanStudio::sampleCurve(*hermite, time)).margin(1.0e-12));
+    // A handle wider than its segment is clamped when the engine reads it.
+    const auto wide = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"bezier","out_handle":[5,3]},
+        {"time":1,"value":1,"in_handle":[-5,-3]}]})"));
+    REQUIRE(wide);
+    CHECK(PelicanStudio::sampleCurve(*wide, 0.5) == Approx(0.5).margin(1.0e-12));
+    const auto clamped = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"bezier","out_handle":[1,3]},
+        {"time":1,"value":1,"in_handle":[-1,-3]}]})"));
+    REQUIRE(clamped);
+    for (const double time : {0.25, 0.75})
+        CHECK(PelicanStudio::sampleCurve(*wide, time) ==
+              Approx(PelicanStudio::sampleCurve(*clamped, time)).margin(1.0e-12));
+
+    // Handles are validated even on a curve with no Bezier segment.
+    Json linear = parameters;
+    linear["keys"][0]["interpolation"] = "linear";
+    CHECK(PelicanStudio::curveKeysFromParameters(linear));
+    for (const Json &bad : Json::array({Json::array({0.25}), Json::array({0.25, "x"}),
+                                        Json::array({-0.25, 0})})) {
+        Json invalid = linear;
+        invalid["keys"][0]["out_handle"] = bad;
+        CHECK_FALSE(PelicanStudio::curveKeysFromParameters(invalid));
+    }
+    Json invalid = linear;
+    invalid["keys"][1]["in_handle"] = Json::array({0.25, 0});
+    CHECK_FALSE(PelicanStudio::curveKeysFromParameters(invalid));
+    invalid = linear;
+    invalid["keys"][0]["out_handle"] = Json::array({0.25, 0, 0});
+    CHECK_FALSE(PelicanStudio::curveKeysFromParameters(invalid));
+    invalid = linear;
+    invalid["keys"][0]["extra"] = 1;
+    CHECK_FALSE(PelicanStudio::curveKeysFromParameters(invalid));
+}
+
+TEST_CASE("CB-1 a Bezier key change writes defaults and a split updates its four handles",
+          "[studio][graph-canvas][cb1]") {
+    using Key = PelicanStudio::GraphCanvasCurveKey;
+    using Json = nlohmann::json;
+    const std::vector<Key> keys{{0.0, 0.0, "linear"}, {1.0, 1.0, "step"}};
+    const auto changed = GraphCanvasModel::curveKeysWithInterpolation(keys, 0, "bezier");
+    CHECK(changed[0].interpolation == "bezier");
+    CHECK(changed[0].rest.at("out_handle") == Json::array({1.0 / 3.0, 0.0}));
+    CHECK(changed[1].rest.at("in_handle") == Json::array({-1.0 / 3.0, 0.0}));
+    // Explicit authored handles are overwritten by the defaults the change
+    // writes; the last key has no out-handle to write.
+    std::vector<Key> authored{
+        {0.0, 0.0, "linear",
+         Json{{"out_handle", Json::array({9, 9})}, {"out_tangent", 1.0}}},
+        {2.0, 2.0, "linear",
+         Json{{"in_handle", Json::array({-9, -9})}, {"in_tangent", 1.0}}}};
+    const auto overwritten = GraphCanvasModel::curveKeysWithInterpolation(authored, 0, "bezier");
+    CHECK(overwritten[0].rest.at("out_handle") == Json::array({2.0 / 3.0, 2.0 / 3.0}));
+    CHECK(overwritten[1].rest.at("in_handle") == Json::array({-2.0 / 3.0, -2.0 / 3.0}));
+    const auto last = GraphCanvasModel::curveKeysWithInterpolation(authored, 1, "bezier");
+    CHECK(last[1].interpolation == "bezier");
+    CHECK_FALSE(last[1].rest.contains("out_handle"));
+
+    // The middle key is the value at the requested time, and exactly the
+    // four handles around the split change; tangents and rest stay.
+    const std::vector<Key> bezier{
+        {0.0, 0.0, "bezier", {{"out_handle", Json::array({0.3, 2.0})},
+                               {"in_handle", Json::array({-4.0, 8.0})},
+                               {"out_tangent", 7.0}}},
+        {1.0, 1.0, "linear", {{"in_handle", Json::array({-0.3, 2.0})},
+                              {"out_handle", Json::array({4.0, 8.0})},
+                              {"in_tangent", -7.0}}}};
+    const auto split = GraphCanvasModel::curveKeysWithAdded(bezier, 0);
+    REQUIRE(split);
+    REQUIRE(split->size() == 3);
+    CHECK((*split)[1].time == 0.5);
+    CHECK((*split)[1].interpolation == "bezier");
+    CHECK((*split)[0].rest.at("in_handle") == Json::array({-4.0, 8.0}));
+    CHECK((*split)[0].rest.at("out_tangent") == 7.0);
+    CHECK((*split)[2].rest.at("out_handle") == Json::array({4.0, 8.0}));
+    CHECK((*split)[2].rest.at("in_tangent") == -7.0);
+    CHECK((*split)[0].rest.at("out_handle") != Json::array({0.3, 2.0}));
+    CHECK((*split)[2].rest.at("in_handle") != Json::array({-0.3, 2.0}));
+    CHECK((*split)[1].rest.at("in_handle").is_array());
+    CHECK((*split)[1].rest.at("out_handle").is_array());
+    for (const double time : {0.1, 0.25, 0.5, 0.75, 0.9})
+        CHECK(PelicanStudio::sampleCurve(*split, time) ==
+              Approx(PelicanStudio::sampleCurve(bezier, time)).margin(1.0e-12));
+
+    // No representable middle is a refusal, not a duplicate key.
+    const double one = std::nextafter(1.0, 0.0);
+    const std::vector<Key> adjacent{{one, 0.0}, {1.0, 1.0}};
+    CHECK_FALSE(GraphCanvasModel::curveKeysWithAdded(adjacent, 0));
+    const std::vector<Key> overflow{{-std::numeric_limits<double>::max(), 0.0},
+                                    {std::numeric_limits<double>::max(), 1.0}};
+    CHECK_FALSE(GraphCanvasModel::curveKeysWithAdded(overflow, 0));
+    CHECK(GraphCanvasModel::curveKeysRefusal(
+              {{0.0, 0.0, "linear", {{"out_handle", Json::array({-1.0, 0.0})}}}}) ==
+          "Key 1 has a handle with a time delta of the wrong sign.");
+    CHECK(GraphCanvasModel::curveKeysRefusal(
+              {{0.0, 0.0, "linear", {{"out_handle", Json::array({0.25})}}}}) ==
+          "Key 1 has a handle that is not two numbers.");
+    CHECK(GraphCanvasModel::curveKeysRefusal(
+              {{0.0, 0.0, "linear", {{"extra", 1}}}}) ==
+          "Key 1 has a field the engine does not read (extra).");
+}
+
+TEST_CASE("CB-1 Studio samples the internal engine curve at keys and steep handles",
+          "[studio][graph-canvas][cb1]") {
+    using PelicanStudio::GraphCanvasCurveKey;
+    const auto as_engine = [](const std::vector<GraphCanvasCurveKey> &keys) {
+        std::vector<Pelican::Animation::BezierCurveKey> converted;
+        for (const auto &key : keys) {
+            Pelican::Animation::BezierCurveKey result;
+            result.time = key.time;
+            result.value = key.value;
+            result.in_tangent = PelicanStudio::curveInTangent(key);
+            result.out_tangent = PelicanStudio::curveOutTangent(key);
+            if (key.interpolation == "step") result.kind = Pelican::Animation::BezierSegmentKind::step;
+            else if (key.interpolation == "linear") result.kind = Pelican::Animation::BezierSegmentKind::linear;
+            else if (key.interpolation == "cubic") result.kind = Pelican::Animation::BezierSegmentKind::cubic;
+            else if (key.interpolation == "bezier") result.kind = Pelican::Animation::BezierSegmentKind::bezier;
+            result.out_handle = PelicanStudio::curveOutHandle(key);
+            result.in_handle = PelicanStudio::curveInHandle(key);
+            converted.push_back(result);
+        }
+        return Pelican::Animation::BezierCurve{std::move(converted)};
+    };
+
+    const auto steep = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"bezier","out_handle":[1,0]},
+        {"time":1,"value":1,"interpolation":"linear","in_handle":[-1,0]},
+        {"time":2,"value":-1}]})"));
+    const auto omitted = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":-2,"value":1,"interpolation":"bezier","out_tangent":3},
+        {"time":0.25,"value":-2,"in_handle":[-0.1,4]},
+        {"time":3,"value":5,"interpolation":"bezier","in_tangent":-2,"out_handle":[0,0]}]})"));
+    const auto mixed = PelicanStudio::curveKeysFromParameters(Json::parse(R"({"keys":[
+        {"time":0,"value":0,"interpolation":"step"},
+        {"time":0.2,"value":2,"interpolation":"cubic","out_tangent":-4},
+        {"time":1.5,"value":1,"interpolation":"bezier","in_tangent":2},
+        {"time":4,"value":0,"in_handle":[-2.5,3]}]})"));
+    for (const auto *keys : {&steep, &omitted, &mixed}) {
+        REQUIRE(keys->has_value());
+        const auto engine = as_engine(**keys);
+        for (int index = 0; index < 200; ++index) {
+            const double time = std::lerp((**keys).front().time, (**keys).back().time,
+                                          index / 199.0);
+            INFO("time " << time);
+            CHECK(PelicanStudio::sampleCurve(**keys, time) ==
+                  Approx(engine.sample(time)).margin(1.0e-12));
+        }
+        for (const auto &key : **keys) {
+            for (const double time : {std::nextafter(key.time, -std::numeric_limits<double>::infinity()),
+                                      std::nextafter(key.time, std::numeric_limits<double>::infinity())}) {
+                CHECK(PelicanStudio::sampleCurve(**keys, time) ==
+                      Approx(engine.sample(time)).margin(1.0e-12));
+            }
+        }
+    }
+}
+
+TEST_CASE("CB-1 asymmetric, omitted and clamped handles split without changing the shape",
+          "[studio][graph-canvas][cb1]") {
+    using Key = PelicanStudio::GraphCanvasCurveKey;
+    const auto check_split = [](const std::vector<Key> &original) {
+        const auto split = GraphCanvasModel::curveKeysWithAdded(original, 0);
+        REQUIRE(split);
+        REQUIRE(split->size() == 3);
+        for (const auto &key : *split) {
+            CHECK(key.rest.is_object());
+        }
+        CHECK((*split)[0].rest.contains("out_handle"));
+        CHECK((*split)[1].rest.contains("in_handle"));
+        CHECK((*split)[1].rest.contains("out_handle"));
+        CHECK((*split)[2].rest.contains("in_handle"));
+        CHECK((*split)[1].interpolation == "bezier");
+        for (int index = 0; index < 200; ++index) {
+            const double time = std::lerp(original.front().time, original.back().time,
+                                          index / 199.0);
+            INFO("time " << time);
+            CHECK(PelicanStudio::sampleCurve(*split, time) ==
+                  Approx(PelicanStudio::sampleCurve(original, time)).margin(2.0e-11));
+        }
+    };
+    check_split({{0.0, 0.0, "bezier", {{"out_handle", {0.17, 4.0}},
+                                         {"in_handle", {-9.0, 8.0}},
+                                         {"out_tangent", 7.0}}},
+                 {1.0, 1.0, "step", {{"in_handle", {-0.61, -3.0}},
+                                      {"out_handle", {4.0, 8.0}},
+                                      {"in_tangent", -7.0}}}});
+    check_split({{0.0, 0.0, "bezier", {{"out_tangent", 5.0}}},
+                 {2.0, -1.0, "linear", {{"in_handle", {-0.23, 6.0}}}}});
+    check_split({{0.0, 0.0, "bezier", {{"out_handle", {9.0, 3.0}}}},
+                 {1.0, 1.0, "linear", {{"in_handle", {-8.0, -2.0}}}}});
+}
+
+TEST_CASE("CB-1 moving keys preserves explicit handles and recomputes only omitted defaults",
+          "[studio][graph-canvas][cb1]") {
+    using Key = PelicanStudio::GraphCanvasCurveKey;
+    const std::vector<Key> explicit_keys{
+        {0.0, 0.0, "bezier", {{"out_handle", {0.8, 1.0}}}},
+        {1.0, 1.0, "linear", {{"in_handle", {-0.7, -0.5}}}}};
+    const auto moved = GraphCanvasModel::curveKeysWithMoved(explicit_keys, 0, 0.25, 0.25);
+    CHECK(moved[0].rest == explicit_keys[0].rest);
+    CHECK(moved[1].rest == explicit_keys[1].rest);
+    auto clamped = moved;
+    clamped[0].rest["out_handle"] = Json::array({0.75, 1.0});
+    clamped[1].rest["in_handle"] = Json::array({-0.7, -0.5});
+    for (int index = 0; index < 200; ++index) {
+        const double time = std::lerp(0.25, 1.0, index / 199.0);
+        CHECK(PelicanStudio::sampleCurve(moved, time) ==
+              Approx(PelicanStudio::sampleCurve(clamped, time)).margin(1.0e-12));
+    }
+
+    std::vector<Key> omitted{
+        {0.0, 0.0, "bezier", {{"out_tangent", 0.9}}},
+        {1.0, 1.0, "linear", {{"in_tangent", -0.6}}}};
+    const auto shortened = GraphCanvasModel::curveKeysWithMoved(omitted, 0, 0.25, 0.25);
+    CHECK(shortened[0].rest == omitted[0].rest);
+    CHECK(shortened[1].rest == omitted[1].rest);
+    auto old_defaults = shortened;
+    old_defaults[0].rest["out_handle"] = Json::array({1.0 / 3.0, 0.3});
+    old_defaults[1].rest["in_handle"] = Json::array({-1.0 / 3.0, 0.2});
+    CHECK(PelicanStudio::sampleCurve(shortened, 0.5) !=
+          Approx(PelicanStudio::sampleCurve(old_defaults, 0.5)).margin(1.0e-5));
+
+    const std::vector<Key> invalid{{0.0, 0.0, "linear",
+        {{"out_handle", Json::array({std::numeric_limits<double>::infinity(), 0.0})}}}};
+    CHECK_FALSE(GraphCanvasModel::curveKeysRefusal(invalid).empty());
 }

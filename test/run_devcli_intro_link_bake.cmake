@@ -118,4 +118,41 @@ file(WRITE "${ORDER_ROOT}/passes/extra.json" [=[
 bake(unordered "${ORDER_ROOT}" "${OUT_DIR}/unordered.h" FALSE)
 expect_contains("${BAKE_STDERR}" "intro_link.curve_invalid@1: curve \"late\" in passes/extra.json" "unordered")
 
+# 5. CB-1: a handle is validated on every key even though the intro link
+#    has no Bezier representation.
+copy_fixture(HANDLE_ROOT handle)
+file(WRITE "${HANDLE_ROOT}/passes/extra.json" [=[
+{"schema": "pelican.graph", "version": 1, "nodes": [
+  {"id": "handled", "op": "value.curve", "parameters": {"keys": [
+    {"time": 0.0, "value": 1.0, "out_handle": [-0.5, 0.0]},
+    {"time": 1.0, "value": 2.0}]}}]}
+]=])
+bake(invalid_handle "${HANDLE_ROOT}" "${OUT_DIR}/invalid_handle.h" FALSE)
+expect_contains("${BAKE_STDERR}"
+                "intro_link.curve_invalid@1: curve \"handled\" in passes/extra.json: out_handle time delta has the wrong sign"
+                "invalid_handle")
+file(WRITE "${HANDLE_ROOT}/passes/extra.json" [=[
+{"schema": "pelican.graph", "version": 1, "nodes": [
+  {"id": "handled", "op": "value.curve", "parameters": {"keys": [
+    {"time": 0.0, "value": 1.0, "in_handle": [0.5, 0.0]},
+    {"time": 1.0, "value": 2.0}]}}]}
+]=])
+bake(invalid_in_handle "${HANDLE_ROOT}" "${OUT_DIR}/invalid_in_handle.h" FALSE)
+expect_contains("${BAKE_STDERR}"
+                "intro_link.curve_invalid@1: curve \"handled\" in passes/extra.json: in_handle time delta has the wrong sign"
+                "invalid_in_handle")
+
+# 6. CB-1: a Bezier interpolation is refused, not silently baked as linear.
+copy_fixture(BEZIER_ROOT bezier)
+file(WRITE "${BEZIER_ROOT}/passes/extra.json" [=[
+{"schema": "pelican.graph", "version": 1, "nodes": [
+  {"id": "curvy", "op": "value.curve", "parameters": {"keys": [
+    {"time": 0.0, "value": 1.0, "interpolation": "bezier"},
+    {"time": 1.0, "value": 2.0}]}}]}
+]=])
+bake(bezier "${BEZIER_ROOT}" "${OUT_DIR}/bezier.h" FALSE)
+expect_contains("${BAKE_STDERR}"
+                "intro_link.curve_invalid@1: curve \"curvy\" in passes/extra.json: interpolation \"bezier\" is not supported by the intro link"
+                "bezier")
+
 message(STATUS "intro-link bake: deterministic header ${first_hash}; named errors as expected")

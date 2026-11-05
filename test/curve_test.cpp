@@ -1,7 +1,10 @@
 #include "../src/core/userpublic/animation/curve.hpp"
+#include "../src/core/userpublic/animation/beziersegment.hpp"
+#include "../src/core/animation/beziercurve.hpp"
 #include "../src/core/userpublic/gamecontext.hpp"
 #include "../src/core/userpublic/valuegraph.hpp"
 #include "../src/project/graphcomposition.hpp"
+#include "../src/project/renderconfigdocument.hpp"
 #include "../src/project/graphmodule.hpp"
 #include "../src/project/graphparameterschema.hpp"
 #include "../src/project/graphpartition.hpp"
@@ -1395,6 +1398,38 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
     CHECK(code == "graph.render_node_parameter_invalid@1");
     CHECK(detail.at("parameter") == "keys[0].interpolation");
     CHECK(detail.at("reason") == "enum");
+    // CB-1: a handle is [dt, dv] with a sign, and the refusal names the
+    // handle, not one of its components.
+    const auto handle_refusal = [&](Json handle, bool is_out) {
+        Json key{{"time", 0}, {"value", 1}};
+        key[is_out ? "out_handle" : "in_handle"] = std::move(handle);
+        return refusal({{"id", "k"}, {"op", "value.curve"},
+                        {"parameters", {{"keys", Json::array({key})}}}});
+    };
+    std::tie(code, detail) = handle_refusal(Json::array({0.25}), true);
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail == Json{{"node", "k"}, {"op", "value.curve"},
+                         {"parameter", "keys[0].out_handle"}, {"expected", "array"},
+                         {"reason", "type"}});
+    std::tie(code, detail) = handle_refusal(Json::array({"x", 0}), true);
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "keys[0].out_handle");
+    CHECK(detail.at("reason") == "type");
+    std::tie(code, detail) = handle_refusal(
+        Json::array({std::numeric_limits<double>::infinity(), 0}), true);
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "keys[0].out_handle");
+    CHECK(detail.at("reason") == "type");
+    std::tie(code, detail) = handle_refusal(Json::array({-0.25, 0}), true);
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "keys[0].out_handle");
+    CHECK(detail.at("expected") == "array");
+    CHECK(detail.at("reason") == "range");
+    std::tie(code, detail) = handle_refusal(Json::array({0.25, 0}), false);
+    CHECK(code == "graph.render_node_parameter_invalid@1");
+    CHECK(detail.at("parameter") == "keys[0].in_handle");
+    CHECK(detail.at("expected") == "array");
+    CHECK(detail.at("reason") == "range");
     std::tie(code, detail) = refusal(
         {{"id", "shadow"}, {"op", "render.shadow_depth"}, {"parameters", {{"shader", "shaders/depth.vert"}}}});
     CHECK(code == "graph.render_node_parameter_invalid@1");
@@ -2609,4 +2644,351 @@ TEST_CASE("LC-1b graphcomposition preserves loop boundary names through save and
     REQUIRE_NOTHROW(Pelican::partitionGraphDocument(Json::parse(carried.dump(2))));
     CHECK(carried.at("definitions").at("loop_body").at("outputs") ==
           reopened.at("definitions").at("loop_body").at("outputs"));
+}
+
+namespace {
+
+Pelican::Animation::BezierCurveKey bezierKey(double time, double value,
+                                             Pelican::Animation::BezierSegmentKind kind) {
+    Pelican::Animation::BezierCurveKey key;
+    key.time = time;
+    key.value = value;
+    key.kind = kind;
+    return key;
+}
+
+} // namespace
+
+TEST_CASE("CB-1 Bezier defaults equal the Hermite cubic and handles weigh time",
+          "[curve][valuegraph][cb1]") {
+    using Pelican::Animation::BezierCurve;
+    using Pelican::Animation::BezierCurveKey;
+    using Pelican::Animation::BezierSegmentKind;
+
+    auto a = bezierKey(0, 0, BezierSegmentKind::bezier);
+    a.out_tangent = 0.8;
+    auto b = bezierKey(10, 5, BezierSegmentKind::linear);
+    b.in_tangent = -0.4;
+    const BezierCurve defaults{{a, b}};
+    const ScalarCurve hermite{{
+        {.time = 0, .value = 0, .out_tangent = 0.8, .interpolation = CurveInterpolation::cubic},
+        {.time = 10, .value = 5, .in_tangent = -0.4},
+    }};
+    for (const double time : {0.1, 1.0, 3.7, 5.0, 9.9})
+        REQUIRE(defaults.sample(time) == Approx(hermite.sample(time)).margin(1.0e-12));
+    // The default handle is not [0, 0]: a missing side takes the key's slope.
+    REQUIRE(defaults.sample(2.5) != Approx(hermite.sample(0.0)));
+    REQUIRE(defaults.keys().front().out_handle == std::nullopt);
+
+    // An explicit [0, 0] means horizontal, not "use the default".
+    a.out_handle = std::array<double, 2>{0.0, 0.0};
+    const BezierCurve horizontal{{a, b}};
+    REQUIRE(horizontal.sample(2.5) != Approx(defaults.sample(2.5)).margin(1.0e-6));
+
+    // Evaluation clamps dt to the segment width but keeps dv and the stored
+    // handle. Here both x controls collapse onto the end points, so x(0.5)
+    // is 0.5 and y(0.5) is 0.5.
+    auto clamped_a = bezierKey(0, 0, BezierSegmentKind::bezier);
+    clamped_a.out_handle = std::array<double, 2>{5.0, 3.0};
+    auto clamped_b = bezierKey(1, 1, BezierSegmentKind::linear);
+    clamped_b.in_handle = std::array<double, 2>{-5.0, -3.0};
+    const BezierCurve clamped{{clamped_a, clamped_b}};
+    REQUIRE(clamped.sample(0.5) == Approx(0.5));
+    REQUIRE(clamped.keys().front().out_handle == std::array<double, 2>{5.0, 3.0});
+    clamped_b.in_handle = std::array<double, 2>{-0.25, -0.5};
+    auto expected_b = clamped_b;
+    clamped_a.out_handle = std::array<double, 2>{5.0, 3.0};
+    expected_b.in_handle = std::array<double, 2>{-0.25, -0.5};
+    const BezierCurve asymmetric{{clamped_a, clamped_b}};
+    clamped_a.out_handle = std::array<double, 2>{1.0, 3.0};
+    const BezierCurve asymmetric_expected{{clamped_a, expected_b}};
+    for (const double time : {0.1, 0.25, 0.6, 0.9})
+        REQUIRE(asymmetric.sample(time) == Approx(asymmetric_expected.sample(time)).margin(1.0e-12));
+    REQUIRE(asymmetric.keys().front().out_handle == std::array<double, 2>{5.0, 3.0});
+
+    // The segment kind comes from a; b's own step kind does not stop its
+    // in_tangent from supplying the missing in-handle.
+    auto mixed_a = bezierKey(0, 0, BezierSegmentKind::bezier);
+    auto mixed_b = bezierKey(10, 10, BezierSegmentKind::step);
+    mixed_b.in_tangent = 3.0;
+    const BezierCurve mixed{{mixed_a, mixed_b}};
+    auto linear_b = mixed_b;
+    linear_b.kind = BezierSegmentKind::linear;
+    const BezierCurve mixed_expected{{mixed_a, linear_b}};
+    REQUIRE(mixed.sample(5.0) == Approx(mixed_expected.sample(5.0)));
+    REQUIRE(mixed.sample(5.0) != Approx(0.0));
+    REQUIRE(mixed.sample(10.0) == 10.0);
+}
+
+TEST_CASE("CB-1 the Bezier solver brackets Newton and rejects invalid curves",
+          "[curve][valuegraph][cb1]") {
+    using Pelican::Animation::BezierCurve;
+    using Pelican::Animation::BezierCurveKey;
+    using Pelican::Animation::BezierSegmentKind;
+
+    // A flat derivative in the middle is the classic Newton failure. The
+    // shared solver must still return the point the curve has there.
+    auto a = bezierKey(0, 0, BezierSegmentKind::bezier);
+    a.out_handle = std::array<double, 2>{1.0, 0.0};
+    auto b = bezierKey(1, 1, BezierSegmentKind::linear);
+    b.in_handle = std::array<double, 2>{-1.0, 0.0};
+    const BezierCurve flat{{a, b}};
+    for (const double time : {0.1, 0.25, 0.5, 0.75, 0.9})
+        REQUIRE(std::isfinite(flat.sample(time)));
+
+    auto bad = a;
+    bad.out_handle = std::array<double, 2>{-0.1, 0.0};
+    REQUIRE_THROWS(BezierCurve{{bad, b}});
+    bad.out_handle = std::array<double, 2>{0.5, std::numeric_limits<double>::quiet_NaN()};
+    REQUIRE_THROWS(BezierCurve{{bad, b}});
+    bad.out_handle = std::array<double, 2>{0.5, 0.0};
+    auto bad_b = b;
+    bad_b.in_handle = std::array<double, 2>{0.1, 0.0};
+    REQUIRE_THROWS(BezierCurve{{bad, bad_b}});
+    REQUIRE_THROWS(BezierCurve{{a, a}});
+    auto unknown = a;
+    unknown.kind = static_cast<BezierSegmentKind>(99);
+    REQUIRE_THROWS(BezierCurve{{unknown, b}});
+
+    using Json = nlohmann::json;
+    const auto document = [](const Json &keys) {
+        return Json{{"schema", "pelican.value_graph"}, {"version", 1},
+                    {"nodes", Json::array({
+                        {{"id", "shape"}, {"op", "curve"}, {"time", "t"}, {"keys", keys}},
+                        {{"id", "t"}, {"op", "input"}, {"name", "clock"}}})},
+                    {"outputs", {{"v", Json::array({"shape"})}}}};
+    };
+    const Json valid_keys = Json::array({
+        {{"time", 0}, {"value", 0}, {"out_handle", {0.25, 0}},
+         {"in_handle", {-0.25, 0}}},
+        {{"time", 1}, {"value", 1}, {"out_handle", {0.0, 0}}},
+    });
+    const Pelican::ValueGraph::Graph valid{document(valid_keys).dump()};
+    REQUIRE(valid.evaluate({{"clock", 0.5}}).at("v")[0] == Approx(0.5));
+    REQUIRE(Json::parse(valid.serialize()) == document(valid_keys));
+
+    // Handles are validated on every key even when no key is Bezier; a
+    // malformed handle never reaches ScalarCurve's dropped fields.
+    for (const Json &bad_handle : Json::array({Json::array({0.25}), Json::array({0.25, "x"}),
+                                               Json::array({-0.25, 0}),
+                                               Json::array({0.25, 0, 1})})) {
+        Json keys = Json::array({
+            {{"time", 0}, {"value", 0}, {"out_handle", bad_handle}},
+            {{"time", 1}, {"value", 1}},
+        });
+        REQUIRE_THROWS(Pelican::ValueGraph::Graph(document(keys).dump()));
+    }
+    Json keys = Json::array({
+        {{"time", 0}, {"value", 0}, {"in_handle", {0.25, 0}}},
+        {{"time", 1}, {"value", 1}},
+    });
+    REQUIRE_THROWS(Pelican::ValueGraph::Graph(document(keys).dump()));
+    keys = Json::array({
+        {{"time", 0}, {"value", 0}, {"interpolation", "bezier"}, {"out_handle", {0.0, 0.0}}},
+        {{"time", 1}, {"value", 1}, {"in_handle", {0.0, 0.0}}},
+    });
+    REQUIRE(Pelican::ValueGraph::Graph(document(keys).dump())
+                .evaluate({{"clock", 0.5}})
+                .at("v")[0] == Approx(0.5));
+
+    // The four updates are exactly the two handles on each side of the split.
+    const auto split = Pelican::Animation::splitBezierSegment(0, 0, 0.3, 2.0, 1, 1, -0.3, 2.0, 0.5);
+    REQUIRE(split);
+    REQUIRE(split->time == 0.5);
+    auto original = [&](double u) {
+        return Pelican::Animation::bezierSegmentPointAtU(0, 0, 0.3, 2.0, 1, 1, -0.3, 2.0, u);
+    };
+    for (const double u : {0.1, 0.2, 0.4}) {
+        const auto left = Pelican::Animation::bezierSegmentPointAtU(
+            0, 0, split->a_out_handle[0], split->a_out_handle[1], split->time, split->value,
+            split->middle_in_handle[0], split->middle_in_handle[1], u);
+        const auto expect = original(u * split->u);
+        REQUIRE(left[0] == Approx(expect[0]).margin(1.0e-12));
+        REQUIRE(left[1] == Approx(expect[1]).margin(1.0e-12));
+    }
+    CHECK_FALSE(Pelican::Animation::splitBezierSegment(
+        0, 0, 0.3, 2.0, 1, 1, -0.3, 2.0, 2.0));
+
+    // A handle wider than its segment is clamped when evaluated; the split
+    // must divide that same curve, not the unclamped control polygon.
+    const auto clamped_split = Pelican::Animation::splitBezierSegment(
+        0, 0, 5.0, 3.0, 1, 1, -5.0, -3.0, 0.5);
+    REQUIRE(clamped_split);
+    for (const double time : {0.1, 0.25, 0.4}) {
+        const double got = Pelican::Animation::bezierSegmentValue(
+            0, 0, clamped_split->a_out_handle[0], clamped_split->a_out_handle[1],
+            clamped_split->time, clamped_split->value, clamped_split->middle_in_handle[0],
+            clamped_split->middle_in_handle[1], time);
+        REQUIRE(got == Approx(Pelican::Animation::bezierSegmentValue(
+                                  0, 0, 5.0, 3.0, 1, 1, -5.0, -3.0, time))
+                                  .margin(1.0e-12));
+    }
+    for (const double time : {0.6, 0.75, 0.9}) {
+        const double got = Pelican::Animation::bezierSegmentValue(
+            clamped_split->time, clamped_split->value, clamped_split->middle_out_handle[0],
+            clamped_split->middle_out_handle[1], 1, 1, clamped_split->b_in_handle[0],
+            clamped_split->b_in_handle[1], time);
+        REQUIRE(got == Approx(Pelican::Animation::bezierSegmentValue(
+                                  0, 0, 5.0, 3.0, 1, 1, -5.0, -3.0, time))
+                                  .margin(1.0e-12));
+    }
+}
+
+namespace {
+
+long double cb1Cubic(long double p0, long double p1, long double p2, long double p3,
+                     long double u) {
+    const long double v = 1.0L - u;
+    return v * v * v * p0 + 3.0L * v * v * u * p1 + 3.0L * v * u * u * p2 +
+           u * u * u * p3;
+}
+
+double cb1IndependentSample(double a_time, double a_value, double out_dt, double out_dv,
+                            double b_time, double b_value, double in_dt, double in_dv,
+                            double time) {
+    if (time <= a_time) return a_value;
+    if (time >= b_time) return b_value;
+    const long double width = static_cast<long double>(b_time) - a_time;
+    const long double s = (static_cast<long double>(time) - a_time) / width;
+    const long double x1 = std::clamp(static_cast<long double>(out_dt), 0.0L, width) / width;
+    const long double x2 =
+        1.0L + std::clamp(static_cast<long double>(in_dt), -width, 0.0L) / width;
+    long double lo = 0.0L;
+    long double hi = 1.0L;
+    for (int iteration = 0; iteration < 160; ++iteration) {
+        const long double u = (lo + hi) / 2.0L;
+        const long double x = cb1Cubic(0.0L, x1, x2, 1.0L, u);
+        if (x < s) lo = u;
+        else hi = u;
+    }
+    const long double u = (lo + hi) / 2.0L;
+    return static_cast<double>(cb1Cubic(a_value, a_value + out_dv, b_value + in_dv,
+                                        b_value, u));
+}
+
+} // namespace
+
+TEST_CASE("CB-1 default and explicit Bezier handles retain their distinct meanings",
+          "[curve][cb1]") {
+    using namespace Pelican::Animation;
+    for (const auto widths : {std::pair{0.0, 2.5}, std::pair{-3.0, 0.25},
+                              std::pair{7.0, 19.0}}) {
+        auto a = bezierKey(widths.first, -2.0, BezierSegmentKind::bezier);
+        a.out_tangent = 0.8;
+        auto b = bezierKey(widths.second, 5.0, BezierSegmentKind::linear);
+        b.in_tangent = -0.4;
+        const BezierCurve bezier{{a, b}};
+        const ScalarCurve cubic{{CurveKey{a.time, a.value, 0.0, a.out_tangent,
+                                          CurveInterpolation::cubic},
+                                 CurveKey{b.time, b.value, b.in_tangent, 0.0,
+                                          CurveInterpolation::linear}}};
+        for (int index = 0; index < 200; ++index) {
+            const double time = std::lerp(a.time, b.time, index / 199.0);
+            INFO("time " << time);
+            CHECK(bezier.sample(time) == Approx(cubic.sample(time)).margin(1.0e-9));
+        }
+
+        a.out_handle = std::array<double, 2>{(b.time - a.time) / 3.0,
+                                            a.out_tangent * (b.time - a.time) / 3.0};
+        const BezierCurve one_side{{a, b}};
+        for (int index = 0; index < 200; ++index) {
+            const double time = std::lerp(a.time, b.time, index / 199.0);
+            CHECK(one_side.sample(time) == Approx(cubic.sample(time)).margin(1.0e-9));
+        }
+
+        a.out_handle = std::array<double, 2>{0.0, 0.0};
+        const BezierCurve explicit_zero{{a, b}};
+        CHECK(explicit_zero.keys()[0].out_handle.has_value());
+        CHECK(explicit_zero.sample(std::lerp(a.time, b.time, 0.25)) !=
+              Approx(bezier.sample(std::lerp(a.time, b.time, 0.25))).margin(1.0e-8));
+    }
+}
+
+TEST_CASE("CB-1 the normalized Bezier solver agrees with independent bisection",
+          "[curve][cb1]") {
+    using namespace Pelican::Animation;
+    const auto check = [](double a_time, double b_time, double out_dt, double out_dv,
+                          double in_dt, double in_dv) {
+        for (int index = 0; index <= 400; ++index) {
+            const double time = std::lerp(a_time, b_time, index / 400.0);
+            const double expected = cb1IndependentSample(a_time, 0.0, out_dt, out_dv,
+                                                         b_time, 1.0, in_dt, in_dv, time);
+            INFO("time " << time);
+            CHECK(Pelican::Animation::bezierSegmentValue(a_time, 0.0, out_dt, out_dv,
+                                                         b_time, 1.0, in_dt, in_dv, time) ==
+                  Approx(expected).margin(2.0e-12));
+        }
+    };
+    check(0.0, 1.0, 0.42, 0.0, -0.42, 0.0);
+    check(0.0, 1.0, 1.0, 1.0 / 3.0, -1.0, -1.0 / 3.0);
+    check(0.0, 1.0, 0.0, 0.7, -1.0, -0.2);
+    check(0.0, 1.0e-13, 0.42e-13, 0.0, -0.42e-13, 0.0);
+    check(1.0e12, 1.0e12 + 0.5, 0.21, 0.0, -0.21, 0.0);
+
+    // dx/du is zero at u=0.5. A residual-only solver returns a y
+    // roughly 3e-5 away at the time immediately to its right.
+    const double tiny_time = 0.5 + 1.0e-13;
+    const double actual = bezierSegmentValue(0.0, 0.0, 1.0, 1.0 / 3.0,
+                                             1.0, 1.0, -1.0, -1.0 / 3.0, tiny_time);
+    CHECK(actual == Approx(cb1IndependentSample(0.0, 0.0, 1.0, 1.0 / 3.0,
+                                                1.0, 1.0, -1.0, -1.0 / 3.0, tiny_time))
+                          .margin(2.0e-12));
+    CHECK(actual == Approx(0.5 + std::cbrt((tiny_time - 0.5) / 4.0)).margin(2.0e-12));
+}
+
+TEST_CASE("CB-1 mixed segments and old ValueGraph documents keep their exact behavior",
+          "[curve][valuegraph][cb1]") {
+    using namespace Pelican::Animation;
+    std::vector<BezierCurveKey> mixed{
+        bezierKey(0.0, 1.0, BezierSegmentKind::step),
+        bezierKey(0.5, 3.0, BezierSegmentKind::linear),
+        bezierKey(1.25, -2.0, BezierSegmentKind::cubic),
+        bezierKey(3.0, 4.0, BezierSegmentKind::bezier),
+        bezierKey(5.0, 2.0, BezierSegmentKind::linear),
+    };
+    mixed[2].out_tangent = 1.2;
+    mixed[3].in_tangent = -0.7;
+    mixed[3].out_handle = std::array<double, 2>{0.42, 1.5};
+    mixed[4].in_handle = std::array<double, 2>{-0.31, -0.5};
+    const BezierCurve bezier{mixed};
+    const ScalarCurve scalar{{CurveKey{0.0, 1.0, 0.0, 0.0, CurveInterpolation::step},
+                              CurveKey{0.5, 3.0, 0.0, 0.0, CurveInterpolation::linear},
+                              CurveKey{1.25, -2.0, 0.0, 1.2, CurveInterpolation::cubic},
+                              CurveKey{3.0, 4.0, -0.7, 0.0, CurveInterpolation::linear},
+                              CurveKey{5.0, 2.0}}};
+    for (const double time : {-1.0, 0.0, 0.25, 0.5, 0.75, 1.25, 1.5, 2.0, 2.999999,
+                              3.0, 5.0, 6.0}) {
+        if (time < 3.0) CHECK(bezier.sample(time) == scalar.sample(time));
+    }
+
+    const std::string old_bytes =
+        R"({"nodes":[{"id":"shape","keys":[{"interpolation":"cubic","out_tangent":0.8,"time":0,"value":0},{"in_tangent":-0.4,"time":2.5,"value":5}],"op":"curve","time":"t"},{"id":"t","name":"clock","op":"input"}],"outputs":{"v":["shape"]},"schema":"pelican.value_graph","version":1})";
+    const Pelican::ValueGraph::Graph old_graph{old_bytes};
+    CHECK(old_graph.serialize() == old_bytes);
+    CHECK(Pelican::renderConfigSourceDigest(old_graph.serialize()) ==
+          "2a953f896acc9357d0e5aa2686532e094bfe59a54159df29fce12cdd69ced568");
+    CHECK(old_graph.evaluate({{"clock", 1.25}}).at("v")[0] == Approx(2.875).margin(1.0e-15));
+    CHECK(nlohmann::json::parse(old_graph.serialize()) == nlohmann::json::parse(old_bytes));
+
+    const nlohmann::json bezier_document{
+        {"schema", "pelican.value_graph"}, {"version", 1},
+        {"nodes", nlohmann::json::array({
+            {{"id", "shape"}, {"op", "curve"}, {"time", "t"},
+             {"keys", nlohmann::json::array({
+                 {{"time", 0}, {"value", 0}, {"interpolation", "bezier"},
+                  {"out_handle", {0.42, 0}}},
+                 {{"time", 1}, {"value", 1}, {"in_handle", {-0.42, 0}}}})}},
+            {{"id", "t"}, {"op", "input"}, {"name", "clock"}}})},
+        {"outputs", {{"v", nlohmann::json::array({"shape"})}}}};
+    const Pelican::ValueGraph::Graph graph{bezier_document.dump()};
+    auto a = bezierKey(0.0, 0.0, BezierSegmentKind::bezier);
+    a.out_handle = std::array<double, 2>{0.42, 0.0};
+    auto b = bezierKey(1.0, 1.0, BezierSegmentKind::linear);
+    b.in_handle = std::array<double, 2>{-0.42, 0.0};
+    const BezierCurve expected{{a, b}};
+    for (int index = 0; index < 200; ++index) {
+        const double time = index / 199.0;
+        CHECK(graph.evaluate({{"clock", time}}).at("v")[0] ==
+              Approx(expected.sample(time)).margin(1.0e-15));
+    }
 }

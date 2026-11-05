@@ -2920,9 +2920,17 @@ class GraphCanvasModel {
     [[nodiscard]] static std::vector<GraphCanvasCurveKey>
     curveKeysWithMoved(std::vector<GraphCanvasCurveKey> keys, std::size_t index, double time,
                        double value);
+    // `index`'s interpolation with the explicit default handles a change to
+    // "bezier" writes on this key and the next one (nothing on the last key).
+    [[nodiscard]] static std::vector<GraphCanvasCurveKey> curveKeysWithInterpolation(
+        std::vector<GraphCanvasCurveKey> keys, std::size_t index, std::string_view interpolation);
     // A key after `index` (halfway to the next, or one past the last), with
-    // the value the curve has there.
-    [[nodiscard]] static std::vector<GraphCanvasCurveKey>
+    // the value the curve has there. Nullopt when the middle time is not
+    // strictly between two representable doubles; the caller refuses with a
+    // notice. A Bezier segment is split with De Casteljau, updating exactly
+    // this key's out-handle, the new key's two handles and the next key's
+    // in-handle.
+    [[nodiscard]] static std::optional<std::vector<GraphCanvasCurveKey>>
     curveKeysWithAdded(std::vector<GraphCanvasCurveKey> keys, std::size_t index);
     // One gesture: the curve's keys replaced (one set_node_parameters, one
     // Undo step). Refused keys are not sent; the edit notice says why.

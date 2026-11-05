@@ -1,5 +1,6 @@
 #include "userdataerror.hpp"
 #include "valuegraph.hpp"
+#include "../animation/beziercurve.hpp"
 #include "gamecontext.hpp"
 #include "../../project/graphmodule.hpp"
 #include "../../project/graphpartition.hpp"
@@ -566,22 +567,62 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             node.dependencies = {resolve(authored.at("time"))};
             const auto &curve_keys = authored.at("keys");
             if (!curve_keys.is_array()) throw std::invalid_argument("curve keys must be an array");
-            std::vector<Animation::CurveKey> decoded;
+            std::vector<Animation::BezierCurveKey> decoded;
+            bool any_bezier = false;
             for (const auto &key : curve_keys) {
-                keys(key, {"time", "value", "interpolation", "in_tangent", "out_tangent"});
-                Animation::CurveKey result;
+                keys(key, {"time", "value", "interpolation", "in_tangent", "out_tangent",
+                           "out_handle", "in_handle"});
+                Animation::BezierCurveKey result;
                 result.time = number(key.at("time"));
                 result.value = number(key.at("value"));
                 result.in_tangent = number(key.value("in_tangent", Json(0.0)));
                 result.out_tangent = number(key.value("out_tangent", Json(0.0)));
                 const auto interpolation = key.value("interpolation", std::string("linear"));
-                if (interpolation == "linear") result.interpolation = Animation::CurveInterpolation::linear;
-                else if (interpolation == "step") result.interpolation = Animation::CurveInterpolation::step;
-                else if (interpolation == "cubic") result.interpolation = Animation::CurveInterpolation::cubic;
-                else throw std::invalid_argument("unknown curve interpolation: " + interpolation);
-                decoded.push_back(result);
+                if (interpolation == "linear") result.kind = Animation::BezierSegmentKind::linear;
+                else if (interpolation == "step") result.kind = Animation::BezierSegmentKind::step;
+                else if (interpolation == "cubic") result.kind = Animation::BezierSegmentKind::cubic;
+                else if (interpolation == "bezier") {
+                    result.kind = Animation::BezierSegmentKind::bezier;
+                    any_bezier = true;
+                } else throw std::invalid_argument("unknown curve interpolation: " + interpolation);
+                // CB-1: handles are validated on every key, even when no key
+                // is Bezier, because the document is still malformed.
+                const auto read_handle = [&](const char *name,
+                                             bool is_out) -> std::optional<std::array<double, 2>> {
+                    const auto found = key.find(name);
+                    if (found == key.end()) return std::nullopt;
+                    if (!found->is_array() || found->size() != 2)
+                        throw std::invalid_argument(std::string{name} +
+                                                    " must be an array of two numbers");
+                    const double dt = number((*found)[0]);
+                    const double dv = number((*found)[1]);
+                    if (is_out ? dt < 0.0 : dt > 0.0)
+                        throw std::invalid_argument(std::string{name} +
+                                                    " time delta has the wrong sign");
+                    return std::array<double, 2>{dt, dv};
+                };
+                result.out_handle = read_handle("out_handle", true);
+                result.in_handle = read_handle("in_handle", false);
+                decoded.push_back(std::move(result));
             }
-            node.curve.emplace(std::move(decoded));
+            if (any_bezier) {
+                node.bezier_curve =
+                    std::make_shared<Animation::BezierCurve>(std::move(decoded));
+            } else {
+                std::vector<Animation::CurveKey> scalar;
+                scalar.reserve(decoded.size());
+                for (const auto &key : decoded) {
+                    Animation::CurveInterpolation interpolation =
+                        Animation::CurveInterpolation::linear;
+                    if (key.kind == Animation::BezierSegmentKind::step)
+                        interpolation = Animation::CurveInterpolation::step;
+                    else if (key.kind == Animation::BezierSegmentKind::cubic)
+                        interpolation = Animation::CurveInterpolation::cubic;
+                    scalar.push_back({key.time, key.value, key.in_tangent, key.out_tangent,
+                                      interpolation});
+                }
+                node.curve.emplace(std::move(scalar));
+            }
         } else {
             // A contract can exist without a backend that runs it; say so by
             // name instead of calling the operation unknown.
@@ -923,7 +964,10 @@ Outputs Graph::evaluateInternal(const Inputs &inputs, const ParameterValues &par
         }
         case Op::add: value = values[node.dependencies[0]] + values[node.dependencies[1]]; break;
         case Op::multiply: value = values[node.dependencies[0]] * values[node.dependencies[1]]; break;
-        case Op::curve: value = node.curve->sample(values[node.dependencies[0]]); break;
+        case Op::curve:
+            value = node.bezier_curve ? node.bezier_curve->sample(values[node.dependencies[0]])
+                                      : node.curve->sample(values[node.dependencies[0]]);
+            break;
         case Op::sample_table: value = node.table->sample(node.table_row, values[node.dependencies[0]]); break;
         case Op::event_input: break;
         case Op::audio_playback:

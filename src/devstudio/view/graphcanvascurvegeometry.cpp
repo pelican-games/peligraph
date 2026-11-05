@@ -1,5 +1,7 @@
 #include "graphcanvascurvegeometry.hpp"
 
+#include "../../core/userpublic/animation/beziersegment.hpp"
+
 #include <algorithm>
 #include <cmath>
 
@@ -52,6 +54,18 @@ void addCubicExtrema(const GraphCanvasCurveKey &a, const GraphCanvasCurveKey &b,
     }
 }
 
+void addBezierExtrema(const GraphCanvasCurveKey &a, const GraphCanvasCurveKey &b,
+                      double &low, double &high) {
+    const double width = b.time - a.time;
+    if (!(width > 0.0)) return;
+    const auto out = curveOutHandle(a).value_or(curveDefaultOutHandle(a, width));
+    const auto in = curveInHandle(b).value_or(curveDefaultInHandle(b, width));
+    const auto range = Pelican::Animation::bezierSegmentValueRange(
+        a.time, a.value, out[0], out[1], b.time, b.value, in[0], in[1]);
+    low = std::min(low, range[0]);
+    high = std::max(high, range[1]);
+}
+
 } // namespace
 
 QRectF curveFrame(const std::vector<GraphCanvasCurveKey> &keys) {
@@ -64,9 +78,12 @@ QRectF curveFrame(const std::vector<GraphCanvasCurveKey> &keys) {
         v0 = std::min(v0, key.value);
         v1 = std::max(v1, key.value);
     }
-    for (std::size_t index = 1; index < keys.size(); ++index)
+    for (std::size_t index = 1; index < keys.size(); ++index) {
         if (keys[index - 1].interpolation == "cubic")
             addCubicExtrema(keys[index - 1], keys[index], v0, v1);
+        else if (keys[index - 1].interpolation == "bezier")
+            addBezierExtrema(keys[index - 1], keys[index], v0, v1);
+    }
     if (!(t1 > t0)) {
         t0 -= 0.5;
         t1 += 0.5;
@@ -106,13 +123,16 @@ CurvePaths curvePaths(const std::vector<GraphCanvasCurveKey> &keys, const QRectF
     curve.moveTo(at(frame.left(), keys.front().value));
     curve.lineTo(key_at(keys.front()));
 
-    // Spend the sampling budget where the cubic ink is: a segment's share of
-    // the plot's width. A cubic that spans the whole plot gets all 64.
-    double cubic_width = 0.0;
+    // Spend the sampling budget where the curved ink is: a segment's share
+    // of the plot's width. A segment that spans the whole plot gets all 64.
+    double curved_width = 0.0;
     const double frame_width = frame.width() > 0.0 ? frame.width() : 1.0;
-    for (std::size_t index = 1; index < keys.size(); ++index)
-        if (keys[index - 1].interpolation == "cubic")
-            cubic_width += (keys[index].time - keys[index - 1].time) / frame_width * plot.width();
+    for (std::size_t index = 1; index < keys.size(); ++index) {
+        const auto &kind = keys[index - 1].interpolation;
+        if (kind == "cubic" || kind == "bezier")
+            curved_width +=
+                (keys[index].time - keys[index - 1].time) / frame_width * plot.width();
+    }
 
     for (std::size_t index = 1; index < keys.size(); ++index) {
         const auto &a = keys[index - 1];
@@ -121,17 +141,29 @@ CurvePaths curvePaths(const std::vector<GraphCanvasCurveKey> &keys, const QRectF
             const QPointF next = key_at(b);
             curve.lineTo(QPointF{next.x(), curve.currentPosition().y()});
             curve.lineTo(next);
-        } else if (a.interpolation == "cubic") {
+        } else if (a.interpolation == "cubic" || a.interpolation == "bezier") {
             int intervals = 1;
-            if (cubic_width > 0.0 && cubic_intervals > 0) {
+            if (curved_width > 0.0 && cubic_intervals > 0) {
                 const double pixel_width =
                     (b.time - a.time) / frame_width * plot.width();
                 intervals = std::max(1, static_cast<int>(
-                                             std::lround(cubic_intervals * pixel_width / cubic_width)));
+                                             std::lround(cubic_intervals * pixel_width / curved_width)));
             }
-            for (int step = 1; step < intervals; ++step) {
-                const double t = static_cast<double>(step) / intervals;
-                curve.lineTo(at(a.time + (b.time - a.time) * t, hermite(a, b, t)));
+            if (a.interpolation == "cubic") {
+                for (int step = 1; step < intervals; ++step) {
+                    const double t = static_cast<double>(step) / intervals;
+                    curve.lineTo(at(a.time + (b.time - a.time) * t, hermite(a, b, t)));
+                }
+            } else {
+                const double width = b.time - a.time;
+                const auto out = curveOutHandle(a).value_or(curveDefaultOutHandle(a, width));
+                const auto in = curveInHandle(b).value_or(curveDefaultInHandle(b, width));
+                for (int step = 1; step < intervals; ++step) {
+                    const double u = static_cast<double>(step) / intervals;
+                    const auto point = Pelican::Animation::bezierSegmentPointAtU(
+                        a.time, a.value, out[0], out[1], b.time, b.value, in[0], in[1], u);
+                    curve.lineTo(at(point[0], point[1]));
+                }
             }
             curve.lineTo(key_at(b));
         } else {

@@ -7,7 +7,10 @@
 
 #include "graphcanvascurve.hpp"
 
+#include "../../core/userpublic/animation/beziersegment.hpp"
+
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <fstream>
@@ -29,6 +32,10 @@ std::string textOf(const Json &value, const char *key) {
 
 std::string tokenOf(std::string_view scope) {
     return scope.empty() ? std::string{"root"} : std::string{scope};
+}
+
+bool finiteJson(const Json &value) {
+    return value.is_number() && std::isfinite(value.get<double>());
 }
 
 bool isBufferOp(std::string_view op) {
@@ -107,7 +114,7 @@ std::optional<std::pair<Json, std::string>> writableScalarBuffer(const Json &nod
 // --- Decision 4: a value.curve's keys.
 
 const std::vector<std::string> &GraphCanvasModel::curveInterpolations() {
-    static const std::vector<std::string> interpolations{"linear", "step", "cubic"};
+    static const std::vector<std::string> interpolations{"linear", "step", "cubic", "bezier"};
     return interpolations;
 }
 
@@ -133,6 +140,28 @@ std::string GraphCanvasModel::curveKeysRefusal(const std::vector<GraphCanvasCurv
             curveInterpolations().end())
             return "Key " + std::to_string(index + 1) + " has an interpolation the engine does not "
                    "take (" + key.interpolation + ").";
+        if (!key.rest.is_object())
+            return "Key " + std::to_string(index + 1) + " has fields the engine does not read.";
+        for (const auto &[name, member] : key.rest.items()) {
+            if (name == "in_tangent" || name == "out_tangent") {
+                if (!finiteJson(member))
+                    return "Key " + std::to_string(index + 1) + " has a tangent that is not a number.";
+                continue;
+            }
+            if (name == "out_handle" || name == "in_handle") {
+                if (!member.is_array() || member.size() != 2 || !finiteJson(member[0]) ||
+                    !finiteJson(member[1]))
+                    return "Key " + std::to_string(index + 1) + " has a handle that is not two numbers.";
+                const bool is_out = name == "out_handle";
+                const double dt = member[0].get<double>();
+                if (is_out ? dt < 0.0 : dt > 0.0)
+                    return "Key " + std::to_string(index + 1) +
+                           " has a handle with a time delta of the wrong sign.";
+                continue;
+            }
+            return "Key " + std::to_string(index + 1) +
+                   " has a field the engine does not read (" + name + ").";
+        }
         if (index > 0 && !(keys[index - 1].time < key.time))
             return "The keys' times have to rise: key " + std::to_string(index + 1) +
                    " is not later than key " + std::to_string(index) + ".";
@@ -166,7 +195,25 @@ GraphCanvasModel::curveKeysWithMoved(std::vector<GraphCanvasCurveKey> keys, std:
     return keys;
 }
 
-std::vector<GraphCanvasCurveKey>
+std::vector<GraphCanvasCurveKey> GraphCanvasModel::curveKeysWithInterpolation(
+    std::vector<GraphCanvasCurveKey> keys, std::size_t index, std::string_view interpolation) {
+    if (index >= keys.size()) return keys;
+    const bool becomes_bezier =
+        interpolation == "bezier" && keys[index].interpolation != "bezier";
+    keys[index].interpolation = std::string{interpolation};
+    if (!becomes_bezier || index + 1 >= keys.size()) return keys;
+    if (!keys[index].rest.is_object()) keys[index].rest = Json::object();
+    if (!keys[index + 1].rest.is_object()) keys[index + 1].rest = Json::object();
+    const double width = keys[index + 1].time - keys[index].time;
+    if (!(width > 0.0)) return keys;
+    const auto out = curveDefaultOutHandle(keys[index], width);
+    const auto in = curveDefaultInHandle(keys[index + 1], width);
+    keys[index].rest["out_handle"] = Json::array({out[0], out[1]});
+    keys[index + 1].rest["in_handle"] = Json::array({in[0], in[1]});
+    return keys;
+}
+
+std::optional<std::vector<GraphCanvasCurveKey>>
 GraphCanvasModel::curveKeysWithAdded(std::vector<GraphCanvasCurveKey> keys, std::size_t index) {
     GraphCanvasCurveKey added;
     if (keys.empty()) {
@@ -174,8 +221,50 @@ GraphCanvasModel::curveKeysWithAdded(std::vector<GraphCanvasCurveKey> keys, std:
         return keys;
     }
     index = std::min(index, keys.size() - 1);
-    const double time = index + 1 < keys.size() ? (keys[index].time + keys[index + 1].time) / 2.0
-                                                : keys[index].time + 1.0;
+    if (index + 1 >= keys.size()) {
+        // The next key after the last one is one second later. A time that
+        // cannot move forward (or a sum that overflows) has no key to add.
+        const double time = keys[index].time + 1.0;
+        if (!std::isfinite(time) || !(time > keys[index].time)) return std::nullopt;
+        added.time = time;
+        added.value = sampleCurve(keys, time);
+        added.interpolation = keys[index].interpolation;
+        keys.insert(keys.begin() + static_cast<std::ptrdiff_t>(index) + 1, std::move(added));
+        return keys;
+    }
+
+    const auto &a = keys[index];
+    const auto &b = keys[index + 1];
+    // a + (b - a) / 2, not (a + b) / 2: the sum can overflow, and the middle
+    // has to be strictly between two neighbouring doubles.
+    const double time = a.time + (b.time - a.time) / 2.0;
+    if (!std::isfinite(time) || !(a.time < time && time < b.time)) return std::nullopt;
+
+    if (a.interpolation == "bezier") {
+        const auto width = b.time - a.time;
+        const auto out = curveOutHandle(a).value_or(curveDefaultOutHandle(a, width));
+        const auto in = curveInHandle(b).value_or(curveDefaultInHandle(b, width));
+        const auto split = Pelican::Animation::splitBezierSegment(
+            a.time, a.value, out[0], out[1], b.time, b.value, in[0], in[1], time);
+        if (!split || !std::isfinite(split->value)) return std::nullopt;
+        added.time = split->time;
+        added.value = split->value;
+        added.interpolation = "bezier";
+        added.rest = Json::object();
+        if (!keys[index].rest.is_object()) keys[index].rest = Json::object();
+        if (!keys[index + 1].rest.is_object()) keys[index + 1].rest = Json::object();
+        keys[index].rest["out_handle"] =
+            Json::array({split->a_out_handle[0], split->a_out_handle[1]});
+        added.rest["in_handle"] =
+            Json::array({split->middle_in_handle[0], split->middle_in_handle[1]});
+        added.rest["out_handle"] =
+            Json::array({split->middle_out_handle[0], split->middle_out_handle[1]});
+        keys[index + 1].rest["in_handle"] =
+            Json::array({split->b_in_handle[0], split->b_in_handle[1]});
+        keys.insert(keys.begin() + static_cast<std::ptrdiff_t>(index) + 1, std::move(added));
+        return keys;
+    }
+
     added.time = time;
     added.value = sampleCurve(keys, time);
     added.interpolation = keys[index].interpolation;

@@ -1,0 +1,55 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "curve_bezier_read",
+  "description": "CB-1: a value.curve with time-weighted Bezier handles loads in the engine and Studio, its large graph shows Bezier, and Problems stays empty.",
+  "tab": "graph",
+  "probe_no_automation": true,
+  "steps": [
+    {
+      "label": "the engine accepted the project",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "no Problems",
+      "expect": "rpc_equals",
+      "method": "get_problems",
+      "params": {},
+      "path": "problems.$len",
+      "value": 0,
+      "retry_ms": 30000
+    },
+    {
+      "label": "show value nodes",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "the handled curve is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#handled_curve",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "pick the curve",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node_header#handled_curve"
+    },
+    {
+      "label": "the large graph's interpolation is Bezier",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasCurve.key0.interpolation",
+      "visible": true,
+      "text": "Bezier",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the small graph drew with the same curve",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "curve_bezier_read.png"
+    }
+  ]
+}

@@ -100,6 +100,8 @@ struct GraphParameterSchema {
     std::optional<GraphParameterChoices> key_choices_from;
     // An array's elements; an object's members when it is a map (any key).
     std::shared_ptr<const GraphParameterSchema> items;
+    // An array's fixed length; unset for any length. CB-1's [dt, dv] handles.
+    std::optional<std::size_t> array_size;
     // An object's named members.
     std::vector<GraphParameterSchema> fields;
     // CT-4: a union's shapes, each without a name.

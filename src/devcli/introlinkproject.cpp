@@ -68,6 +68,20 @@ float finiteFloat(const Json &value, const std::string &document, const std::str
     return result;
 }
 
+void validateHandle(const Json &authored, const char *name, bool is_out,
+                    const std::string &document, const std::string &id) {
+    const auto found = authored.find(name);
+    if (found == authored.end()) return;
+    if (!found->is_array() || found->size() != 2) {
+        curveInvalid(document, id, std::string{name} + " must be an array of two numbers");
+    }
+    const float dt = finiteFloat((*found)[0], document, id, name);
+    (void)finiteFloat((*found)[1], document, id, name);
+    if (is_out ? dt < 0.0f : dt > 0.0f) {
+        curveInvalid(document, id, std::string{name} + " time delta has the wrong sign");
+    }
+}
+
 std::vector<Key> readKeys(const Json &node, const std::string &document, const std::string &id) {
     const auto parameters = node.find("parameters");
     if (parameters == node.end() || !parameters->is_object()) curveInvalid(document, id, "keys are empty");
@@ -92,6 +106,10 @@ std::vector<Key> readKeys(const Json &node, const std::string &document, const s
         if (const auto found = authored.find("out_tangent"); found != authored.end()) {
             key.out_tangent = finiteFloat(*found, document, id, "out_tangent");
         }
+        // CB-1: handles are validated on every key, even when the intro link
+        // cannot itself draw a Bezier segment.
+        validateHandle(authored, "out_handle", true, document, id);
+        validateHandle(authored, "in_handle", false, document, id);
         std::string interpolation = "linear";
         if (const auto found = authored.find("interpolation"); found != authored.end()) {
             if (!found->is_string()) curveInvalid(document, id, "interpolation must be a string");
@@ -100,6 +118,8 @@ std::vector<Key> readKeys(const Json &node, const std::string &document, const s
         if (interpolation == "linear") key.interpolation = kLinear;
         else if (interpolation == "step") key.interpolation = kStep;
         else if (interpolation == "cubic") key.interpolation = kCubic;
+        else if (interpolation == "bezier")
+            curveInvalid(document, id, "interpolation \"bezier\" is not supported by the intro link");
         else curveInvalid(document, id, "unknown interpolation \"" + interpolation + "\"");
         // Checked after the float conversion: two distinct doubles that land
         // on one float would make a zero-width segment in pil_eval.

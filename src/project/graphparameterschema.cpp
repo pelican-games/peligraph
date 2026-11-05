@@ -114,6 +114,10 @@ class P {
         schema_.choices_from->where.emplace_back(std::move(name), std::move(values));
         return *this;
     }
+    P &size(std::size_t count) {
+        schema_.array_size = count;
+        return *this;
+    }
     P &variant(const P &shape) {
         schema_.variants.push_back(shape.schema_);
         return *this;
@@ -430,9 +434,14 @@ Table makeTable() {
         {array("keys", object("")
                            .field(number("time").required())
                            .field(number("value").required())
-                           .field(enumeration("interpolation", {"linear", "step", "cubic"}).fallback("linear"))
+                           .field(enumeration("interpolation", {"linear", "step", "cubic", "bezier"}).fallback("linear"))
                            .field(number("in_tangent").fallback(0.0))
-                           .field(number("out_tangent").fallback(0.0)))
+                           .field(number("out_tangent").fallback(0.0))
+                           // CB-1: a handle is [dt, dv] from its key. No
+                           // fallback: a document without one must not gain
+                           // one by being read.
+                           .field(array("out_handle", number("")).size(2).checkedByOp())
+                           .field(array("in_handle", number("")).size(2).checkedByOp()))
              .required()
              .describe("The curve's keys.")});
     // AB-1 (valuegraph.cpp; audioanalysisformat.hpp).
@@ -730,6 +739,7 @@ std::optional<Failure> checkValue(const Json &value, const GraphParameterSchema 
     case Kind::color: return checkNumbers(value, 4, schema, path);
     case Kind::array:
         if (!value.is_array()) return type();
+        if (schema.array_size && value.size() != *schema.array_size) return type();
         if (schema.items)
             for (std::size_t index = 0; index < value.size(); ++index)
                 if (auto failure = checkValue(value.at(index), *schema.items, path + "[" + std::to_string(index) + "]"))
@@ -913,6 +923,41 @@ void checkGraphNodeParameterTypes(const std::string &op, const nlohmann::json &n
             if (failure->schema->max) detail["max"] = bound(*failure->schema->max);
         }
         throw GraphRegistryError("graph.render_node_parameter_invalid@1", Json::parse(detail.dump()));
+    }
+    // CB-1: a handle's [dt, dv] is no ordinary pair: its time delta has a
+    // sign, and neither component may be infinite. Both fields are marked
+    // checked_by_op so the generic pass leaves the whole [dt, dv] to this
+    // one, which names the handle rather than one of its components.
+    if (op != "value.curve") return;
+    const auto keys = parameters->find("keys");
+    if (keys == parameters->end() || !keys->is_array()) return;
+    const auto id = node.find("id");
+    const std::string node_id =
+        id != node.end() && id->is_string() ? id->get<std::string>() : std::string{};
+    for (std::size_t index = 0; index < keys->size(); ++index) {
+        const auto &key = keys->at(index);
+        if (!key.is_object()) continue;
+        for (const bool is_out : {true, false}) {
+            const char *name = is_out ? "out_handle" : "in_handle";
+            const auto found = key.find(name);
+            if (found == key.end()) continue;
+            const auto parameter = "keys[" + std::to_string(index) + "]." + name;
+            const auto refuse = [&](const char *reason) -> void {
+                OrderedJson detail{{"node", node_id},
+                                   {"op", op},
+                                   {"parameter", parameter},
+                                   {"expected", "array"},
+                                   {"reason", reason}};
+                throw GraphRegistryError("graph.render_node_parameter_invalid@1",
+                                         Json::parse(detail.dump()));
+            };
+            if (!found->is_array() || found->size() != 2 || !(*found)[0].is_number() ||
+                !(*found)[1].is_number())
+                refuse("type");
+            const double dt = (*found)[0].get<double>();
+            if (!std::isfinite(dt) || !std::isfinite((*found)[1].get<double>())) refuse("type");
+            if (is_out ? dt < 0.0 : dt > 0.0) refuse("range");
+        }
     }
 }
 
