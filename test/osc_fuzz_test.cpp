@@ -17,6 +17,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 using namespace Pelican;
@@ -270,6 +271,33 @@ TEST_CASE("OSC parser and receive randomized short sanitizer fuzz", "[osc-fuzz-s
 }
 TEST_CASE("OSC parser and receive randomized long sanitizer fuzz", "[osc-fuzz-long][.]") {
     runFuzz(countFromEnv(true), seedFromEnv());
+}
+
+TEST_CASE("OSC receive and binding swaps are thread safe", "[tsan1]") {
+    auto &live = GET_MODULE(LiveInputs);
+    live.setDeclarationJson(declarations);
+    OscInput input;
+    Osc::OscBinding binding;
+    binding.address = "/level";
+    binding.input = "level";
+    std::vector<Osc::OscBinding> bindings{binding};
+    input.setBindings(bindings);
+    auto packet = message("/level", ",f");
+    putU32(packet, std::bit_cast<std::uint32_t>(1.0f));
+
+    std::thread writer([&] {
+        for (int i = 0; i < 1000; ++i) {
+            input.receive(packet, 0);
+            if ((i % 10) == 0) input.setBindings(bindings);
+        }
+    });
+    for (int i = 0; i < 1000; ++i) {
+        live.freeze(false, static_cast<std::uint64_t>(i));
+        const auto frozen = live.frozenInputs();
+        CHECK(frozen.find("live:level") != frozen.end());
+        CHECK(input.snapshotJson().at("recent").size() <= 64);
+    }
+    writer.join();
 }
 
 TEST_CASE("OSC fuzz regression: empty input", "[osc-fuzz]") {

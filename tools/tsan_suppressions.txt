@@ -1,0 +1,6 @@
+# Third-party NVIDIA driver and Vulkan loader reports only.
+# Never add a suppression matching src/.
+race:libnvidia
+race:nvidia
+race:libGLX_nvidia
+race:libvulkan

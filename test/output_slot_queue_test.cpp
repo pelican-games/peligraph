@@ -3,6 +3,7 @@
 #include <catch2/catch_test_macros.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -157,6 +158,43 @@ TEST_CASE("VO-2 ready entries discard after a stop without touching sending",
     CHECK(queue.state(2) == OutputSlotState::cpu_ready);
     CHECK(queue.framesDiscarded() == 1);
     CHECK(frames(queue) == std::vector<std::uint64_t>{2});
+}
+
+TEST_CASE("VO-2 queue producer worker and status reader are thread safe", "[tsan1]") {
+    OutputSlotQueue queue;
+    std::mutex mutex;
+    std::atomic<bool> done = false;
+
+    std::thread producer([&] {
+        for (std::uint64_t frame = 0; frame < 2000; ++frame) {
+            std::lock_guard lock{mutex};
+            while (queue.capture(frame, 1, false).choice ==
+                   OutputCaptureChoice::full) {
+                for (std::size_t slot = 0; slot < Pelican::output_slot_count; ++slot) {
+                    if (queue.markCpuReady(slot) && queue.markSending(slot))
+                        REQUIRE(queue.finish(slot));
+                }
+            }
+        }
+    });
+    std::thread reader([&] {
+        while (!done.load(std::memory_order_relaxed)) {
+            std::lock_guard lock{mutex};
+            CHECK(queue.queueDepth() <= Pelican::output_slot_count);
+            CHECK(queue.entries().size() <= Pelican::output_slot_count);
+        }
+    });
+    producer.join();
+    {
+        std::lock_guard lock{mutex};
+        for (std::size_t slot = 0; slot < Pelican::output_slot_count; ++slot) {
+            if (queue.markCpuReady(slot) && queue.markSending(slot))
+                REQUIRE(queue.finish(slot));
+        }
+    }
+    done.store(true, std::memory_order_relaxed);
+    reader.join();
+    CHECK(queue.size() == 0);
 }
 
 TEST_CASE("VO-2 stopped teardown discards queued work without waiting for the producer",
