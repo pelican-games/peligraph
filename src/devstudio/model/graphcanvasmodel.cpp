@@ -652,7 +652,7 @@ void GraphCanvasModel::request(RequestKind kind, std::string method, Json params
 }
 
 void GraphCanvasModel::read(RequestKind kind, std::string method, Json params,
-                            bool full_plan) {
+                            bool full_plan, bool ends_live_hand) {
     const auto id = next_request_++;
     // One slot per kind. Asking again replaces the slot, so the older answer
     // is dropped when it arrives rather than overwriting the newer one.
@@ -662,8 +662,8 @@ void GraphCanvasModel::read(RequestKind kind, std::string method, Json params,
     // RP-1b: record the generation for the plan read at the moment it is
     // sent -- before the commit that caused it can advance any counter, and
     // before a restart can change the engine.
-    reads_.push_back(
-        PendingRequest{id, kind, plan_commit_revision_, engine_epoch_, full_plan});
+    reads_.push_back(PendingRequest{
+        id, kind, plan_commit_revision_, engine_epoch_, full_plan, ends_live_hand});
     requests_.push_back({id, std::move(method), std::move(params)});
 }
 
@@ -777,6 +777,9 @@ void GraphCanvasModel::setConnected(bool connected) {
     // may declare others. A reply still in the air is dropped with reads_.
     live_inputs_.clear();
     live_inputs_requested_ = false;
+    // OSC-3b: a write in the air belongs to the engine that is gone. Its value
+    // is dropped (not re-sent) and its old-generation reply will not match.
+    clearLiveInputWrite();
     vocabulary_asked_ = false;
     // UX-5b: the engine's shader list is its binary's; one that arrived
     // stays, one that did not is asked again when a list is opened.
@@ -867,8 +870,14 @@ void GraphCanvasModel::requestObservation() {
     // status just reported -- so the status has to be the earlier question or
     // every sample would carry the previous tick's clock.
     read(RequestKind::Status, "get_status", Json::object());
+    // OSC-3b: only a read asked for after the hand value's reply may take the
+    // hand value down. A read already in the air when that reply arrived is
+    // about the state before it, and its answer is not allowed to win.
+    const bool ends_hand = live_write_replied_ && !live_write_ &&
+                           !live_write_waiting_;
     read(RequestKind::NodeValues, "get_graph_node_values",
-         instance.empty() ? Json::object() : Json{{"instance", instance}});
+         instance.empty() ? Json::object() : Json{{"instance", instance}}, false,
+         ends_hand);
 }
 
 void GraphCanvasModel::requestLoopReports() {
@@ -994,7 +1003,187 @@ bool GraphCanvasModel::scrub(double time) {
     return true;
 }
 
+
+const GraphCanvasLiveInput *
+GraphCanvasModel::liveInput(std::string_view name) const {
+    for (const auto &input : live_inputs_)
+        if (input.name == name) return &input;
+    return nullptr;
+}
+
+std::optional<double> GraphCanvasModel::liveInputNodeValue(
+    std::string_view scope, std::string_view node) const {
+    const auto *entry = findNode(scope, node);
+    if (entry == nullptr) return std::nullopt;
+    if (text(*entry, "op") != "value.input") return std::nullopt;
+    const auto parameters = entry->find("parameters");
+    if (parameters == entry->end() || !parameters->is_object())
+        return std::nullopt;
+    const auto name = text(*parameters, "name");
+    if (!name.starts_with("live:")) return std::nullopt;
+    const auto *input = liveInput(std::string_view{name}.substr(5));
+    if (input == nullptr) return std::nullopt;
+    // nodeOutputs is the freshness rule in one place: a reply for another
+    // scope, another watched instance, another engine session or an earlier
+    // published generation is no start value at all.
+    const auto *outputs = nodeOutputs(scope, node);
+    if (outputs == nullptr) return std::nullopt;
+    const auto found = outputs->find("value");
+    if (found == outputs->end()) return std::nullopt;
+    if (input->type == "bool") {
+        if (!found->is_boolean()) return std::nullopt;
+        return found->get<bool>() ? 1.0 : 0.0;
+    }
+    if (!found->is_number()) return std::nullopt;
+    const double value = found->get<double>();
+    if (!std::isfinite(value)) return std::nullopt;
+    if (input->type == "int") return std::round(value);
+    return value;
+}
+
+nlohmann::json GraphCanvasModel::typedLiveInputValue(
+    const GraphCanvasLiveInput &input, double value) {
+    if (!std::isfinite(value)) return nlohmann::json{};
+    if (input.type == "bool") return value != 0.0;
+    if (input.type == "int") {
+        // Rounding belongs to the wire type, never to the displayed float.
+        // Clamp the double to the exactly representable JSON integer range
+        // before converting it.
+        constexpr double limit = 9007199254740992.0; // 2^53
+        const double rounded = std::round(std::clamp(value, -limit, limit));
+        return static_cast<std::int64_t>(rounded);
+    }
+    return value;
+}
+
+void GraphCanvasModel::writeLiveInputNow(const GraphCanvasLiveInput &input,
+                                         double value) {
+    live_write_dropped_ = false;
+    auto typed = typedLiveInputValue(input, value);
+    if (typed.is_null()) return;
+    LiveInputWrite write;
+    write.id = next_request_++;
+    write.engine_epoch = engine_epoch_;
+    write.name = input.name;
+    write.value = std::move(typed);
+    write.numeric = value;
+    write.sent_at = std::chrono::steady_clock::now();
+    live_write_ = write;
+    live_write_replied_ = false;
+    live_write_read_after_reply_ = false;
+    live_write_hand_name_ = input.name;
+    live_write_hand_value_ = value;
+    live_write_last_sent_ = write.sent_at;
+    Json params = Json::object();
+    params["values"][input.name] = write.value;
+    requests_.push_back({write.id, "set_live_input", std::move(params)});
+}
+
+bool GraphCanvasModel::sendLiveInput(std::string name, double value) {
+    if (!connected_ || !live_input_writing_supported_) return false;
+    const auto *input = liveInput(name);
+    if (input == nullptr) return false;
+    if (!std::isfinite(value)) return false;
+    if (input->minimum) value = std::max(value, *input->minimum);
+    if (input->maximum) value = std::min(value, *input->maximum);
+    if (input->type == "int") value = std::round(value);
+    if (input->type == "bool") value = value != 0.0 ? 1.0 : 0.0;
+    // The hand value is what the person just asked for, whether or not it can
+    // leave this instant: the band follows the hand, not the pipe.
+    live_write_hand_name_ = name;
+    live_write_hand_value_ = value;
+    if (live_write_) {
+        // One in the air. Only the newest waiting value is worth sending; an
+        // older one has already been overtaken by the hand.
+        LiveInputWrite waiting;
+        waiting.engine_epoch = engine_epoch_;
+        waiting.name = name;
+        waiting.value = typedLiveInputValue(*input, value);
+        waiting.numeric = value;
+        if (waiting.value.is_null()) return false;
+        live_write_waiting_ = std::move(waiting);
+        return true;
+    }
+    writeLiveInputNow(*input, value);
+    return true;
+}
+
+void GraphCanvasModel::clearLiveInputWrite() {
+    live_write_.reset();
+    live_write_waiting_.reset();
+    live_write_replied_ = false;
+    live_write_read_after_reply_ = false;
+    live_write_hand_name_.clear();
+    live_write_refusal_.clear();
+}
+
+void GraphCanvasModel::failLiveInputWrite(std::string message) {
+    // A refused hand value is not an edit refusal: it changes no document and
+    // there is nothing to retry. Say the engine's sentence once, let the band
+    // return to the next read, and end the gesture (the scene sees the code).
+    live_write_refusal_ = std::move(message);
+    edit_notice_ = {InspectorNoticeKind::Error, live_write_refusal_};
+    live_write_.reset();
+    live_write_waiting_.reset();
+    live_write_replied_ = false;
+    live_write_read_after_reply_ = false;
+    live_write_hand_name_.clear();
+    ++report_revision_;
+}
+
+std::string GraphCanvasModel::takeLiveInputRefusal() {
+    return std::exchange(live_write_refusal_, {});
+}
+
+bool GraphCanvasModel::liveInputHandHolds(std::string_view name) const {
+    if (name.empty() || name != live_write_hand_name_) return false;
+    const auto since =
+        std::chrono::steady_clock::now() - live_write_last_sent_;
+    // At least half a second of the hand value, whatever the engine says in
+    // the meantime: a value that flicked away under the fingers reads as a
+    // broken control, not as a fast one.
+    if (since < std::chrono::milliseconds{500}) return true;
+    // Then until a Live read asked for after this send's reply has arrived.
+    // A reply still due keeps the hand until its two-second drop; an older
+    // read never wins. During the initial 500 ms an OSC value is deliberately
+    // hidden by this hand value, so the band cannot flicker under the pointer.
+    return live_write_.has_value() ||
+           (live_write_replied_ && !live_write_read_after_reply_);
+}
+
+std::optional<double> GraphCanvasModel::liveInputHandValue(
+    std::string_view name) const {
+    if (!liveInputHandHolds(name)) return std::nullopt;
+    return live_write_hand_value_;
+}
+
+void GraphCanvasModel::pollLiveInputWrite() {
+    const auto now = std::chrono::steady_clock::now();
+    if (live_write_ && now - live_write_->sent_at > std::chrono::seconds{2}) {
+        // No reply is a drop, not a reason to block: forget this value and the
+        // one waiting behind it. Nothing is re-sent to what may be a new
+        // engine, and the hand goes back to the last read.
+        live_write_.reset();
+        live_write_waiting_.reset();
+        live_write_replied_ = false;
+        live_write_read_after_reply_ = false;
+        live_write_hand_name_.clear();
+        live_write_dropped_ = true;
+    }
+    if (!live_write_ && live_write_waiting_) {
+        auto waiting = std::move(*live_write_waiting_);
+        live_write_waiting_.reset();
+        if (waiting.engine_epoch != engine_epoch_) return;
+        if (const auto *input = liveInput(waiting.name))
+            writeLiveInputNow(*input, waiting.numeric);
+    }
+}
+
 void GraphCanvasModel::poll() {
+    // OSC-3b: the hand value is beside the document reads but not among them;
+    // it uses the same clock to drop a reply that never comes and to send the
+    // one value waiting behind a reply.
+    pollLiveInputWrite();
     // UX-5d (EL-4c): a list the engine is still building is asked for again.
     if (engine_shaders_again_at_ && connected_ && !engine_shaders_known_ &&
         std::chrono::steady_clock::now() >= *engine_shaders_again_at_) {
@@ -1073,6 +1262,13 @@ void GraphCanvasModel::receiveRpcFailure(std::uint64_t id, std::string message) 
     }
     // EL-5s: get_shader_interface has slots of its own.
     if (takeShaderInterfaceReply(id, nullptr, message)) return;
+    // OSC-3b: a hand value's refusal is not the document's. The engine code
+    // is shown once and the gesture ends; nothing is retried, and the write
+    // slot never joins the edit pending slot.
+    if (live_write_ && live_write_->id == id) {
+        failLiveInputWrite(std::move(message));
+        return;
+    }
     // GL-1: a folded view on screen stands aside while the reply is read.
     const FoldedSuspend suspend{*this};
     if (const auto pending = takeRead(id)) {
@@ -1158,6 +1354,22 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
     }
     // GL-1: a folded view on screen stands aside while the reply is read,
     // and is built again from what the reply left.
+    if (live_write_ && live_write_->id == id) {
+        // The value is now the engine's. Keep the hand until a Live read
+        // asked for after this reply arrives; a newer value waiting behind
+        // this one goes now, so the pipe never holds more than one.
+        live_write_.reset();
+        live_write_replied_ = true;
+        live_write_read_after_reply_ = false;
+        if (live_write_waiting_) {
+            auto waiting = std::move(*live_write_waiting_);
+            live_write_waiting_.reset();
+            if (waiting.engine_epoch == engine_epoch_)
+                if (const auto *input = liveInput(waiting.name))
+                    writeLiveInputNow(*input, waiting.numeric);
+        }
+        return;
+    }
     const FoldedSuspend suspend{*this};
     if (const auto slot = takeRead(id)) {
         const auto pending = *slot;
@@ -1330,7 +1542,31 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                         const auto type = text(entry, "type");
                         if (name.empty() || type.empty()) continue;
                         if (type != "float" && type != "int" && type != "bool") continue;
-                        inputs.push_back(GraphCanvasLiveInput{name, type});
+                        GraphCanvasLiveInput input;
+                        input.name = name;
+                        input.type = type;
+                        // OSC-3b: the range the knob maps the band's width
+                        // across, and the value Reset to Default sends. An
+                        // undeclared bound stays absent, never zero.
+                        const auto read_bound = [&entry](const char *key)
+                            -> std::optional<double> {
+                            const auto found = entry.find(key);
+                            if (found == entry.end() || !found->is_number())
+                                return std::nullopt;
+                            const double value = found->get<double>();
+                            if (!std::isfinite(value)) return std::nullopt;
+                            return value;
+                        };
+                        input.minimum = read_bound("min");
+                        input.maximum = read_bound("max");
+                        if (const auto found = entry.find("default");
+                            found != entry.end()) {
+                            if (found->is_boolean())
+                                input.default_value = found->get<bool>() ? 1.0 : 0.0;
+                            else if (found->is_number())
+                                input.default_value = found->get<double>();
+                        }
+                        inputs.push_back(std::move(input));
                     }
                 }
                 live_inputs_ = std::move(inputs);
@@ -1368,6 +1604,12 @@ void GraphCanvasModel::receiveRpcResult(std::uint64_t id, std::string_view json)
                                        ? animation->value("sinks", Json::array())
                                        : Json::array();
             } else if (pending.kind == RequestKind::NodeValues) {
+                // OSC-3b: this read was asked for after the hand value's
+                // reply, so its answer ends the hand-over. A read already in
+                // the air when that reply arrived has the flag clear: its
+                // older picture is not allowed to win.
+                if (pending.ends_live_hand && live_write_replied_)
+                    live_write_read_after_reply_ = true;
                 // The reply names what it answered for. A scope change in
                 // flight means the answer in hand is about the other scope,
                 // and a value drawn against the wrong node list is worse than
@@ -2356,9 +2598,15 @@ std::vector<GraphCanvasNode> GraphCanvasModel::nodes(std::string_view scope) con
         if (const auto *outputs = nodeOutputs(scope, drawn.id))
             for (auto &output : drawn.outputs) {
                 const auto found = outputs->find(output.port);
-                if (found == outputs->end() || !found->is_number()) continue;
-                output.has_value = true;
-                output.value = found->get<double>();
+                if (found == outputs->end()) continue;
+                if (found->is_number()) {
+                    output.has_value = true;
+                    output.value = found->get<double>();
+                } else if (found->is_boolean() && drawn.op == "value.input" &&
+                           liveInputNodeValue(scope, drawn.id).has_value()) {
+                    output.has_value = true;
+                    output.value = found->get<bool>() ? 1.0 : 0.0;
+                }
             }
         result.push_back(std::move(drawn));
     }

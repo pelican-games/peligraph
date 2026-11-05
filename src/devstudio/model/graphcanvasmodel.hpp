@@ -1013,6 +1013,13 @@ struct GraphCanvasCurveKey {
 struct GraphCanvasLiveInput {
     std::string name;
     std::string type;
+    // OSC-3b: the declared range, when the declaration named one. An absent
+    // bound is not zero; bool inputs never have either.
+    std::optional<double> minimum;
+    std::optional<double> maximum;
+    // In the input's own type: a double for float, an integer-valued double
+    // for int, 0/1 for bool.
+    double default_value = 0.0;
 
     bool operator==(const GraphCanvasLiveInput &) const = default;
 };
@@ -1066,6 +1073,9 @@ class GraphCanvasModel {
         // OSC-3a: get_live_inputs, the declared live inputs a value.input
         // dialog offers. Asked once alongside the catalog.
         LiveInputs,
+        // OSC-3b: set_live_input, a hand value for a declared input. Not an
+        // edit: it has its own slot and never joins pending_/busy().
+        LiveInputWrite,
     };
     struct PendingRequest {
         std::uint64_t id = 0;
@@ -1080,6 +1090,9 @@ class GraphCanvasModel {
         // follow or a drawn-material follow. Only the full plan is handed to
         // the Frame Plan; the follow-up reads are the Graph's own.
         bool full_plan = false;
+        // OSC-3b: this node-values read was asked for after the last hand
+        // value's reply arrived, so its answer may take the hand value down.
+        bool ends_live_hand = false;
     };
 
     bool connected_ = false;
@@ -1126,6 +1139,35 @@ class GraphCanvasModel {
     // the engine has none, is too old to answer, or answered badly.
     std::vector<GraphCanvasLiveInput> live_inputs_;
     bool live_inputs_requested_ = false;
+    bool live_input_writing_supported_ = true;
+    // OSC-3b: the send beside that read. One in the air, at most one waiting;
+    // ids are kept separately from reads_ and pending_ because this is not an
+    // edit and must not make the canvas busy. Timestamps are steady_clock:
+    // the 500 ms hand-over and the 2 s drop are wall-independent.
+    struct LiveInputWrite {
+        std::uint64_t id = 0;
+        std::uint64_t engine_epoch = 0;
+        std::string name;
+        nlohmann::json value;
+        double numeric = 0.0;
+        std::chrono::steady_clock::time_point sent_at;
+    };
+    std::optional<LiveInputWrite> live_write_;
+    std::optional<LiveInputWrite> live_write_waiting_;
+    std::chrono::steady_clock::time_point live_write_last_sent_{};
+    bool live_write_replied_ = false;
+    bool live_write_dropped_ = false;
+    // A NodeValues read requested after that reply arrived; its answer ends
+    // the hand-over whatever value it carries (an older read never wins).
+    bool live_write_read_after_reply_ = false;
+    std::string live_write_hand_name_;
+    double live_write_hand_value_ = 0.0;
+    std::string live_write_refusal_;
+    [[nodiscard]] static nlohmann::json typedLiveInputValue(const GraphCanvasLiveInput &input,
+                                                            double value);
+    void writeLiveInputNow(const GraphCanvasLiveInput &input, double value);
+    void clearLiveInputWrite();
+    void failLiveInputWrite(std::string message);
     // op -> catalog entry, flattened across modules.
     nlohmann::json operations_ = nlohmann::json::object();
     // semantic type id -> type schema, flattened the same way. The sockets are
@@ -1545,7 +1587,7 @@ class GraphCanvasModel {
 
     void request(RequestKind kind, std::string method, nlohmann::json params);
     void read(RequestKind kind, std::string method, nlohmann::json params,
-              bool full_plan = false);
+              bool full_plan = false, bool ends_live_hand = false);
     // Take the pending read this id belongs to, if any. A reply whose slot has
     // already been replaced by a newer question of the same kind is dropped.
     std::optional<PendingRequest> takeRead(std::uint64_t id);
@@ -3084,6 +3126,49 @@ class GraphCanvasModel {
     [[nodiscard]] const std::vector<GraphCanvasLiveInput> &liveInputs() const noexcept {
         return live_inputs_;
     }
+    // OSC-3b: the declared input `name` (without the "live:" prefix), or null
+    // before the reply and after one this engine could not give.
+    [[nodiscard]] const GraphCanvasLiveInput *liveInput(std::string_view name) const;
+    // OSC-3b: the latest typed value get_graph_node_values reported for
+    // `node`'s `value` output, when that node is a value.input reading a
+    // declared live input in `scope`. This is the start of a knob: not the
+    // band's text, and not the get_live_inputs snapshot taken at connection.
+    // Null while no Live read has arrived for this scope and connection.
+    [[nodiscard]] std::optional<double> liveInputNodeValue(std::string_view scope,
+                                                           std::string_view node) const;
+    // OSC-3b: queue one hand value for set_live_input. One request is in the
+    // air at a time; a value asked for while one is out waits, and a later one
+    // replaces it, so a drag never builds a queue. The request is not an edit:
+    // it touches no digest, no dirty flag and no Undo. False when there is no
+    // engine connection to send it to.
+    bool sendLiveInput(std::string name, double value);
+    [[nodiscard]] bool liveInputWritingSupported() const noexcept {
+        return live_input_writing_supported_;
+    }
+    void setLiveInputWritingSupported(bool supported) noexcept {
+        live_input_writing_supported_ = supported;
+        if (!supported) clearLiveInputWrite();
+    }
+    // OSC-3b: called by the canvas clock. Drops a request with no reply after
+    // two seconds (the value is not re-sent), sends the waiting value once the
+    // one in the air is answered, and notices a refused value once.
+    void pollLiveInputWrite();
+    [[nodiscard]] bool liveInputWriteInFlight() const noexcept {
+        return live_write_.has_value();
+    }
+    [[nodiscard]] bool liveInputWriteDropped() const noexcept {
+        return live_write_dropped_;
+    }
+    // The engine's code for a refused set_live_input, once. An error on this
+    // path is not an edit's refusal and never ends in a retry.
+    std::string takeLiveInputRefusal();
+    // True while the value this session last sent for `name` should stay on
+    // the band: for at least 500 ms after the send, and until a Live read
+    // requested after that send's reply has arrived. A dropped connection or
+    // a timed-out request ends it.
+    [[nodiscard]] bool liveInputHandHolds(std::string_view name) const;
+    // The value to show while liveInputHandHolds(name): the last one sent.
+    [[nodiscard]] std::optional<double> liveInputHandValue(std::string_view name) const;
 
     // --- UX-12a (engine CT-3): a node's fields from the catalog's table.
 

@@ -177,6 +177,9 @@ class GraphCanvasScene final : public QGraphicsScene {
     std::function<void()> selectionChanged;
     // A gesture produced an edit: the owner has to drain the model's requests.
     std::function<void()> editSubmitted;
+    // OSC-3b: a hand value was queued (or a refusal answered); post what the
+    // model built without calling it an edit.
+    std::function<void()> liveInputSent;
     // The canvas was right-clicked at this scene position; the owner opens the
     // palette. The scene keeps the position so the new node lands there.
     std::function<void(const QPointF &)> addNodeRequested;
@@ -499,8 +502,12 @@ class GraphCanvasScene final : public QGraphicsScene {
     // moves nothing at all. The owner waits, the same way it waits for an
     // in-place editor to close.
     [[nodiscard]] bool dragging() const {
-        return handling_press_ || pending_connection_.has_value() || layer_drag_.has_value() ||
+        return handling_press_ || pending_connection_.has_value() ||
+               layer_drag_.has_value() || live_knob_drag_.has_value() ||
                tie_gesture_.has_value() || mouseGrabberItem() != nullptr;
+    }
+    [[nodiscard]] bool liveKnobActive() const noexcept {
+        return live_knob_drag_.has_value();
     }
     // What the open editor currently holds, and a way to set it without a
     // keyboard: the same text the user would have typed.
@@ -642,6 +649,9 @@ class GraphCanvasScene final : public QGraphicsScene {
         node_pick_observer_ = std::move(observer);
     }
     [[nodiscard]] bool handlingPress() const noexcept { return handling_press_; }
+    // OSC-3b: the canvas lost keyboard focus. A hand value in the middle of a
+    // drag stays where it was last sent; the gesture ends without restoring.
+    void endLiveKnobFocusLost();
 
   protected:
     bool handling_press_ = false;
@@ -850,6 +860,7 @@ class GraphCanvasScene final : public QGraphicsScene {
         std::string input;
         std::size_t from = 0;
         QPointF press;
+        QPointF last;
         bool moved = false;
         double start = 1.0;
         double value = 1.0;
@@ -863,6 +874,25 @@ class GraphCanvasScene final : public QGraphicsScene {
         std::vector<std::pair<std::size_t, QRectF>> rows;
     };
     std::optional<LayerDrag> layer_drag_;
+    // OSC-3b: one hand on a value.input's live band. It carries the names it
+    // edits, never an item: a redraw during the drag replaces every item, and
+    // the hand then finds the band again by (scope, node, input).
+    struct LiveKnobDrag {
+        std::string scope;
+        std::string node;
+        std::string input;
+        std::string type;
+        std::optional<double> minimum;
+        std::optional<double> maximum;
+        double start = 0.0;
+        double value = 0.0;
+        QPointF press;
+        QPointF last;
+        qreal band_width = 1.0;
+        bool moved = false;
+        bool sent = false;
+    };
+    std::optional<LiveKnobDrag> live_knob_drag_;
     std::optional<LayerPick> picked_layer_;
     std::unique_ptr<GraphCanvasThumbnails> thumbnails_;
     // The line a dragged row, or a line being drawn, says it will land on.
@@ -947,6 +977,26 @@ class GraphCanvasScene final : public QGraphicsScene {
     // A press, a double-click or a key the canvas takes while the model is
     // busy with a stack's edit: only the rows of that stack.
     [[nodiscard]] bool takesWhileBusy(const QPointF &at, bool double_click) const;
+    // OSC-3b: the band under `at` that carries a hand control, and what that
+    // control would edit now. Null when the point is not on such a band.
+    [[nodiscard]] std::optional<GraphCanvasDrawing::GraphCanvasLiveKnob>
+    liveKnobAt(const QPointF &at, QGraphicsItem **band = nullptr) const;
+    // The band drawn now for this hand, and its text child (either may be
+    // gone after a redraw). Null when the node is no longer drawn.
+    [[nodiscard]] QGraphicsPathItem *liveKnobBand(const std::string &scope,
+                                                  const std::string &node) const;
+    void beginLiveKnob(const GraphCanvasDrawing::GraphCanvasLiveKnob &knob, QGraphicsItem &band,
+                       const QPointF &at, double start);
+    void followLiveKnob(const QPointF &at, Qt::KeyboardModifiers modifiers);
+    // `restore` is Esc: the value the press found goes back, best effort.
+    // `lost_focus` ends at the last value already sent.
+    void finishLiveKnob(const QPointF &at, Qt::KeyboardModifiers modifiers,
+                        bool restore, bool lost_focus);
+    void updateLiveKnobVisual();
+    void drawLiveKnobValue(const std::string &scope, const std::string &node,
+                           const std::string &type,
+                           const std::optional<double> &minimum,
+                           const std::optional<double> &maximum, double value);
     // A row of `stack` takes an edit: the model can take one, or the stack's
     // own shape is in the air (and the stack is not read only).
     [[nodiscard]] bool layerEditable(const std::string &scope, const std::string &stack) const;

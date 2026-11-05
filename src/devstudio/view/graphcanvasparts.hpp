@@ -39,6 +39,9 @@ inline constexpr int GraphCanvasSocketShapeRole = Qt::UserRole + 3134;
 inline constexpr int GraphCanvasLabelRole = Qt::UserRole + 3135;
 inline constexpr int GraphCanvasValueTextRole = Qt::UserRole + 3136;
 inline constexpr int GraphCanvasValueSourceRole = Qt::UserRole + 3137;
+// OSC-3b: the fill behind a live input's hand control, and the knob dot. The
+// fill carries the fraction it was drawn at so a drag can move it in place.
+inline constexpr int GraphCanvasLiveFillRole = Qt::UserRole + 3168;
 // True on the heading band and on everything drawn inside it. A double-click
 // there renames the node; anywhere else on the node it descends an instance,
 // and one flag keeps that split from depending on which child was hit.

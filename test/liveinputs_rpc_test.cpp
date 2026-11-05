@@ -502,7 +502,7 @@ bool sendOscPhase(std::uint16_t port, float value) {
 } // namespace
 
 TEST_CASE("OSC-1a liveinputs RPC stages a typed live value, freezes it next frame, and publishes it",
-          "[osc1a][liveinputs][rpc][gpu]") {
+          "[osc1a][osc3b][liveinputs][rpc][gpu]") {
     setupLogger(true);
     const TempDir dir{std::filesystem::temp_directory_path() /
                       ("pelican_liveinputs_rpc_" +
@@ -524,10 +524,22 @@ TEST_CASE("OSC-1a liveinputs RPC stages a typed live value, freezes it next fram
     REQUIRE(phase.at("default") == Catch::Approx(0.0));
     REQUIRE(phase.at("source") == "default");
     REQUIRE(phase.at("changed_frame") == 0);
-    REQUIRE(inputNamed(snapshot, "steps").at("type") == "int");
-    REQUIRE(inputNamed(snapshot, "steps").at("value") == 1);
-    REQUIRE(inputNamed(snapshot, "enabled").at("type") == "bool");
-    REQUIRE(inputNamed(snapshot, "enabled").at("value") == false);
+    REQUIRE(phase.at("min").is_number_float());
+    REQUIRE(phase.at("max").is_number_float());
+    REQUIRE(phase.at("min") == Catch::Approx(0.0));
+    REQUIRE(phase.at("max") == Catch::Approx(4.0));
+    auto steps = inputNamed(snapshot, "steps");
+    REQUIRE(steps.at("type") == "int");
+    REQUIRE(steps.at("value") == 1);
+    REQUIRE(steps.at("min").is_number_integer());
+    REQUIRE(steps.at("max").is_number_integer());
+    REQUIRE(steps.at("min") == 0);
+    REQUIRE(steps.at("max") == 8);
+    auto enabled = inputNamed(snapshot, "enabled");
+    REQUIRE(enabled.at("type") == "bool");
+    REQUIRE(enabled.at("value") == false);
+    CHECK_FALSE(enabled.contains("min"));
+    CHECK_FALSE(enabled.contains("max"));
 
     // Freeze a stable baseline: a paused frame whose game time does not move.
     REQUIRE(rpc.result("set_play_state", {{"state", "paused"}}) ==
@@ -583,11 +595,11 @@ TEST_CASE("OSC-1a liveinputs RPC stages a typed live value, freezes it next fram
                        {{"values", {{"steps", 99}, {"enabled", true}}}}).at("accepted") == 2);
     (void)rpc.result("step_frame");
     snapshot = rpc.result("get_live_inputs");
-    const auto steps = inputNamed(snapshot, "steps");
+    steps = inputNamed(snapshot, "steps");
     REQUIRE(steps.at("value").is_number_integer());
     REQUIRE(steps.at("value") == 8);
     REQUIRE(steps.at("clamped") == true);
-    const auto enabled = inputNamed(snapshot, "enabled");
+    enabled = inputNamed(snapshot, "enabled");
     REQUIRE(enabled.at("value").is_boolean());
     REQUIRE(enabled.at("value") == true);
 

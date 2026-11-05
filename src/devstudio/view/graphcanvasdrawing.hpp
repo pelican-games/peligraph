@@ -133,6 +133,33 @@ struct BodyState {
     std::optional<nlohmann::json> layer_shape_parameters;
 };
 
+// OSC-3b: the hand control a value.input reading a declared live input gets
+// on its value band. Values only, like everything else prepared for a draw.
+struct GraphCanvasLiveKnob {
+    std::string input;
+    std::string type;
+    std::optional<double> minimum;
+    std::optional<double> maximum;
+    double default_value = 0.0;
+    double value = 0.0;
+    bool hand = false;
+
+    [[nodiscard]] bool boolean() const noexcept { return type == "bool"; }
+};
+
+// OSC-3b: the knob this node has now, or null. The gates live here so the
+// draw and the hit test cannot disagree: a value.input named live:<x>, x
+// declared by this engine, a float/int/bool, an editable scope, Live on, a
+// range that is not a single point, and a typed value from the latest Live
+// read (or the hand value still showing) to start from.
+[[nodiscard]] std::optional<GraphCanvasLiveKnob>
+graphCanvasLiveKnob(const GraphCanvasModel &model, std::string_view scope,
+                    const GraphCanvasNode &node);
+// The band's words for a knob's current value. An int has no decimal point, a
+// bool says true/false, and a float keeps three significant digits away from a
+// declared range (six inside one). Display rounding never reaches the RPC.
+[[nodiscard]] QString liveKnobText(const GraphCanvasLiveKnob &knob, double value);
+
 // Borrowed from the model's node snapshot for the duration of one rebuild.
 // No graphics item or callback retains this drawing data.
 struct Node {
@@ -151,6 +178,9 @@ struct Node {
     // SDK-1b: what the body prepared for this node (none: the body had
     // nothing to prepare). A canvas.stack's is a LayerStackData.
     std::shared_ptr<const NodeBodyData> body_data;
+    // OSC-3b: the hand control on the `value` output band, when this node has
+    // one. `outputs` carries the words it shows.
+    std::optional<GraphCanvasLiveKnob> live_knob;
 
     // The heading alone: the old folded node.
     [[nodiscard]] bool minimal() const noexcept { return view == GraphCanvasNodeView::minimal; }

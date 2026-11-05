@@ -2051,7 +2051,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 default_value = input.spec.default_value != 0.0;
                 break;
             }
-            inputs.push_back(nlohmann::json{
+            nlohmann::json entry{
                 {"name", input.spec.name},
                 {"type", liveInputTypeName(input.spec.type)},
                 {"value", std::move(value)},
@@ -2059,7 +2059,22 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 {"source", liveInputSourceName(input.source)},
                 {"changed_frame", input.changed_frame},
                 {"clamped", input.clamped},
-            });
+            };
+            // OSC-3b: a declared bound travels in the input's own type, and
+            // only when it was declared. A bool never has one.
+            if (input.spec.minimum) {
+                entry["min"] = input.spec.type == LiveInputType::integer
+                                   ? nlohmann::json(static_cast<std::int64_t>(
+                                         std::llround(*input.spec.minimum)))
+                                   : nlohmann::json(*input.spec.minimum);
+            }
+            if (input.spec.maximum) {
+                entry["max"] = input.spec.type == LiveInputType::integer
+                                   ? nlohmann::json(static_cast<std::int64_t>(
+                                         std::llround(*input.spec.maximum)))
+                                   : nlohmann::json(*input.spec.maximum);
+            }
+            inputs.push_back(std::move(entry));
         }
         nlohmann::json result{
             {"inputs", std::move(inputs)},

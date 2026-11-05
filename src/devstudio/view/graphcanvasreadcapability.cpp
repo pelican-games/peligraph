@@ -39,6 +39,11 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
             return viewport.requestRpc(
                 QStringLiteral("get_live_inputs"), QJsonObject{}, error);
         },
+        .requestSetLiveInput = [&viewport](const QJsonObject &params,
+                                           QString *error) {
+            return viewport.requestRpc(QStringLiteral("set_live_input"),
+                                       params, error);
+        },
         .requestGraphValues = [&viewport](const QString &instance,
                                           QString *error) {
             return viewport.requestRpc(

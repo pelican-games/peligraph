@@ -55,6 +55,7 @@
 #include <QFontMetrics>
 #include <QFormLayout>
 #include <QApplication>
+#include <QGraphicsEllipseItem>
 #include <QGraphicsLineItem>
 #include <QGraphicsPathItem>
 #include <QGraphicsPolygonItem>
@@ -101,6 +102,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <fstream>
 #include <functional>
 #include <iterator>
@@ -137,6 +139,9 @@ void setClippedLabelText(QLabel *label, const QString &text) {
     label->setAccessibleDescription(text);
 }
 
+using GraphCanvasDrawing::GraphCanvasLiveKnob;
+using GraphCanvasDrawing::graphCanvasLiveKnob;
+using GraphCanvasDrawing::liveKnobText;
 using GraphCanvasDrawing::numberText;
 using GraphCanvasDrawing::portSummary;
 
@@ -4522,6 +4527,278 @@ void GraphCanvasScene::finishConnection(const QPointF &position) {
     afterEdit(model_->disconnectInput(pending.scope, pending.node, pending.port));
 }
 
+
+std::optional<GraphCanvasLiveKnob>
+GraphCanvasScene::liveKnobAt(const QPointF &at, QGraphicsItem **band_out) const {
+    if (model_ == nullptr) return std::nullopt;
+    for (QGraphicsItem *hit : items(at)) {
+        QGraphicsPathItem *band = nullptr;
+        for (QGraphicsItem *walk = hit; walk != nullptr;
+             walk = walk->parentItem()) {
+            if (nodeGraphItemKind(*walk) !=
+                QLatin1String{GraphCanvasValueBandItem})
+                continue;
+            auto *path = dynamic_cast<QGraphicsPathItem *>(walk);
+            if (path != nullptr &&
+                !path->data(GraphCanvasValueTextRole).toString().isEmpty()) {
+                band = path;
+                break;
+            }
+        }
+        if (band == nullptr) continue;
+        const std::string scope =
+            band->data(GraphCanvasScopeRole).toString().toStdString();
+        const std::string node =
+            band->data(NodeGraphNameRole).toString().toStdString();
+        if (band->data(GraphCanvasPortRole).toString() !=
+            QLatin1String{"value"})
+            continue;
+        const auto nodes = model_->nodes(scope);
+        const auto found =
+            std::ranges::find(nodes, node, &GraphCanvasNode::id);
+        if (found == nodes.end()) return std::nullopt;
+        auto knob = graphCanvasLiveKnob(*model_, scope, *found);
+        if (knob) {
+            if (band_out != nullptr) *band_out = band;
+            return knob;
+        }
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+QGraphicsPathItem *GraphCanvasScene::liveKnobBand(
+    const std::string &scope, const std::string &node) const {
+    for (QGraphicsItem *item : items()) {
+        if (nodeGraphItemKind(*item) !=
+            QLatin1String{GraphCanvasValueBandItem})
+            continue;
+        auto *band = dynamic_cast<QGraphicsPathItem *>(item);
+        if (band == nullptr ||
+            band->data(GraphCanvasValueTextRole).toString().isEmpty())
+            continue;
+        if (band->data(GraphCanvasScopeRole).toString() != qtext(scope) ||
+            band->data(NodeGraphNameRole).toString() != qtext(node) ||
+            band->data(GraphCanvasPortRole).toString() !=
+                QLatin1String{"value"})
+            continue;
+        return band;
+    }
+    return nullptr;
+}
+
+void GraphCanvasScene::beginLiveKnob(const GraphCanvasLiveKnob &knob,
+                                     QGraphicsItem &band,
+                                     const QPointF &at, double start) {
+    LiveKnobDrag drag;
+    drag.scope = band.data(GraphCanvasScopeRole).toString().toStdString();
+    drag.node = band.data(NodeGraphNameRole).toString().toStdString();
+    drag.input = knob.input;
+    drag.type = knob.type;
+    drag.minimum = knob.minimum;
+    drag.maximum = knob.maximum;
+    drag.start = start;
+    drag.value = start;
+    drag.press = at;
+    drag.last = at;
+    // Pointer deltas and this width are both scene coordinates; the node's
+    // output rows may be scaled to fit its body.
+    drag.band_width =
+        std::max<qreal>(1.0, band.sceneBoundingRect().width());
+    live_knob_drag_ = std::move(drag);
+}
+
+void GraphCanvasScene::drawLiveKnobValue(
+    const std::string &scope, const std::string &node, const std::string &type,
+    const std::optional<double> &minimum, const std::optional<double> &maximum,
+    double value) {
+    QGraphicsPathItem *band = liveKnobBand(scope, node);
+    if (band == nullptr) return;
+    GraphCanvasLiveKnob knob;
+    knob.input = node;
+    knob.type = type;
+    knob.minimum = minimum;
+    knob.maximum = maximum;
+    knob.value = value;
+    const QString text = liveKnobText(knob, value);
+    QGraphicsSimpleTextItem *label = nullptr;
+    QGraphicsPathItem *fill = nullptr;
+    QGraphicsEllipseItem *dot = nullptr;
+    for (QGraphicsItem *child : band->childItems()) {
+        if (auto *simple = dynamic_cast<QGraphicsSimpleTextItem *>(child)) {
+            if (!child->data(GraphCanvasValueTextRole).toString().isEmpty())
+                label = simple;
+        } else if (auto *path = dynamic_cast<QGraphicsPathItem *>(child)) {
+            if (child->data(GraphCanvasLiveFillRole).isValid())
+                fill = path;
+        } else if (auto *ellipse = dynamic_cast<QGraphicsEllipseItem *>(child)) {
+            dot = ellipse;
+        }
+    }
+    const qreal height = band->path().boundingRect().height();
+    if (label != nullptr) {
+        label->setText(text);
+        label->setData(GraphCanvasValueTextRole, text);
+        band->setData(GraphCanvasValueTextRole, text);
+        const QFontMetricsF metrics{label->font()};
+        const qreal width =
+            std::max<qreal>(1.0, metrics.horizontalAdvance(text) + 14.0);
+        label->setPos(7.0, (height - metrics.height()) / 2.0);
+        band->setPath(roundedEntityPath(width, height, height / 2.0));
+    }
+    const qreal width = std::max<qreal>(1.0, band->path().boundingRect().width());
+    const bool bounded = minimum && maximum;
+    qreal knob_x = width - 7.0;
+    if (type == "bool") {
+        knob_x = value != 0.0 ? width - 7.0 : 7.0;
+    } else if (bounded) {
+        const double span = *maximum - *minimum;
+        const double fraction =
+            span == 0.0
+                ? 0.0
+                : std::clamp((value - *minimum) / span, 0.0, 1.0);
+        knob_x = 7.0 + fraction * (width - 14.0);
+        if (fill != nullptr) {
+            QPainterPath full;
+            full.addRect(0.0, 0.0, width, height);
+            QPainterPath clip;
+            clip.addRect(0.0, 0.0, width * fraction, height);
+            fill->setPath(full.intersected(clip));
+        }
+    }
+    if (dot != nullptr) dot->setPos(knob_x, height / 2.0);
+}
+
+void GraphCanvasScene::updateLiveKnobVisual() {
+    if (!live_knob_drag_ || model_ == nullptr) return;
+    const LiveKnobDrag &drag = *live_knob_drag_;
+    const std::string live_name = "live:" + drag.input;
+    for (QGraphicsItem *item : items()) {
+        if (nodeGraphItemKind(*item) !=
+            QLatin1String{GraphCanvasValueBandItem})
+            continue;
+        auto *band = dynamic_cast<QGraphicsPathItem *>(item);
+        if (band == nullptr ||
+            band->data(GraphCanvasValueTextRole).toString().isEmpty() ||
+            band->data(GraphCanvasPortRole).toString() != QLatin1String{"value"})
+            continue;
+        const std::string scope =
+            band->data(GraphCanvasScopeRole).toString().toStdString();
+        const std::string id =
+            band->data(NodeGraphNameRole).toString().toStdString();
+        const auto nodes = model_->nodes(scope);
+        const auto found = std::ranges::find(nodes, id, &GraphCanvasNode::id);
+        if (found == nodes.end()) continue;
+        const auto name = found->parameters.find("name");
+        if (found->op == "value.input" && name != found->parameters.end() &&
+            name->is_string() && name->get<std::string>() == live_name)
+            drawLiveKnobValue(scope, id, drag.type, drag.minimum,
+                              drag.maximum, drag.value);
+    }
+}
+
+void GraphCanvasScene::followLiveKnob(const QPointF &at,
+                                      Qt::KeyboardModifiers modifiers) {
+    if (!live_knob_drag_ || model_ == nullptr) return;
+    if (live_knob_drag_->sent && model_->liveInputWriteDropped()) {
+        live_knob_drag_.reset();
+        return;
+    }
+    LiveKnobDrag &drag = *live_knob_drag_;
+    // The band is found again every move: a repopulate may have replaced the
+    // item under the hand, and the hand goes on by its names.
+    if (liveKnobBand(drag.scope, drag.node) == nullptr) {
+        live_knob_drag_.reset();
+        return;
+    }
+    const QPointF delta = at - drag.press;
+    if (!drag.moved &&
+        std::hypot(delta.x(), delta.y()) < 4.0)
+        return;
+    drag.moved = true;
+    if (drag.type == "bool") return; // A bool is a click, not a drag.
+    const double dx = delta.x();
+    double value = drag.start;
+    if (drag.minimum && drag.maximum) {
+        const double span = *drag.maximum - *drag.minimum;
+        value = drag.start + dx * span / drag.band_width;
+    } else {
+        // One-sided or no bound: the value moves with the hand, away from
+        // zero, in the same sideways measure an unbounded knob has always
+        // used. A declared side still clamps below.
+        value = drag.start + (std::abs(drag.start) + 1.0) * dx / 150.0;
+    }
+    if (modifiers & Qt::ShiftModifier)
+        value = drag.start + (value - drag.start) / 10.0;
+    if (drag.minimum) value = std::max(value, *drag.minimum);
+    if (drag.maximum) value = std::min(value, *drag.maximum);
+    if (drag.type == "int") value = std::round(value);
+    if (!std::isfinite(value)) return;
+    drag.value = value;
+    drag.last = at;
+    updateLiveKnobVisual();
+    if (model_->sendLiveInput(drag.input, value)) {
+        drag.sent = true;
+        if (liveInputSent) liveInputSent();
+    }
+}
+
+void GraphCanvasScene::finishLiveKnob(const QPointF &at,
+                                      Qt::KeyboardModifiers modifiers,
+                                      bool restore, bool lost_focus) {
+    if (!live_knob_drag_ || model_ == nullptr) return;
+    const LiveKnobDrag drag = *live_knob_drag_;
+    if (drag.sent && model_->liveInputWriteDropped()) {
+        live_knob_drag_.reset();
+        return;
+    }
+    if (liveKnobBand(drag.scope, drag.node) == nullptr) {
+        live_knob_drag_.reset();
+        return;
+    }
+    if (restore) {
+        // Esc is a best-effort put-back, not a rollback: the value goes back
+        // through the same one-in-flight path, and an OSC source (or a
+        // connection that dropped) may overwrite or lose it.
+        live_knob_drag_->value = drag.start;
+        updateLiveKnobVisual();
+        if (model_->sendLiveInput(drag.input, drag.start) && liveInputSent)
+            liveInputSent();
+    } else if (!lost_focus) {
+        if (drag.type == "bool") {
+            const QPointF delta = at - drag.press;
+            if (!drag.moved &&
+                std::hypot(delta.x(), delta.y()) < 4.0) {
+                const double toggled = drag.start != 0.0 ? 0.0 : 1.0;
+                live_knob_drag_->value = toggled;
+                updateLiveKnobVisual();
+                if (model_->sendLiveInput(drag.input, toggled) &&
+                    liveInputSent)
+                    liveInputSent();
+            }
+        } else if (drag.moved && at == drag.last) {
+            // A release in place keeps the value the last move computed: a
+            // Shift let go just before the button must not jump the value.
+            // It is still sent again, so the release's value is the last word.
+            if (model_->sendLiveInput(drag.input, drag.value) &&
+                liveInputSent)
+                liveInputSent();
+        } else {
+            // A release somewhere new computes there, Shift included; a
+            // sub-threshold press sends nothing.
+            followLiveKnob(at, modifiers);
+        }
+    }
+    live_knob_drag_.reset();
+}
+
+void GraphCanvasScene::endLiveKnobFocusLost() {
+    if (!live_knob_drag_) return;
+    // Last value sent stays; nothing is restored and no new value goes out.
+    live_knob_drag_.reset();
+    if (gestureEnded) gestureEnded();
+}
+
 void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     // NB-5: while a stack's edit is in the air the canvas stays enabled for
     // that stack's rows alone; any other press is what a disabled canvas
@@ -4545,6 +4822,12 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
         event->accept();
         return;
     }
+    // OSC-3b: a second press while a hand is on a live band belongs to that
+    // hand; it neither starts another gesture nor takes the pick away.
+    if (live_knob_drag_) {
+        event->accept();
+        return;
+    }
     handling_press_ = true;
     press_pick_.reset();
     const auto pressed = qScopeGuard([this] {
@@ -4565,6 +4848,32 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
             }
             if (isNodeSurface(nodeGraphItemKind(*item))) break;
         }
+    // OSC-3b: a live input's band takes the press before the node's own move
+    // does, but only where there is a knob and only for a plain left press.
+    // Alt keeps the old node gesture, Ctrl the old selection.
+    if (event->button() == Qt::LeftButton && model_ != nullptr &&
+        !model_->busy() &&
+        !(event->modifiers() &
+          (Qt::AltModifier | Qt::ControlModifier))) {
+        QGraphicsItem *band = nullptr;
+        if (auto knob = liveKnobAt(event->scenePos(), &band); knob && band) {
+            const std::string scope =
+                band->data(GraphCanvasScopeRole).toString().toStdString();
+            const std::string node =
+                band->data(NodeGraphNameRole).toString().toStdString();
+            // The press starts from the latest typed value of the Graph's
+            // Live read for this node -- not the band's words and not the
+            // connection-time get_live_inputs snapshot. No read yet: no knob
+            // to take.
+            if (const auto start =
+                    model_->liveInputNodeValue(scope, node)) {
+                beginLiveKnob(*knob, *band, event->scenePos(), *start);
+                selectNode(scope, node);
+                event->accept();
+                return;
+            }
+        }
+    }
     // A control point is picked here and then handed to the base class, which
     // is what starts its drag. The node hunt at the bottom must not then take
     // the pick away again.
@@ -4822,6 +5131,11 @@ void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
             return;
         }
     }
+    if (live_knob_drag_) {
+        event->accept();
+        followLiveKnob(event->scenePos(), event->modifiers());
+        return;
+    }
     if (pending_connection_ && pending_edge_ != nullptr) {
         event->accept();
         followCursor(event->scenePos());
@@ -4846,6 +5160,12 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
     }
     // GS-3a: a node drawn again partly waited for the hand on it.
     const auto follow = qScopeGuard([this] { followAfterGesture(); });
+    if (live_knob_drag_) {
+        event->accept();
+        finishLiveKnob(event->scenePos(), event->modifiers(), false, false);
+        if (gestureEnded) gestureEnded();
+        return;
+    }
     if (layer_drag_) {
         event->accept();
         finishLayerDrag(event->scenePos());
@@ -4875,6 +5195,43 @@ bool GraphCanvasScene::showContextMenu(const QPointF &scene_position,
                 return true;
             if (isNodeSurface(nodeGraphItemKind(*item))) break;
         }
+    // OSC-3b: over a live input's band, one entry puts the declared default
+    // back. It sends that value only -- no edit, no layout write, no other
+    // menu entry appears.
+    if (model_ != nullptr && !model_->busy()) {
+        QGraphicsItem *band = nullptr;
+        if (auto knob = liveKnobAt(scene_position, &band); knob && band) {
+            const GraphCanvasLiveKnob picked = *knob;
+            const std::string scope =
+                band->data(GraphCanvasScopeRole).toString().toStdString();
+            const std::string node =
+                band->data(NodeGraphNameRole).toString().toStdString();
+            QMenu reset_menu;
+            QAction *reset = reset_menu.addAction(
+                QObject::tr("Reset to Default"));
+            reset->setObjectName(
+                QStringLiteral("pelican.graphCanvas.resetLiveInput"));
+            QObject::connect(reset, &QAction::triggered, this,
+                             [this, picked, scope, node] {
+                                 if (!model_->sendLiveInput(
+                                         picked.input,
+                                         picked.default_value))
+                                     return;
+                                 double value = picked.default_value;
+                                 if (picked.minimum)
+                                     value = std::max(value, *picked.minimum);
+                                 if (picked.maximum)
+                                     value = std::min(value, *picked.maximum);
+                                 if (picked.type == "int") value = std::round(value);
+                                 drawLiveKnobValue(scope, node, picked.type,
+                                                   picked.minimum,
+                                                   picked.maximum, value);
+                                 if (liveInputSent) liveInputSent();
+                             });
+            reset_menu.exec(screen_position);
+            return true;
+        }
+    }
     // GL-1e, decision 2: a line into a rendering-section pass offers Delete.
     for (QGraphicsItem *item : items(scene_position)) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasPassInputEdgeItem}) continue;
@@ -5851,6 +6208,15 @@ void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
     if (event->key() == Qt::Key_Escape && pending_connection_) {
         clearPendingConnection();
         event->accept();
+        return;
+    }
+    // OSC-3b: Esc ends a hand on a live band and sends the value the press
+    // found, through the ordinary one-in-flight path. It is a best-effort
+    // restore, not a rollback; an OSC source may overwrite it.
+    if (live_knob_drag_ && event->key() == Qt::Key_Escape) {
+        event->accept();
+        finishLiveKnob(live_knob_drag_->press, Qt::NoModifier, true, false);
+        if (gestureEnded) gestureEnded();
         return;
     }
     // NB-5: no Undo, Redo or Delete while a stack's edit is in the air (the
@@ -8302,6 +8668,10 @@ bool GraphCanvasScene::showDecomposed() {
 }
 
 bool GraphCanvasScene::takesWhileBusy(const QPointF &at, bool double_click) const {
+    // OSC-3b: a hand on a live band keeps the canvas for its own move and
+    // release while a stack edit is in the air. A new knob still follows the
+    // ordinary busy rule: the press below does not start one.
+    if (liveKnobActive()) return true;
     if (!layer_shape_) return false;
     for (QGraphicsItem *item : items(at)) {
         const QString kind = nodeGraphItemKind(*item);
@@ -9565,6 +9935,9 @@ struct GraphCanvasWidget::Impl {
         auto *splitter = new QSplitter(Qt::Horizontal, &view);
         scene = new GraphCanvasScene(&view);
         canvas = new NodeCanvasView(scene, splitter);
+        canvas->focusLossAction = [this] {
+            if (scene != nullptr) scene->endLiveKnobFocusLost();
+        };
         canvas->setObjectName(QStringLiteral("pelican.graphCanvasView"));
         const auto historyAction = [&](const QString &label, const QString &name,
                                        QKeySequence::StandardKey key, auto invoke) {
@@ -10273,6 +10646,7 @@ struct GraphCanvasWidget::Impl {
         });
 
         scene->setModel(&model);
+        model.setLiveInputWritingSupported(static_cast<bool>(graph.requestSetLiveInput));
         scene->setEditOrder(&edit_order);
         // GL-3a: the Decisions section stands where the Pass fields do.
         folds = std::make_unique<GraphCanvasFoldController>(
@@ -10328,6 +10702,9 @@ struct GraphCanvasWidget::Impl {
             dispatch();
             showNotice();
         };
+        // OSC-3b: a hand value is posted at once but is not an edit; the
+        // notice and the edit completion path do not hear about it.
+        scene->liveInputSent = [this] { dispatch(); };
         // Q-5: the notice says "Saving" the moment a placement changes, not
         // when the wait before sending it runs out. Only the label: this runs
         // from inside a drag and from inside a rebuild.
@@ -11739,6 +12116,10 @@ struct GraphCanvasWidget::Impl {
                 transport = graph.requestGraphCatalog(&error);
             else if (request.method == "get_live_inputs" && graph.requestLiveInputs)
                 transport = graph.requestLiveInputs(&error);
+            else if (request.method == "set_live_input" &&
+                     graph.requestSetLiveInput)
+                transport = graph.requestSetLiveInput(
+                    exactJsonRpcObject(request.params), &error);
             else if (request.method == "get_graph_values" && graph.requestGraphValues)
                 transport = graph.requestGraphValues(
                     qtext(request.params.value("instance", std::string{})), &error);
@@ -14057,7 +14438,8 @@ struct GraphCanvasWidget::Impl {
         // model that cannot submit them and leave the previous saved notice.
         // NB-5: except for the rows of a stack whose own edit is in the air,
         // which take the next gesture at once (the scene turns the rest away).
-        canvas->setEnabled(!model.busy() || scene->layerEditInFlight());
+        canvas->setEnabled(!model.busy() || scene->layerEditInFlight() ||
+                           scene->liveKnobActive());
         scene->settleLiftedCut();
         const NodeDragTraceSpan heavy_trace{scene, "synchronize_heavy"};
         // GL-3a: the fold groups follow the document the tab holds.
@@ -14335,6 +14717,12 @@ void GraphCanvasWidget::poll() {
     const GuiTraceSpan trace{"graph_poll"};
     impl_->model.poll();
     impl_->dispatch();
+    // OSC-3b: a refused hand value ends the hand where it is; the engine's
+    // sentence is already the notice line and the band falls back to the next
+    // read. Nothing here is an edit refusal and nothing is retried.
+    if (impl_->scene != nullptr &&
+        !impl_->model.takeLiveInputRefusal().empty())
+        impl_->scene->endLiveKnobFocusLost();
 }
 
 bool GraphCanvasWidget::revealPlanPass(const QString &pass) {

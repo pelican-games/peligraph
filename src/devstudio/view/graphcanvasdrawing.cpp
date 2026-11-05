@@ -168,6 +168,54 @@ bool Builder::layerScopeReadOnlyCached(const GraphCanvasModel &model, const std:
     return read_only_scopes_.emplace(scope, layerScopeReadOnly(model, scope)).first->second;
 }
 
+std::optional<GraphCanvasLiveKnob>
+graphCanvasLiveKnob(const GraphCanvasModel &model, std::string_view scope,
+                    const GraphCanvasNode &node) {
+    if (!model.live() || !model.liveInputWritingSupported()) return std::nullopt;
+    if (node.op != "value.input") return std::nullopt;
+    if (layerScopeReadOnly(model, scope)) return std::nullopt;
+    const auto named = node.parameters.find("name");
+    if (named == node.parameters.end() || !named->is_string())
+        return std::nullopt;
+    const std::string name = named->get<std::string>();
+    if (!name.starts_with("live:") || name.size() == 5) return std::nullopt;
+    const auto *input = model.liveInput(std::string_view{name}.substr(5));
+    if (input == nullptr) return std::nullopt;
+    if (input->type != "float" && input->type != "int" &&
+        input->type != "bool")
+        return std::nullopt;
+    if (input->minimum && input->maximum &&
+        *input->minimum == *input->maximum)
+        return std::nullopt;
+    GraphCanvasLiveKnob knob;
+    knob.input = input->name;
+    knob.type = input->type;
+    knob.minimum = input->minimum;
+    knob.maximum = input->maximum;
+    knob.default_value = input->default_value;
+    // A fresh typed Live read is required even while a hand value is held:
+    // the snapshot from connection time is not a knob's starting value.
+    const auto latest = model.liveInputNodeValue(scope, node.id);
+    if (!latest) return std::nullopt;
+    if (const auto hand = model.liveInputHandValue(input->name)) {
+        knob.value = *hand;
+        knob.hand = true;
+        return knob;
+    }
+    knob.value = *latest;
+    return knob;
+}
+
+QString liveKnobText(const GraphCanvasLiveKnob &knob, double value) {
+    if (!std::isfinite(value)) return QStringLiteral("--");
+    if (knob.boolean()) return value != 0.0 ? QStringLiteral("true")
+                                            : QStringLiteral("false");
+    if (knob.type == "int")
+        return QString::number(static_cast<qint64>(std::llround(value)));
+    const int digits = knob.minimum && knob.maximum ? 6 : 3;
+    return QString::number(value, 'g', digits);
+}
+
 Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &node,
                           GraphCanvasNodeView view,
                           const std::set<std::string, std::less<>> &linked_outputs,
@@ -215,6 +263,19 @@ Node Builder::prepareNode(const GraphCanvasModel &model, const GraphCanvasNode &
             socketStyleFor(graphCanvasSocketFacts(model, port.type)),
             rowValue(port), port.connected, port.declared});
         entry.inputs.back().linked = port.connected;
+    }
+
+    // OSC-3b: a value.input reading a live input gets the hand control on its
+    // `value` band. The band's words follow the hand at once, before any
+    // rebuild: the look of one drag must not wait for engine traffic.
+    if (auto knob = graphCanvasLiveKnob(
+            model, scope ? std::string_view{*scope} : std::string_view{},
+            node)) {
+        for (auto &row : entry.outputs) {
+            if (row.port == QStringLiteral("value") && row.value.shown())
+                row.value.text = liveKnobText(*knob, knob->value);
+        }
+        entry.live_knob = std::move(knob);
     }
 
     // The heading's own room: its name and the operation beside it. The body
@@ -347,12 +408,70 @@ void drawRows(Builder &builder, QGraphicsPathItem &item, const Node &entry, qrea
                 band->setPos(10.0, centre_y - band_height / 2.0);
                 band->setBrush(theme.canvas.pill_bg);
                 band->setPen(QPen{theme.canvas.node_border, 0.8});
-                band->setToolTip(
-                    QObject::tr("%1 = %2 in the published generation (rendering)")
-                        .arg(drawn.label, text));
+                const bool hand_control =
+                    entry.live_knob && drawn.port == QStringLiteral("value");
+                if (hand_control) {
+                    // OSC-3b: say what this is, in the band's own words. The
+                    // knob changes the one runtime input every node reading
+                    // it sees, not a value stored in this document.
+                    band->setToolTip(QObject::tr(
+                        "%1 changes the shared runtime input \"%2\" for every "
+                        "node reading it; the document is not edited. Drag "
+                        "sideways, Shift for fine, Esc to put it back.")
+                                         .arg(drawn.label,
+                                              qtext(entry.live_knob->input)));
+                } else {
+                    band->setToolTip(
+                        QObject::tr("%1 = %2 in the published generation (rendering)")
+                            .arg(drawn.label, text));
+                }
                 builder.tagPart(*band, entry, GraphCanvasValueBandItem);
                 band->setData(GraphCanvasPortRole, drawn.port);
                 band->setData(GraphCanvasValueTextRole, text);
+                if (hand_control) {
+                    const GraphCanvasLiveKnob &knob = *entry.live_knob;
+                    const bool bounded =
+                        knob.minimum.has_value() && knob.maximum.has_value();
+                    qreal knob_x = band_width - 7.0;
+                    if (knob.boolean()) {
+                        knob_x = knob.value != 0.0 ? band_width - 7.0 : 7.0;
+                    } else if (bounded) {
+                        const double span = *knob.maximum - *knob.minimum;
+                        const double fraction = span == 0.0
+                                                    ? 0.0
+                                                    : std::clamp(
+                                                          (knob.value -
+                                                           *knob.minimum) /
+                                                              span,
+                                                          0.0, 1.0);
+                        knob_x = 7.0 + fraction * (band_width - 14.0);
+                        auto *fill =
+                            new QGraphicsPathItem(band);
+                        QPainterPath full;
+                        full.addRect(0.0, 0.0,
+                                     band_width, band_height);
+                        QPainterPath clip;
+                        clip.addRect(0.0, 0.0,
+                                     band_width * fraction, band_height);
+                        fill->setPath(full.intersected(clip));
+                        fill->setPen(Qt::NoPen);
+                        QColor wash = theme.canvas.heading_text;
+                        wash.setAlphaF(0.22F);
+                        fill->setBrush(wash);
+                        builder.tagPart(*fill, entry, GraphCanvasValueBandItem);
+                        fill->setData(GraphCanvasPortRole, drawn.port);
+                        fill->setData(GraphCanvasLiveFillRole, fraction);
+                    }
+                    auto *dot = new QGraphicsEllipseItem(
+                        -3.5, -3.5, 7.0, 7.0, band);
+                    dot->setPos(knob_x, band_height / 2.0);
+                    dot->setBrush(theme.canvas.heading_text);
+                    dot->setPen(QPen{theme.canvas.node_border, 0.8});
+                    dot->setToolTip(band->toolTip());
+                    dot->setZValue(1.0);
+                    builder.tagPart(*dot, entry, GraphCanvasValueBandItem);
+                    dot->setData(GraphCanvasPortRole, drawn.port);
+                }
                 auto *value = new QGraphicsSimpleTextItem(text, band);
                 value->setFont(detail_font);
                 value->setBrush(theme.canvas.heading_text);

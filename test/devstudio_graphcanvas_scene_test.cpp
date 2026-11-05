@@ -2370,6 +2370,12 @@ struct RecordedCapability {
         seam.requestLiveInputs = [note](QString *) {
             return note(QStringLiteral("get_live_inputs"));
         };
+        seam.requestSetLiveInput = [this](const QJsonObject &params, QString *) {
+            calls.push_back(Call{QStringLiteral("set_live_input"), {}, 0,
+                                 QJsonDocument{params}.toJson(
+                                     QJsonDocument::Compact)});
+            return next++;
+        };
         seam.requestGraphValues = [note](const QString &instance, QString *) {
             return note(QStringLiteral("get_graph_values"), instance);
         };
@@ -30429,4 +30435,767 @@ TEST_CASE("CB-1 a handled Bezier graph is stable across a full scene rebuild",
     CHECK(combo->currentText() == QStringLiteral("Bezier"));
     CHECK(tab.field<QWidget>("pelican.graphCanvasCurve.graph")->isVisible());
     gs3aSameAsRebuilt(tab.widget->scene());
+}
+
+// --------------------------------------------------------------------------
+// OSC-3b: the hand on a value.input reading a declared live input.
+
+namespace {
+
+Json osc3bInputs() {
+    return {{"inputs", Json::array({
+        {{"name", "phase"}, {"type", "float"}, {"value", 2.0},
+         {"default", 0.0}, {"min", 0.0}, {"max", 4.0}, {"source", "rpc"}},
+        {{"name", "steps"}, {"type", "int"}, {"value", 1},
+         {"default", 1}, {"min", 0}, {"max", 8}, {"source", "rpc"}},
+        {{"name", "enabled"}, {"type", "bool"}, {"value", false},
+         {"default", false}, {"source", "rpc"}},
+        {{"name", "open"}, {"type", "float"}, {"value", 5.0},
+         {"default", 0.0}, {"min", 0.0}, {"source", "rpc"}},
+        {{"name", "flat"}, {"type", "float"}, {"value", 3.0},
+         {"default", 3.0}, {"min", 2.0}, {"max", 2.0}, {"source", "rpc"}},
+        {{"name", "ceiling"}, {"type", "float"}, {"value", 1.0},
+         {"default", -1.0}, {"max", 3.0}, {"source", "rpc"}},
+    })}};
+}
+
+Json osc3bDocument(std::string live_name = "live:phase") {
+    Json document = fixtureDocument();
+    document["layout"] = {{"nodes", Json::object()}};
+    auto &positions = document["layout"]["nodes"];
+    positions["clock"] = {{"x", 40.0}, {"y", 40.0}};
+    positions["left"] = {{"x", 40.0}, {"y", 300.0}};
+    document["nodes"].push_back({{"id", "live_phase"}, {"op", "value.input"},
+                                 {"parameters", {{"name", std::move(live_name)}}},
+                                 {"outputs", Json::array({"value"})}});
+    positions["live_phase"] = {{"x", 620.0}, {"y", 40.0}};
+    return document;
+}
+
+Json osc3bValues(const Json &document, double value,
+                 const std::string &only = {}) {
+    Json nodes = Json::array();
+    const auto add = [&](const std::string &scope, const Json &list) {
+        for (const auto &node : list) {
+            if (node.value("op", std::string{}) != "value.input") continue;
+            const auto id = node.value("id", std::string{});
+            if (!only.empty() && id != only) continue;
+            if (node.value("parameters", Json::object())
+                    .value("name", std::string{})
+                    .rfind("live:", 0) != 0)
+                continue;
+            const bool boolean = node.value("parameters", Json::object())
+                                     .value("name", std::string{}) == "live:enabled";
+            Json reported = value;
+            if (boolean) reported = value != 0.0;
+            nodes.push_back({{"node", id}, {"expanded", id},
+                             {"outputs", {{"value", std::move(reported)}}}});
+            (void)scope;
+        }
+    };
+    add("", document.at("nodes"));
+    for (const auto &[name, definition] : document.at("definitions").items())
+        add(name, definition.at("nodes"));
+    return {{"instance", ""}, {"generation", 9}, {"frame", 30},
+            {"published", true}, {"source", "rendering"},
+            {"nodes", std::move(nodes)}};
+}
+
+QGraphicsItem *osc3bBandItem(GraphCanvasScene &scene, const QString &node,
+                             const QString &port) {
+    QGraphicsItem *text = bandItem(scene, node, port);
+    REQUIRE(text != nullptr);
+    QGraphicsItem *band = text->parentItem();
+    REQUIRE(band != nullptr);
+    REQUIRE(dynamic_cast<QGraphicsPathItem *>(band) != nullptr);
+    return band;
+}
+
+struct Osc3bHarness {
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    Json document;
+
+    explicit Osc3bHarness(Json document_in, Json inputs = osc3bInputs(),
+                          bool live = true)
+        : document(std::move(document_in)) {
+        model.setConnected(true);
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id,
+                                       context(document).dump());
+            else if (request.method == "get_graph_catalog")
+                model.receiveRpcResult(request.request_id, visualCatalog().dump());
+            else if (request.method == "get_live_inputs")
+                model.receiveRpcResult(request.request_id, inputs.dump());
+        }
+        model.setLive(live);
+        model.poll();
+        for (const auto &request : model.takeRpcRequests())
+            if (request.method == "get_graph_node_values")
+                model.receiveRpcResult(request.request_id,
+                                       osc3bValues(document, 2.0).dump());
+        scene.setModel(&model);
+        QCoreApplication::processEvents();
+    }
+
+    [[nodiscard]] std::vector<PelicanStudio::InspectorRpcRequest> take() {
+        return model.takeRpcRequests();
+    }
+
+    static Json writeValue(const PelicanStudio::InspectorRpcRequest &request,
+                           const std::string &name) {
+        REQUIRE(request.method == "set_live_input");
+        REQUIRE(request.params.contains("values"));
+        INFO(request.params.dump());
+        return request.params.at("values").at(name);
+    }
+
+    void answerValues(double value) {
+        model.poll();
+        for (const auto &request : take())
+            if (request.method == "get_graph_node_values")
+                model.receiveRpcResult(request.request_id,
+                                       osc3bValues(document, value).dump());
+        QCoreApplication::processEvents();
+    }
+};
+
+std::optional<PelicanStudio::GraphCanvasNode>
+osc3bNode(GraphCanvasModel &model, const std::string &scope,
+          const std::string &id) {
+    const auto nodes = model.nodes(scope);
+    const auto found = std::ranges::find(nodes, id, &PelicanStudio::GraphCanvasNode::id);
+    if (found == nodes.end()) return std::nullopt;
+    return *found;
+}
+
+void osc3bPress(GraphCanvasScene &scene, const QPointF &at,
+                Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QGraphicsSceneMouseEvent press{QEvent::GraphicsSceneMousePress};
+    press.setScenePos(at);
+    press.setButton(Qt::LeftButton);
+    press.setButtons(Qt::LeftButton);
+    press.setModifiers(modifiers);
+    QApplication::sendEvent(&scene, &press);
+}
+
+void osc3bMove(GraphCanvasScene &scene, const QPointF &at,
+               Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QGraphicsSceneMouseEvent move{QEvent::GraphicsSceneMouseMove};
+    move.setScenePos(at);
+    move.setButtons(Qt::LeftButton);
+    move.setModifiers(modifiers);
+    QApplication::sendEvent(&scene, &move);
+}
+
+void osc3bRelease(GraphCanvasScene &scene, const QPointF &at,
+                  Qt::KeyboardModifiers modifiers = Qt::NoModifier) {
+    QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+    release.setScenePos(at);
+    release.setButton(Qt::LeftButton);
+    release.setModifiers(modifiers);
+    QApplication::sendEvent(&scene, &release);
+    QCoreApplication::processEvents();
+}
+
+} // namespace
+
+TEST_CASE("OSC-3b a live input's value band carries a knob only where the engine declares it",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    const auto node = osc3bNode(h.model, "", "live_phase");
+    REQUIRE(node.has_value());
+    auto knob = PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(
+        h.model, "", *node);
+    REQUIRE(knob);
+    CHECK(knob->type == "float");
+    CHECK(knob->minimum == 0.0);
+    CHECK(knob->maximum == 4.0);
+    CHECK(knob->value == 2.0);
+
+    // Live off: the drawing and the hit test agree there is no knob.
+    h.model.setLive(false);
+    CHECK_FALSE(PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(
+        h.model, "", *node));
+
+    // An undeclared name is no knob.
+    Osc3bHarness unknown{osc3bDocument("live:missing")};
+    const auto missing = osc3bNode(unknown.model, "", "live_phase");
+    REQUIRE(missing.has_value());
+    CHECK_FALSE(PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(
+        unknown.model, "", *missing));
+
+    // min == max is a single point: no sideways value to choose.
+    Osc3bHarness flat{osc3bDocument("live:flat")};
+    const auto point = osc3bNode(flat.model, "", "live_phase");
+    REQUIRE(point.has_value());
+    CHECK_FALSE(PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(
+        flat.model, "", *point));
+}
+
+TEST_CASE("OSC-3b the press starts from the latest read, a drag sends the mapped value, "
+          "and the node itself does not move",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"),
+                          QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    const QPointF from = centreOf(band);
+    const qreal width = band->sceneBoundingRect().width();
+    const QPointF node_before = nodeItem(h.scene, QStringLiteral("live_phase"))->pos();
+    const auto content = h.model.contentRevision();
+
+    h.answerValues(3.0); // A newer read the band has not drawn yet.
+    osc3bPress(h.scene, from);
+    CHECK(h.scene.dragging());
+    CHECK(h.take().empty()); // No send at the press, and no node movement.
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    CHECK(h.scene.dragging());
+    auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    const double expected = 3.0 + 5.0 * 4.0 / width;
+    CHECK(Osc3bHarness::writeValue(writes.front(), "phase") ==
+          Catch::Approx(expected));
+    CHECK(h.model.contentRevision() == content);
+    CHECK(nodeItem(h.scene, QStringLiteral("live_phase"))->pos() == node_before);
+    osc3bRelease(h.scene, from + QPointF{5.0, 0.0});
+    // The release's value is kept behind the request already in the air.
+    const auto final_writes = h.take();
+    CHECK(final_writes.empty());
+    h.model.receiveRpcResult(writes.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    const auto last = h.take();
+    REQUIRE(last.size() == 1);
+    CHECK(Osc3bHarness::writeValue(last.front(), "phase") ==
+          Catch::Approx(expected));
+    CHECK(h.model.contentRevision() == content);
+}
+
+TEST_CASE("OSC-3b one hand value is in the air; the newest waits behind its reply",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"),
+                          QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    const QPointF from = centreOf(band);
+    const qreal width = band->sceneBoundingRect().width();
+    osc3bPress(h.scene, from);
+    CHECK(h.take().empty());
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    auto first = h.take();
+    REQUIRE(first.size() == 1);
+    CHECK(Osc3bHarness::writeValue(first.front(), "phase") ==
+          Catch::Approx(2.0 + 5.0 * 4.0 / width));
+    for (int move = 1; move < 20; ++move)
+        osc3bMove(h.scene, from + QPointF{5.0 + move * 0.2, 0.0});
+    CHECK(h.take().empty()); // One in flight, and only the newest waits.
+    h.model.receiveRpcResult(first.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    auto second = h.take();
+    REQUIRE(second.size() == 1);
+    const double latest = 2.0 + (5.0 + 19 * 0.2) * 4.0 / width;
+    CHECK(Osc3bHarness::writeValue(second.front(), "phase") ==
+          Catch::Approx(latest));
+    CHECK(h.model.liveInputWriteInFlight());
+    osc3bRelease(h.scene, from + QPointF{5.0 + 19 * 0.2, 0.0});
+    CHECK(h.take().empty());
+    h.model.receiveRpcResult(second.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    const auto last = h.take();
+    REQUIRE(last.size() == 1);
+    CHECK(Osc3bHarness::writeValue(last.back(), "phase") ==
+          Catch::Approx(latest));
+}
+
+TEST_CASE("OSC-3b a dropped value is not re-sent, and a new engine's reply is not taken",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"),
+                          QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    const QPointF from = centreOf(band);
+    const qreal width = band->sceneBoundingRect().width();
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    const auto old_id = writes.front().request_id;
+    osc3bMove(h.scene, from + QPointF{7.0, 0.0});
+    CHECK(h.take().empty());
+    std::this_thread::sleep_for(std::chrono::milliseconds{2100});
+    h.model.poll();
+    CHECK_FALSE(h.model.liveInputWriteInFlight());
+    CHECK_FALSE(h.model.liveInputHandHolds("phase"));
+    for (const auto &request : h.take())
+        CHECK(request.method != "set_live_input");
+    // The late reply to the dropped value changes nothing.
+    h.model.receiveRpcResult(old_id, Json{{"accepted", 1}}.dump());
+    CHECK_FALSE(h.model.liveInputHandHolds("phase"));
+    osc3bRelease(h.scene, from + QPointF{7.0, 0.0});
+    for (const auto &request : h.take())
+        CHECK(request.method != "set_live_input");
+
+    // A restart drops the in-flight value and the waiting one; the old reply
+    // cannot match the new session.
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    auto before = h.take();
+    REQUIRE(before.size() == 1);
+    const auto stale_id = before.front().request_id;
+    h.model.setConnected(false);
+    h.model.setConnected(true);
+    (void)h.take();
+    h.model.receiveRpcResult(stale_id, Json{{"accepted", 1}}.dump());
+    CHECK_FALSE(h.model.liveInputHandHolds("phase"));
+    for (const auto &request : h.take())
+        CHECK(request.method != "set_live_input");
+    osc3bRelease(h.scene, from + QPointF{5.0, 0.0});
+}
+
+TEST_CASE("OSC-3b int and bool travel as JSON integers and booleans; a bool is a click",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Json document = osc3bDocument();
+    document["nodes"].push_back({{"id", "live_steps"}, {"op", "value.input"},
+                                 {"parameters", {{"name", "live:steps"}}},
+                                 {"outputs", Json::array({"value"})}});
+    document["nodes"].push_back({{"id", "live_enabled"}, {"op", "value.input"},
+                                 {"parameters", {{"name", "live:enabled"}}},
+                                 {"outputs", Json::array({"value"})}});
+    document["layout"]["nodes"]["live_steps"] = {{"x", 620.0}, {"y", 220.0}};
+    document["layout"]["nodes"]["live_enabled"] = {{"x", 620.0}, {"y", 400.0}};
+    Osc3bHarness h{document};
+    h.answerValues(1.0);
+    auto *steps = osc3bBandItem(h.scene, QStringLiteral("live_steps"),
+                           QStringLiteral("value"));
+    REQUIRE(steps != nullptr);
+    const QPointF steps_from = centreOf(steps);
+    const qreal steps_width = steps->sceneBoundingRect().width();
+    osc3bPress(h.scene, steps_from);
+    osc3bMove(h.scene, steps_from + QPointF{5.0, 0.0});
+    auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    const auto value = Osc3bHarness::writeValue(writes.front(), "steps");
+    CHECK(value.is_number_integer());
+    CHECK(value == std::round(1.0 + 5.0 * 8.0 / steps_width));
+    osc3bRelease(h.scene, steps_from + QPointF{5.0, 0.0});
+    CHECK(h.take().empty());
+    h.model.receiveRpcResult(writes.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    auto final_int = h.take();
+    REQUIRE(final_int.size() == 1);
+    h.model.receiveRpcResult(final_int.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    CHECK(h.take().empty());
+
+    auto *enabled = osc3bBandItem(h.scene, QStringLiteral("live_enabled"),
+                             QStringLiteral("value"));
+    REQUIRE(enabled != nullptr);
+    const QPointF enabled_at = centreOf(enabled);
+    osc3bPress(h.scene, enabled_at);
+    osc3bRelease(h.scene, enabled_at);
+    writes = h.take();
+    REQUIRE(writes.size() == 1);
+    const auto toggled = Osc3bHarness::writeValue(writes.front(), "enabled");
+    CHECK(toggled.is_boolean());
+    CHECK(toggled == false);
+}
+
+TEST_CASE("OSC-3b one-sided bounds clamp, Shift fine-tunes without a release jump, "
+          "and Esc puts the press value back through the same path",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Json document = osc3bDocument("live:open");
+    Osc3bHarness h{document};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"),
+                          QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    const QPointF from = centreOf(band);
+    const qreal width = band->sceneBoundingRect().width();
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from - QPointF{width * 8.0, 0.0});
+    auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    CHECK(Osc3bHarness::writeValue(writes.front(), "open") == Catch::Approx(0.0));
+    osc3bRelease(h.scene, from - QPointF{width * 8.0, 0.0});
+    (void)h.take();
+
+    h.model.receiveRpcResult(writes.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    auto outstanding = h.take();
+    REQUIRE(outstanding.size() == 1); // The first release's final value.
+    h.model.receiveRpcResult(outstanding.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+
+    // Shift changes the same difference by a tenth; letting it go at the
+    // release point keeps the fine value.
+    h.answerValues(2.0);
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0}, Qt::ShiftModifier);
+    writes = h.take();
+    REQUIRE(writes.size() == 1);
+    CHECK(Osc3bHarness::writeValue(writes.front(), "open") ==
+          Catch::Approx(2.0 + 3.0 * 5.0 / 150.0 / 10.0).epsilon(0.001));
+    osc3bRelease(h.scene, from + QPointF{5.0, 0.0});
+    CHECK(h.take().empty());
+    h.model.receiveRpcResult(writes.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    outstanding = h.take();
+    REQUIRE(outstanding.size() == 1);
+    CHECK(Osc3bHarness::writeValue(outstanding.front(), "open") ==
+          Catch::Approx(2.0 + 3.0 * 5.0 / 150.0 / 10.0).epsilon(0.001));
+    h.model.receiveRpcResult(outstanding.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+
+    // Esc discards an unsent value and queues the press value behind the sent
+    // one. This restore is not an edit and does not wait for an extra release.
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{7.0, 0.0});
+    writes = h.take();
+    REQUIRE(writes.size() == 1);
+    osc3bMove(h.scene, from + QPointF{9.0, 0.0});
+    pressKey(h.scene, Qt::Key_Escape);
+    CHECK(h.take().empty());
+    CHECK_FALSE(h.scene.liveKnobActive());
+    h.model.receiveRpcResult(writes.front().request_id,
+                             Json{{"accepted", 1}}.dump());
+    const auto restore = h.take();
+    REQUIRE(restore.size() == 1);
+    CHECK(Osc3bHarness::writeValue(restore.front(), "open") ==
+          Catch::Approx(2.0));
+    for (const auto &request : restore) CHECK(request.method != "edit_graph_document");
+}
+
+TEST_CASE("OSC-3b Alt leaves the node gesture, Live off leaves the old selection, "
+          "and a read-only definition has no knob",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"),
+                          QStringLiteral("value"));
+    REQUIRE(band != nullptr);
+    const QPointF from = centreOf(band);
+    const QPointF before = nodeItem(h.scene, QStringLiteral("live_phase"))->pos();
+    osc3bPress(h.scene, from, Qt::AltModifier);
+    osc3bMove(h.scene, from + QPointF{40.0, 0.0}, Qt::AltModifier);
+    osc3bRelease(h.scene, from + QPointF{40.0, 0.0}, Qt::AltModifier);
+    CHECK(h.take().empty());
+    CHECK(nodeItem(h.scene, QStringLiteral("live_phase"))->pos() != before);
+
+    h.model.setLive(false);
+    auto *again = osc3bBandItem(h.scene, QStringLiteral("live_phase"),
+                           QStringLiteral("value"));
+    REQUIRE(again != nullptr);
+    const QPointF off_from = centreOf(again);
+    const QPointF off_before = nodeItem(h.scene, QStringLiteral("live_phase"))->pos();
+    osc3bPress(h.scene, off_from);
+    osc3bMove(h.scene, off_from + QPointF{30.0, 0.0});
+    osc3bRelease(h.scene, off_from + QPointF{30.0, 0.0});
+    CHECK(h.take().empty());
+    CHECK(nodeItem(h.scene, QStringLiteral("live_phase"))->pos() != off_before);
+
+    // A definition body is read-only: its value band stays a display.
+    Json document = osc3bDocument();
+    document["definitions"]["gain_curve"]["nodes"].push_back(
+        {{"id", "definition_live"}, {"op", "value.input"},
+         {"parameters", {{"name", "live:phase"}}},
+         {"outputs", Json::array({"value"})}});
+    Osc3bHarness definition{std::move(document)};
+    const auto in_definition = osc3bNode(definition.model, "gain_curve",
+                                          "definition_live");
+    REQUIRE(in_definition.has_value());
+    CHECK_FALSE(PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(
+        definition.model, "gain_curve", *in_definition));
+}
+
+
+TEST_CASE("OSC-3b endpoints, both clamps, a short press and non-finite input are safe",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    SECTION("bounded endpoints and a short press") {
+        Osc3bHarness h{osc3bDocument()};
+        auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value"));
+        QPointF from = centreOf(band);
+        const qreal width = band->sceneBoundingRect().width();
+        osc3bPress(h.scene, from);
+        osc3bMove(h.scene, from + QPointF{2.0, 0.0});
+        osc3bRelease(h.scene, from + QPointF{2.0, 0.0});
+        CHECK(h.take().empty()); // The drag threshold sends nothing.
+        CHECK(h.scene.selectedNode() == std::optional<std::string>{"live_phase"});
+        osc3bPress(h.scene, from);
+        osc3bMove(h.scene, from - QPointF{width * 20.0, 0.0});
+        auto writes = h.take();
+        REQUIRE(writes.size() == 1);
+        CHECK(Osc3bHarness::writeValue(writes.front(), "phase") == Catch::Approx(0.0));
+        h.model.receiveRpcResult(writes.front().request_id, Json{{"accepted", 1}}.dump());
+        (void)h.take();
+        h.answerValues(2.0);
+        from = centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value")));
+        osc3bPress(h.scene, from);
+        osc3bMove(h.scene, from + QPointF{width * 20.0, 0.0});
+        writes = h.take();
+        REQUIRE(writes.size() == 1);
+        CHECK(Osc3bHarness::writeValue(writes.front(), "phase") == Catch::Approx(4.0));
+    }
+    SECTION("maximum-only clamp") {
+        Osc3bHarness h{osc3bDocument("live:ceiling")};
+        const QPointF from = centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value")));
+        h.answerValues(1.0);
+        osc3bPress(h.scene, from);
+        osc3bMove(h.scene, from + QPointF{1500.0, 0.0});
+        const auto writes = h.take();
+        REQUIRE(writes.size() == 1);
+        CHECK(Osc3bHarness::writeValue(writes.front(), "ceiling") == Catch::Approx(3.0));
+    }
+    SECTION("non-finite values do not leave Studio") {
+        Osc3bHarness h{osc3bDocument()};
+        CHECK_FALSE(h.model.sendLiveInput("phase", std::numeric_limits<double>::infinity()));
+        CHECK(h.take().empty());
+        h.model.setLiveInputWritingSupported(false);
+        const auto node = osc3bNode(h.model, "", "live_phase");
+        REQUIRE(node);
+        CHECK_FALSE(PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(h.model, "", *node));
+    }
+}
+
+TEST_CASE("OSC-3b bool motion and Reset to Default leave the document and history alone",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Json document = osc3bDocument("live:enabled");
+    Osc3bHarness h{document};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value"));
+    const QPointF from = centreOf(band);
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{20.0, 0.0});
+    osc3bRelease(h.scene, from + QPointF{20.0, 0.0});
+    CHECK(h.take().empty()); // A bool click beyond the threshold is not a toggle.
+
+    h.answerValues(1.0);
+    const std::string digest = h.model.digest();
+    const auto revision = h.model.contentRevision();
+    const bool undo = h.model.canUndo();
+    const bool redo = h.model.canRedo();
+    const bool busy = h.model.busy();
+    const bool editable = h.model.canEdit();
+    int edits = 0;
+    h.scene.editSubmitted = [&] { ++edits; };
+    bool seen = false;
+    QTimer reader;
+    reader.setInterval(0);
+    QObject::connect(&reader, &QTimer::timeout, &h.scene, [&] {
+        auto *menu = qobject_cast<QMenu *>(QApplication::activePopupWidget());
+        if (menu == nullptr) return;
+        const auto actions = menu->actions();
+        REQUIRE(actions.size() == 1);
+        CHECK(actions.front()->text() == QStringLiteral("Reset to Default"));
+        CHECK(actions.front()->objectName() == QStringLiteral("pelican.graphCanvas.resetLiveInput"));
+        seen = true;
+        actions.front()->trigger();
+        menu->close();
+    });
+    reader.start();
+    QGraphicsSceneContextMenuEvent menu{QEvent::GraphicsSceneContextMenu};
+    menu.setScenePos(from);
+    menu.setScreenPos(QPoint{100, 100});
+    QApplication::sendEvent(&h.scene, &menu);
+    reader.stop();
+    REQUIRE(seen);
+    const auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    const auto sent = Osc3bHarness::writeValue(writes.front(), "enabled");
+    CHECK(sent.is_boolean());
+    CHECK(sent == false); // Only the declared default, not a second toggle.
+    CHECK(h.model.digest() == digest);
+    CHECK(h.model.contentRevision() == revision);
+    CHECK(h.model.canUndo() == undo);
+    CHECK(h.model.canRedo() == redo);
+    CHECK(h.model.busy() == busy);
+    CHECK(h.model.canEdit() == editable);
+    CHECK(edits == 0);
+    CHECK_FALSE(h.scene.layoutPending());
+    CHECK_FALSE(h.scene.placementUnsent());
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{10.0, 0.0});
+    osc3bRelease(h.scene, from + QPointF{10.0, 0.0});
+    const auto after = h.take();
+    for (const auto &request : after) {
+        CHECK(request.method != "edit_graph_document");
+        CHECK(request.method != "set_node_parameters");
+        CHECK(request.method != "set_layout");
+    }
+    CHECK(edits == 0);
+}
+
+TEST_CASE("OSC-3b busy does not strand an existing hand, but prevents a new one",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    const QPointF from = centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value")));
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    REQUIRE(h.model.setNodeParameters("", "live_phase", Json{{"name", "live:steps"}}));
+    REQUIRE(h.model.busy());
+    osc3bMove(h.scene, from + QPointF{7.0, 0.0});
+    osc3bRelease(h.scene, from + QPointF{7.0, 0.0});
+    CHECK(h.model.liveInputWriteInFlight());
+    h.model.receiveRpcResult(writes.front().request_id, Json{{"accepted", 1}}.dump());
+    const auto last = h.take();
+    REQUIRE(std::ranges::count(last, std::string{"set_live_input"},
+                               &PelicanStudio::InspectorRpcRequest::method) == 1);
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{9.0, 0.0});
+    for (const auto &request : h.take()) CHECK(request.method != "set_live_input");
+}
+
+TEST_CASE("OSC-3b focus loss and refusal end the hand without another value",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    const QPointF from = centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value")));
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    const auto sent = h.take();
+    REQUIRE(sent.size() == 1);
+    h.scene.endLiveKnobFocusLost();
+    osc3bMove(h.scene, from + QPointF{10.0, 0.0});
+    osc3bRelease(h.scene, from + QPointF{10.0, 0.0});
+    CHECK(h.take().empty());
+    h.model.receiveRpcResult(sent.front().request_id, Json{{"accepted", 1}}.dump());
+    (void)h.take();
+    h.answerValues(2.0);
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    const auto refused = h.take();
+    REQUIRE(refused.size() == 1);
+    h.model.receiveRpcFailure(refused.front().request_id, "engine-code: denied");
+    CHECK(h.model.takeLiveInputRefusal() == "engine-code: denied");
+    CHECK(h.model.takeLiveInputRefusal().empty()); // One notice, not a retry.
+    h.scene.endLiveKnobFocusLost(); // The widget's poll does this after a refusal.
+    osc3bRelease(h.scene, from + QPointF{5.0, 0.0});
+    for (const auto &request : h.take()) CHECK(request.method != "set_live_input");
+    osc3bPress(h.scene, from);
+    pressKey(h.scene, Qt::Key_Escape);
+    const auto restore = h.take();
+    REQUIRE(restore.size() == 1);
+    CHECK(Osc3bHarness::writeValue(restore.front(), "phase") == Catch::Approx(2.0));
+}
+
+TEST_CASE("OSC-3b only a read requested after the reply takes down the hand",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    const QPointF from = centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value")));
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    const auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    h.model.poll();
+    PelicanStudio::InspectorRpcRequest old_read{0, {}, {}};
+    for (const auto &request : h.take())
+        if (request.method == "get_graph_node_values") old_read = request;
+    REQUIRE(old_read.request_id != 0);
+    h.model.receiveRpcResult(writes.front().request_id, Json{{"accepted", 1}}.dump());
+    h.model.receiveRpcResult(old_read.request_id, osc3bValues(h.document, 0.5).dump());
+    std::this_thread::sleep_for(std::chrono::milliseconds{520});
+    h.model.poll();
+    CHECK(h.model.liveInputHandHolds("phase")); // Past 500 ms the old read still cannot win.
+    REQUIRE(h.model.liveInputHandValue("phase"));
+    CHECK(*h.model.liveInputHandValue("phase") ==
+          Osc3bHarness::writeValue(writes.front(), "phase").get<double>());
+    PelicanStudio::InspectorRpcRequest fresh_read{0, {}, {}};
+    for (const auto &request : h.take())
+        if (request.method == "get_graph_node_values") fresh_read = request;
+    REQUIRE(fresh_read.request_id != 0);
+    h.model.receiveRpcResult(fresh_read.request_id, osc3bValues(h.document, 3.25).dump());
+    CHECK_FALSE(h.model.liveInputHandHolds("phase"));
+    const auto node = osc3bNode(h.model, "", "live_phase");
+    REQUIRE(node);
+    const auto knob = PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(h.model, "", *node);
+    REQUIRE(knob);
+    CHECK(knob->value == Catch::Approx(3.25)); // A later OSC/read value is the new authority.
+}
+
+TEST_CASE("OSC-3b a redraw, shared readers and an editable loop scope preserve the hand",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Json document = osc3bDocument();
+    document["nodes"].push_back({{"id", "live_again"}, {"op", "value.input"},
+                                 {"parameters", {{"name", "live:phase"}}},
+                                 {"outputs", Json::array({"value"})}});
+    document["layout"]["nodes"]["live_again"] = {{"x", 620.0}, {"y", 260.0}};
+    Osc3bHarness h{document};
+    auto *band = osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value"));
+    const QPointF from = centreOf(band);
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    const auto writes = h.take();
+    REQUIRE(writes.size() == 1);
+    const auto hand_picture = gs3aPicture(h.scene);
+    h.scene.repopulate();
+    REQUIRE(h.scene.liveKnobActive());
+    const auto rebuilt = gs3aPicture(h.scene);
+    CHECK(hand_picture == rebuilt);
+    osc3bMove(h.scene, centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value"))) + QPointF{7.0, 0.0});
+    osc3bRelease(h.scene, centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value"))) + QPointF{7.0, 0.0});
+    h.model.receiveRpcResult(writes.front().request_id, Json{{"accepted", 1}}.dump());
+    for (int reply = 0; reply < 4 && h.model.liveInputWriteInFlight(); ++reply)
+        for (const auto &request : h.take())
+            if (request.method == "set_live_input")
+                h.model.receiveRpcResult(request.request_id, Json{{"accepted", 1}}.dump());
+    h.answerValues(3.5);
+    std::this_thread::sleep_for(std::chrono::milliseconds{520});
+    CHECK_FALSE(h.model.liveInputWriteInFlight());
+    CHECK_FALSE(h.model.liveInputHandHolds("phase"));
+    for (const char *id : {"live_phase", "live_again"}) {
+        const auto node = osc3bNode(h.model, "", id);
+        REQUIRE(node);
+        const auto knob = PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(h.model, "", *node);
+        REQUIRE(knob);
+        CHECK(knob->value == Catch::Approx(3.5));
+    }
+
+    Json loop = zoneDocument();
+    loop["definitions"]["first"]["nodes"].push_back(
+        {{"id", "loop_live"}, {"op", "value.input"},
+         {"parameters", {{"name", "live:phase"}}}, {"outputs", Json::array({"value"})}});
+    Osc3bHarness nested{loop};
+    nested.model.watchInstance("steps");
+    REQUIRE(nested.model.selectScope("first"));
+    nested.model.poll();
+    Json values = osc3bValues(nested.document, 2.0);
+    values["instance"] = "steps";
+    for (const auto &request : nested.take())
+        if (request.method == "get_graph_node_values")
+            nested.model.receiveRpcResult(request.request_id, values.dump());
+    const auto nested_node = osc3bNode(nested.model, "first", "loop_live");
+    REQUIRE(nested_node);
+    CHECK(PelicanStudio::GraphCanvasDrawing::graphCanvasLiveKnob(nested.model, "first", *nested_node));
+}
+
+TEST_CASE("OSC-3b deleting a node ends its hand without sending its name again",
+          "[devstudio][graph-canvas][scene][osc3b]") {
+    (void)application();
+    Osc3bHarness h{osc3bDocument()};
+    const QPointF from = centreOf(osc3bBandItem(h.scene, QStringLiteral("live_phase"), QStringLiteral("value")));
+    osc3bPress(h.scene, from);
+    osc3bMove(h.scene, from + QPointF{5.0, 0.0});
+    const auto sent = h.take();
+    REQUIRE(sent.size() == 1);
+    h.document["nodes"].erase(std::remove_if(h.document["nodes"].begin(), h.document["nodes"].end(),
+        [](const Json &node) { return node.value("id", std::string{}) == "live_phase"; }), h.document["nodes"].end());
+    h.model.receiveRpcResult(sent.front().request_id, Json{{"accepted", 1}}.dump());
+    for (QGraphicsItem *item : h.scene.items())
+        if (item->data(PelicanStudio::NodeGraphNameRole).toString() == QStringLiteral("live_phase"))
+            delete item;
+    osc3bMove(h.scene, from + QPointF{9.0, 0.0});
+    osc3bRelease(h.scene, from + QPointF{9.0, 0.0});
+    CHECK_FALSE(h.scene.liveKnobActive());
+    CHECK(h.take().empty());
 }

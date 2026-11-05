@@ -396,6 +396,10 @@ class NodeCanvasView : public QGraphicsView {
     [[nodiscard]] qreal zoomScale() const { return transform().m11(); }
     [[nodiscard]] bool panning() const noexcept { return panning_; }
 
+    // OSC-3b: a hand on a live band ends where it last sent when the canvas
+    // loses keyboard focus (a click into another panel, Alt-Tab).
+    std::function<void()> focusLossAction;
+
   protected:
     // The ground both canvases stand on: the theme's canvas colour and one
     // grid at a fixed scene pitch. A view that painted its own background
@@ -411,6 +415,7 @@ class NodeCanvasView : public QGraphicsView {
     void mouseReleaseEvent(QMouseEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
     void keyReleaseEvent(QKeyEvent *event) override;
+    void focusOutEvent(QFocusEvent *event) override;
 
   private:
     struct ViewState {

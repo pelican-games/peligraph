@@ -1371,4 +1371,12 @@ void NodeCanvasView::keyReleaseEvent(QKeyEvent *event) {
     QGraphicsView::keyReleaseEvent(event);
 }
 
+void NodeCanvasView::focusOutEvent(QFocusEvent *event) {
+    // OSC-3b: a live knob is a keyboard gesture (Esc restores it), so losing
+    // focus ends it where the last value sent was. The Frame Plan leaves the
+    // hook empty and keeps its own behaviour.
+    if (focusLossAction) focusLossAction();
+    QGraphicsView::focusOutEvent(event);
+}
+
 } // namespace PelicanStudio

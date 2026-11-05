@@ -49,6 +49,11 @@ struct GraphCanvasReadCapability {
     // Asked once alongside the catalog; an engine without it answers nothing
     // and the dialog keeps the catalog's names.
     std::function<qint64(QString *error)> requestLiveInputs;
+    // OSC-3b: set_live_input, beside the live inputs read and in the same
+    // capability. It is a send, not an edit: it never touches the document's
+    // pending slot, digest, dirty flag or Undo history.
+    std::function<qint64(const QJsonObject &params, QString *error)>
+        requestSetLiveInput;
     std::function<qint64(const QString &instance, QString *error)>
         requestGraphValues;
     // AG-3a's node values. An empty instance is the root scope's question,

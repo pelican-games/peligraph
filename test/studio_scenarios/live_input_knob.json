@@ -1,0 +1,154 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "live_input_knob",
+  "description": "OSC-3b: a value.input reading the declared live input a gets a hand control on its value band. A real scene-item drag changes the shared engine input, with source rpc, without a document edit. The fixture and node creation are the OSC-3a live_input_node_from_graph scenario.",
+  "tab": "graph",
+  "probe_no_automation": true,
+  "steps": [
+    {
+      "label": "the embedded engine answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab can edit the project's document",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasAddNode",
+      "timeout_ms": 120000,
+      "enabled": true
+    },
+    {
+      "label": "value inputs are value nodes; show them",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "Add opens the palette",
+      "cmd": "click",
+      "name": "pelican.graphCanvasAddNode"
+    },
+    {
+      "label": "the palette is on screen",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasPalette",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "the filter: value.input",
+      "cmd": "type",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "text": "value.input"
+    },
+    {
+      "label": "Enter in the filter chooses it",
+      "cmd": "key",
+      "name": "pelican.graphCanvasPaletteFilter",
+      "sequence": "Return"
+    },
+    {
+      "label": "the required-parameter dialog asks for the name",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "visible": true
+    },
+    {
+      "label": "the declared live input is in the name combo",
+      "cmd": "select",
+      "name": "pelican.graphCanvasRequired.name",
+      "text": "live:a"
+    },
+    {
+      "label": "OK is offered",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired.ok",
+      "timeout_ms": 10000,
+      "enabled": true
+    },
+    {
+      "label": "OK places the node",
+      "cmd": "click",
+      "name": "pelican.graphCanvasRequired.ok"
+    },
+    {
+      "label": "the dialog closed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasRequired",
+      "timeout_ms": 20000,
+      "missing": true
+    },
+    {
+      "label": "the canvas drew the new value.input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#value_input",
+      "timeout_ms": 60000,
+      "visible": true
+    },
+    {
+      "label": "the engine's document holds parameters.name exactly live:a",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[2].parameters.name",
+      "value": "live:a",
+      "retry_ms": 60000
+    },
+    {
+      "label": "turn the Graph's Live values on",
+      "cmd": "click",
+      "name": "pelican.graphCanvasLive"
+    },
+    {
+      "label": "the knob's band exists on the new value.input",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_value_band#value_input/value",
+      "timeout_ms": 60000,
+      "visible": true
+    },
+    {
+      "label": "a real press, movement and release on the band's scene item",
+      "cmd": "drag",
+      "from": {
+        "name": "pelican.graphCanvasView::graph_value_band#value_input/value"
+      },
+      "to": {
+        "name": "pelican.graphCanvasView::graph_value_band#value_input/value",
+        "scene": [
+          660,
+          190
+        ]
+      },
+      "steps": 12
+    },
+    {
+      "label": "the engine's a moved off its starting value, not merely a hand-updated picture",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_live_inputs",
+        "params": {}
+      },
+      "path": "result.inputs[name=a].value",
+      "op": "ne",
+      "value": 0.0,
+      "retry_ms": 10000
+    },
+    {
+      "label": "Studio sent the runtime value, not OSC",
+      "expect": "rpc_equals",
+      "method": "get_live_inputs",
+      "params": {},
+      "path": "inputs[name=a].source",
+      "value": "rpc",
+      "retry_ms": 10000
+    },
+    {
+      "label": "a picture of the hand on the live input's band",
+      "expect": "screenshot",
+      "name": "pelican.graphCanvas",
+      "path": "live_input_knob_canvas.png"
+    }
+  ]
+}
