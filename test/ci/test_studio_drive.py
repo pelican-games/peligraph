@@ -3,8 +3,12 @@ from __future__ import annotations
 import contextlib
 import io
 import json
+import os
+import socket
 import sys
 import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -24,6 +28,40 @@ class StudioDriveNamedPathTest(unittest.TestCase):
         for entries in ([], [nodes[1], nodes[1]]):
             with self.assertRaises(studio_drive.PathError):
                 studio_drive.follow({"nodes": entries}, "nodes[name=present].order")
+
+
+@unittest.skipIf(os.name == "nt", "Unix-domain socket transport")
+class StudioDriveUnixSocketTest(unittest.TestCase):
+    def test_channel_connects_through_tmpdir_and_exchanges_json(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "studio-test"
+            server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            server.bind(str(path))
+            server.listen(1)
+
+            def echo_once() -> None:
+                connection, _ = server.accept()
+                with connection:
+                    request = connection.makefile("rb").readline()
+                    connection.sendall(request)
+
+            thread = threading.Thread(target=echo_once)
+            thread.start()
+            try:
+                with mock.patch.dict(os.environ, {"TMPDIR": directory}):
+                    channel = studio_drive.Channel.connect(
+                        "studio-test", time.monotonic() + 2.0, mock.Mock()
+                    )
+                try:
+                    reply = channel.send({"cmd": "echo"}, 1.0)
+                finally:
+                    channel.close()
+                self.assertEqual(reply["id"], 1)
+                self.assertEqual(reply["cmd"], "echo")
+            finally:
+                thread.join(timeout=2.0)
+                server.close()
+            self.assertFalse(thread.is_alive())
 
 
 class StudioDriveTimingTest(unittest.TestCase):

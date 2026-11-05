@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <cstdint>
@@ -578,7 +579,8 @@ class PlayerRpc {
     }
 
     void close() {
-        if (closed_) return;
+        if (close_started_) return;
+        close_started_ = true;
         closed_ = true;
 #ifdef _WIN32
         if (stdin_write_ != INVALID_HANDLE_VALUE) {
@@ -762,7 +764,8 @@ class PlayerRpc {
     std::string diagnostics_;
     bool capture_diagnostics_ =
         std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr;
-    bool closed_ = false;
+    std::atomic<bool> closed_ = false;
+    bool close_started_ = false;
     int next_id_ = 1;
     int exit_code_ = -1;
 #ifdef _WIN32

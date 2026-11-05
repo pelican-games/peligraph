@@ -129,7 +129,17 @@ class Channel:
         last: OSError | None = None
         while time.monotonic() < deadline:
             try:
-                return cls(open(path, "r+b", buffering=0), watchdog)
+                if os.name == "nt":
+                    return cls(open(path, "r+b", buffering=0), watchdog)
+                connection = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                try:
+                    connection.connect(path)
+                    handle = connection.makefile("rwb", buffering=0)
+                    connection.close()
+                    return cls(handle, watchdog)
+                except OSError:
+                    connection.close()
+                    raise
             except OSError as error:  # not there yet, or momentarily busy
                 last = error
                 time.sleep(0.05)
@@ -191,7 +201,7 @@ def local_socket_path(name: str) -> str:
 
     if os.name == "nt":
         return rf"\\.\pipe\{name}"
-    return f"/tmp/{name}"
+    return os.path.join(os.environ.get("TMPDIR") or "/tmp", name)
 
 
 def local_socket_exists(name: str) -> bool:
