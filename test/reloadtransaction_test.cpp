@@ -1089,7 +1089,7 @@ TEST_CASE("GC-2a1 incomplete-input Problems replace only their own rows", "[gc2a
     CHECK(rows[1].at("node") == "sum");
     CHECK(rows[1].at("port") == "a");
     CHECK(rows[1].at("fields").at("substitute") == "zero_value");
-    CHECK(rows[1].at("source") == problemSourceHotReload);
+    CHECK(rows[1].at("source") == std::string{problemSourceHotReload});
     CHECK(rows[2].at("definition") == "body");
     CHECK(rows[2].at("message").get<std::string>().find("body.gain.b") != std::string::npos);
     const auto stable_revision = problems.revision();

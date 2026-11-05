@@ -3927,11 +3927,12 @@ pelican_gpu_test_properties(rc5_recipe_preset_headless_player 120)
 if(NOT SKIP_DEVSTUDIO)
     add_executable(pelican_test_studio_player_arguments
         studio_player_arguments_probe.cpp
-        ${CMAKE_SOURCE_DIR}/src/devstudio/viewport/studioplayerarguments.cpp)
+        ${CMAKE_SOURCE_DIR}/src/devstudio/viewport/studioplayerarguments.cpp
+        ${CMAKE_SOURCE_DIR}/src/devstudio/viewport/studiooscsettings.cpp)
     set_target_properties(pelican_test_studio_player_arguments PROPERTIES
         CXX_STANDARD 20)
     target_link_libraries(pelican_test_studio_player_arguments PRIVATE
-        nlohmann_json)
+        nlohmann_json Qt6::Core)
 
     if(MSVC)
         set(pelican_validation_build_default "$<CONFIG:Debug>")

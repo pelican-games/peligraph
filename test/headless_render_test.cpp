@@ -15571,7 +15571,7 @@ void main() { discard; }
     if (open_cut) {
         require_pixels(0);
         REQUIRE(incomplete_problems().size() == 1);
-        CHECK(incomplete_problems()[0].at("source") == problemSourceStartup);
+        CHECK(incomplete_problems()[0].at("source") == std::string{problemSourceStartup});
         project.document["nodes"][2]["inputs"]["a"] = {{"node", "one"}, {"port", "value"}};
         require_applied();
         require_pixels(137);
@@ -15593,7 +15593,7 @@ void main() { discard; }
         require_applied();
         require_pixels(0);
         REQUIRE(incomplete_problems().size() == 1);
-        CHECK(incomplete_problems()[0].at("source") == problemSourceEditRpc);
+        CHECK(incomplete_problems()[0].at("source") == std::string{problemSourceEditRpc});
         CHECK(incomplete_problems()[0].at("node") == "sum");
         CHECK(incomplete_problems().size() == 1);
         CHECK(nlohmann::json::parse(readTextFile(project.root / "pipeline.json")).dump() == project.document.dump());
@@ -15608,7 +15608,7 @@ void main() { discard; }
             watch::makeAssetKey("pipeline.json"), watch::ReloadKind::modified, {}, 1}));
         require_pixels(0);
         REQUIRE(incomplete_problems().size() == 1);
-        CHECK(incomplete_problems()[0].at("source") == problemSourceHotReload);
+        CHECK(incomplete_problems()[0].at("source") == std::string{problemSourceHotReload});
 
         project.document["nodes"][2]["inputs"]["a"] = {{"node", "one"}, {"port", "value"}};
         require_applied();
