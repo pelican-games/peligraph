@@ -1,0 +1,423 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_filters_edit",
+  "description": "GF-1b: create Left only in the dialog, save through the engine, reopen the project and use it, change its match under the same id, then Undo both saves. Saving leaves the engine instance unchanged and final Undo leaves a valid file with no filters.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "the Graph tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "no file still means Filter All",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: All",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "turn on Value before looking for value nodes",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "clock is drawn before filtering",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "left is drawn before filtering",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine before any filter save",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "remember": "engine_before"
+    },
+    {
+      "label": "Edit filters opens from the real menu action",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.edit"
+    },
+    {
+      "label": "the dialog is visible",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the initial load has finished",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.addFilter",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "add a filter",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.addFilter"
+    },
+    {
+      "label": "label it Left only without changing its generated id",
+      "cmd": "type",
+      "name": "pelican.graphFiltersDialog.label",
+      "text": "Left only"
+    },
+    {
+      "label": "enter its node id",
+      "cmd": "type",
+      "name": "pelican.graphFiltersDialog.nodeIds.edit",
+      "text": "left"
+    },
+    {
+      "label": "add the node id",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.nodeIds.add"
+    },
+    {
+      "label": "the preview sees left",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.preview",
+      "contains": "left",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "save the draft",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.save"
+    },
+    {
+      "label": "the engine accepted it",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Saved",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the engine wrote the file",
+      "file": "exists",
+      "path": "{project}/graph_filters.json",
+      "value": true
+    },
+    {
+      "label": "the saved file contains left",
+      "file": "contains",
+      "path": "{project}/graph_filters.json",
+      "text": "\"left\"",
+      "value": true
+    },
+    {
+      "label": "a picture of the dialog",
+      "expect": "screenshot",
+      "name": "pelican.graphFiltersDialog",
+      "path": "graph_filters_dialog.png"
+    },
+    {
+      "label": "saving did not restart the engine",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "value_of": "engine_before"
+    },
+    {
+      "label": "close keeps the session",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.close"
+    },
+    {
+      "label": "choose the newly saved filter",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.filter.filter"
+    },
+    {
+      "label": "the menu follows the saved reply",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: Left only",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "only left is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "clock was seen and is now gone",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "open another copy of the project",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the saved filter counts as a document change, so leaving asks",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "keep it",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.save"
+    },
+    {
+      "label": "the other engine answers",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "reopen the project with the saved filter",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the original engine answers again",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "remember the reopened engine",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "remember": "engine_before"
+    },
+    {
+      "label": "the Graph tab again",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "the saved filter survived reopening",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.filter.filter"
+    },
+    {
+      "label": "its disk label is used",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: Left only",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "left still matches after reopening",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "clock is still filtered after reopening",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "edit the active filter",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.edit"
+    },
+    {
+      "label": "the saved draft is ready",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.nodeIds.edit",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "add clock as a second candidate",
+      "cmd": "type",
+      "name": "pelican.graphFiltersDialog.nodeIds.edit",
+      "text": "clock"
+    },
+    {
+      "label": "add clock",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.nodeIds.add"
+    },
+    {
+      "label": "select left in the node list",
+      "cmd": "select",
+      "name": "pelican.graphFiltersDialog.nodeIds.list",
+      "text": "left"
+    },
+    {
+      "label": "remove left so the same filter now matches clock",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.nodeIds.remove"
+    },
+    {
+      "label": "save the changed match",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.save"
+    },
+    {
+      "label": "the changed match is saved",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Saved",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the second save kept the engine",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "value_of": "engine_before"
+    },
+    {
+      "label": "the same menu choice still names Left only",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: Left only",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "clock now matches",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "left is an instance, which a filter keeps as the way into its body",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo the match edit",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.undo"
+    },
+    {
+      "label": "Undo is saved",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Saved",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the previous left match is active again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "clock is filtered again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo the first save",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.undo"
+    },
+    {
+      "label": "the empty document is saved",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Saved",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo restores Filter All",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "text": "Filter: All",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "clock is visible again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "left is visible again",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Undo did not delete the file",
+      "file": "exists",
+      "path": "{project}/graph_filters.json",
+      "value": true
+    },
+    {
+      "label": "Undo left no filters in the valid file",
+      "file": "contains",
+      "path": "{project}/graph_filters.json",
+      "text": "\"filters\": []",
+      "value": true
+    },
+    {
+      "label": "Undo did not restart or disconnect the original engine",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.instance_id",
+      "value_of": "engine_before"
+    }
+  ],
+  "invariants": {
+    "undo": false,
+    "reason": "the filter dialog's Undo leaves a valid empty file by design, and it isn't on the Graph's history"
+  }
+}

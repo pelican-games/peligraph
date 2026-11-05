@@ -10,6 +10,7 @@
 #include "engineauthoringlists.hpp"
 #include "playsession.hpp"
 #include "projectmigrationrpc.hpp"
+#include "graphfiltersrpc.hpp"
 #include "projectsettingsrpc.hpp"
 #include "materialdocumentrpc.hpp"
 #include "../startup.hpp"
@@ -1633,6 +1634,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     // PJ-1: project.json's hot_reload / asset_stores, applied in place.
     configureProjectSettingsRpcHandlers(server, modules.path_resolver, modules.reload_service,
                                         modules.assets_verification);
+    configureGraphFiltersRpcHandlers(server, modules.path_resolver);
     // MT-1: material documents, surface schemas and material bindings, read
     // and written through the project document transaction, applied live.
     configureMaterialDocumentRpcHandlers(server, modules.path_resolver, modules.reload_service);

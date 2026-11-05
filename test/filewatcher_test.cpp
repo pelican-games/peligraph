@@ -634,6 +634,29 @@ TEST_CASE("FW-1 an overflow rescan hashes only the changed file", "[fw1][watcher
     watcher.stop();
 }
 
+TEST_CASE("GF1b graph filter saves do not schedule a project hot reload", "[gf1b]") {
+    Sandbox box;
+    agedFiles(box.root, 2);
+    GateFixture gate;
+    FileWatcher watcher({{"project", box.root}}, [&] { return gate.snapshot(); }, watchingOptions());
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now());
+    REQUIRE((watcher.status().state == WatcherState::watching ||
+             watcher.status().state == WatcherState::polling));
+    const auto seeded = watcher.status();
+    const auto filters = box.root / "graph_filters.json";
+    writeText(filters, "{}\n");
+    setAge(filters, 60min);
+    settleNotifications();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    CHECK(watcher.status().scans == seeded.scans);
+    CHECK(watcher.pendingCount() == 0);
+    watcher.injectOverflowZeroBytes();
+    watcher.runControlCycleForTesting(FileWatcher::Clock::now() + 1s);
+    CHECK(watcher.status().hashed_files == 0);
+    CHECK(watcher.pendingCount() == 0);
+    watcher.stop();
+}
+
 TEST_CASE("FW-1 the project's .pelican directory is neither scanned nor a reason to scan",
           "[fw1][watcher][metadata]") {
     Sandbox box;

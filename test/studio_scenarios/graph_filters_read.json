@@ -2,7 +2,7 @@
   "schema": "pelican.studio_scenario",
   "version": 1,
   "name": "graph_filters_read",
-  "description": "GF-1a: a project's graph_filters.json adds a filter row to the Show line. With no file the row is not there; a file written before opening the project offers its filters, and choosing one narrows the root canvas to the nodes it names. Editing the file's label and pressing Reload keeps the chosen id and takes the label; an invalid file says so, clears the choice and keeps Reload; an empty valid file returns to All and puts the hidden nodes back.",
+  "description": "GF-1a with GF-1b menu behavior: Filter: All is available without a file; a file written before opening the project offers its filters, and choosing one narrows the root canvas to the nodes it names. Editing the file's label and pressing Reload keeps the chosen id and takes the label; an invalid file says so, clears the choice and keeps Reload; an empty valid file returns to All and puts the hidden nodes back.",
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
@@ -22,10 +22,11 @@
       "name": "pelican.view.renderTools.graph"
     },
     {
-      "label": "the fixture has no graph_filters.json, so the Show row has no filter row",
+      "label": "with no graph_filters.json the Filter row still starts at All",
       "cmd": "wait",
       "name": "pelican.graphCanvasFilter",
-      "visible": false,
+      "text": "Filter: All",
+      "visible": true,
       "timeout_ms": 30000
     },
     {
@@ -82,7 +83,7 @@
     {
       "label": "choose Left only",
       "cmd": "action",
-      "name": "pelican.graphCanvasFilter.left_only"
+      "name": "pelican.graphCanvasFilter.filter.left_only"
     },
     {
       "label": "the button names the choice",

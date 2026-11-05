@@ -58,9 +58,10 @@ bool withinRoot(const std::filesystem::path &root, const std::filesystem::path &
 }
 
 // FW-1: the first component of a store-relative name is the project's own
-// `.pelican` directory (shader cache, asset hash cache, transactions). No
-// reload participant claims a source there; the engine writes it constantly.
+// `.pelican` directory (shader cache, asset hash cache, transactions).
+// The graph filter editor's own writes must not feed a reload either.
 bool isProjectMetadataName(std::wstring_view name) {
+    if (name == L"graph_filters.json") return true;
     constexpr std::wstring_view metadata = L".pelican";
     const auto first = name.substr(0, name.find_first_of(L"\\/"));
     if (first.size() != metadata.size()) return false;

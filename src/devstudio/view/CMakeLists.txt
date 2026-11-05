@@ -129,6 +129,8 @@ add_library(pelican_studio_view STATIC
     graphcanvasaudioanalysis.hpp
     graphcanvasreadcapability.cpp
     graphcanvasreadcapability.hpp
+    graphfiltersdialog.cpp
+    graphfiltersdialog.hpp
     proceduralassetdialog.cpp
     proceduralassetdialog.hpp
     newprojectdialog.cpp

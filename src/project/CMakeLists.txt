@@ -10,6 +10,8 @@ add_library(pelican_project
     graphvariantpolicy.cpp
     graphcomposition.cpp
     graphfold.cpp
+    graphfiltersdocument.cpp
+    graphfiltersdocument.hpp
     graphloopexpression.cpp
     graphmodule.cpp
     graphparameterschema.cpp

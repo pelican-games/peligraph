@@ -26,6 +26,8 @@ target_sources(pelican_core PRIVATE
     windowedrpchost.cpp
     editorrpchandlers.cpp
     projectmigrationrpc.cpp
+    graphfiltersrpc.cpp
+    graphfiltersrpc.hpp
     projectsettingsrpc.cpp
     materialdocumentrpc.cpp
 )

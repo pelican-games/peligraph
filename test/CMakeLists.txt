@@ -430,6 +430,7 @@ if(TARGET pelican_studio_inspector_model)
   pelican_define_test(devstudio_graphcanvas_test pelican_studio_inspector_model)
   # GF-1a: graph_filters.json read strictly and evaluated, without Qt.
   pelican_define_test(devstudio_graph_filters_test pelican_studio_inspector_model)
+  pelican_define_test(devstudio_graph_filters_edit_test pelican_studio_inspector_model)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
@@ -622,6 +623,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   target_sources(pelican_test_devstudio_graphcanvas_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphfiltersdialog.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     # SDK-2a: a value.curve's plot body and shared frame/path.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascurvegeometry.cpp
@@ -699,6 +701,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   target_sources(pelican_test_devstudio_graph_fold_scene_test PRIVATE
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvaswidget.cpp
+    ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphfiltersdialog.cpp
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvasdrawing.cpp
     # SDK-2a: a value.curve's plot body and shared frame/path.
     ${CMAKE_SOURCE_DIR}/src/devstudio/view/graphcanvascurvegeometry.cpp
@@ -3505,6 +3508,7 @@ pelican_define_test(importmanifest_test GROUP project_formats pelican_project)
 pelican_define_test(importrules_test GROUP project_formats pelican_project)
 pelican_define_test(assetdataformat_test GROUP project_formats pelican_project)
 pelican_define_test(projectformat_test GROUP project_formats pelican_project)
+pelican_define_test(project_graph_filters_document_test GROUP project_formats pelican_project)
 pelican_define_test(packagemanifest_test GROUP project_formats pelican_project)
 target_compile_definitions(pelican_test_importrules_test PRIVATE PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 target_compile_definitions(pelican_test_importmanifest_test PRIVATE
@@ -3549,6 +3553,7 @@ if(PELICAN_WITH_RPC)
     # plan_project_migration / apply_project_migration and the migration-only
     # endpoint an --rpc player serves when the gate stops.
     pelican_define_test(projectmigrationrpc_test GROUP core_foundation pelican_core)
+    pelican_define_test(graphfiltersrpc_test GROUP core_foundation pelican_core)
     target_sources(pelican_test_projectmigrationrpc_test PRIVATE
         projectmigrationteststep.cpp)
     target_compile_definitions(pelican_test_projectmigrationrpc_test PRIVATE

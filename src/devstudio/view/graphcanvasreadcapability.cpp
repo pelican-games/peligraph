@@ -155,6 +155,12 @@ GraphCanvasReadCapability graphCanvasReadCapability(EmbeddedViewport &viewport) 
         .requestVerifyFold = [&viewport](const QJsonObject &params, QString *error) {
             return viewport.requestRpc(QStringLiteral("verify_fold"), params, error);
         },
+        .requestGraphFilters = [&viewport](QString *error) {
+            return viewport.requestRpc(QStringLiteral("get_graph_filters"), QJsonObject{}, error);
+        },
+        .requestEditGraphFilters = [&viewport](const QJsonObject &params, QString *error) {
+            return viewport.requestRpc(QStringLiteral("edit_graph_filters"), params, error);
+        },
         .requestRerunOnce = [&viewport](const QString &node, QString *error) {
             QJsonObject params;
             if (!node.isEmpty()) params.insert(QStringLiteral("node"), node);

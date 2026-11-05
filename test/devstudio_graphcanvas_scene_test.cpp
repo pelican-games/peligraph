@@ -9105,8 +9105,20 @@ struct Ux2Tab {
     RecordedCapability transport;
     std::unique_ptr<PelicanStudio::GraphCanvasWidget> widget;
 
-    explicit Ux2Tab(bool authoring, bool frame_plan = false, bool fold_groups = false) {
+    explicit Ux2Tab(bool authoring, bool frame_plan = false, bool fold_groups = false,
+                    bool filter_edit = false) {
         auto capability = transport.capability();
+        if (filter_edit) {
+            capability.requestGraphFilters = [this](QString *) {
+                transport.calls.push_back({QStringLiteral("get_graph_filters")});
+                return transport.next++;
+            };
+            capability.requestEditGraphFilters = [this](const QJsonObject &params, QString *) {
+                transport.calls.push_back({QStringLiteral("edit_graph_filters"), {}, 0,
+                                           QJsonDocument(params).toJson(QJsonDocument::Compact)});
+                return transport.next++;
+            };
+        }
         if (fold_groups) capability.requestFoldGroups = [this](QString *) {
             transport.calls.push_back({QStringLiteral("get_fold_groups")});
             return transport.next++;
@@ -29452,15 +29464,19 @@ TEST_CASE("GF-1a the Graph's filter button follows the project file, and Reload 
           "re-read",
           "[devstudio][graph-canvas][scene][gf1a]") {
     (void)application();
-    SECTION("no graph_filters.json: no filter row") {
+    SECTION("no graph_filters.json: Filter All still offers the editor and Reload") {
         QTemporaryDir root;
         REQUIRE(root.isValid());
         Ux2Tab tab{false};
         tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
         auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
-        CHECK_FALSE(button->isVisible());
+        CHECK(button->isVisible());
+        CHECK(button->text() == QStringLiteral("Filter: All"));
+        CHECK(tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.all")) != nullptr);
+        CHECK(tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit")) != nullptr);
+        CHECK(tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.reload")) != nullptr);
     }
-    SECTION("invalid: the button says so and the menu holds the reason") {
+    SECTION("invalid: only the editor is disabled and it carries the reason") {
         Gf1aProject project{Json{{"schema", "pelican.graph_filters"}}};
         Ux2Tab tab{false};
         tab.widget->setProjectRoot(project.root());
@@ -29468,12 +29484,26 @@ TEST_CASE("GF-1a the Graph's filter button follows the project file, and Reload 
         REQUIRE(button->isVisible());
         CHECK(button->text() == QStringLiteral("Filter: invalid"));
         CHECK(button->toolTip().contains(QStringLiteral("graph_filters.json")));
-        auto *invalid =
-            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.invalid"));
-        REQUIRE(invalid != nullptr);
-        CHECK_FALSE(invalid->isEnabled());
+        auto *edit = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"));
+        REQUIRE(edit != nullptr);
+        CHECK_FALSE(edit->isEnabled());
+        CHECK(edit->toolTip().contains(QStringLiteral("graph_filters.json")));
         CHECK(tab.widget->findChild<QAction *>(
                   QStringLiteral("pelican.graphCanvasFilter.reload")) != nullptr);
+    }
+    SECTION("no engine: only the editor is disabled") {
+        QTemporaryDir root;
+        REQUIRE(root.isValid());
+        Ux2Tab tab{false};
+        tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
+        tab.transport.availability(false);
+        QCoreApplication::processEvents();
+        auto *edit = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"));
+        REQUIRE(edit != nullptr);
+        CHECK_FALSE(edit->isEnabled());
+        CHECK(edit->toolTip().contains(QStringLiteral("engine"), Qt::CaseInsensitive));
+        CHECK(tab.field<QToolButton>("pelican.graphCanvasFilter")->toolTip().contains(
+            QStringLiteral("engine"), Qt::CaseInsensitive));
     }
     SECTION("valid: All and the file's filters, Reload picks up a new file") {
         Gf1aProject project{gf1aFilters()};
@@ -29483,13 +29513,13 @@ TEST_CASE("GF-1a the Graph's filter button follows the project file, and Reload 
         REQUIRE(button->isVisible());
         CHECK(button->text() == QStringLiteral("Filter: All"));
         auto *post =
-            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.post"));
+            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.post"));
         REQUIRE(post != nullptr);
         CHECK(post->isCheckable());
         CHECK(tab.widget->findChild<QAction *>(
-                  QStringLiteral("pelican.graphCanvasFilter.only_bloomed")) != nullptr);
+                  QStringLiteral("pelican.graphCanvasFilter.filter.only_bloomed")) != nullptr);
         CHECK(tab.widget->findChild<QAction *>(
-                  QStringLiteral("pelican.graphCanvasFilter.nested")) == nullptr);
+                  QStringLiteral("pelican.graphCanvasFilter.filter.nested")) == nullptr);
         auto *all =
             tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.all"));
         REQUIRE(all != nullptr);
@@ -29554,7 +29584,7 @@ TEST_CASE("GF-1a Show and reveal both win over the filter, and a stub press brin
     auto &scene = tab.widget->scene();
     auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
     auto *post =
-        tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.post"));
+        tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.post"));
     REQUIRE(post != nullptr);
     post->trigger();
     QCoreApplication::processEvents();
@@ -29578,7 +29608,7 @@ TEST_CASE("GF-1a Show and reveal both win over the filter, and a stub press brin
     CHECK(button->text() == QStringLiteral("Filter: All"));
 
     auto *only_bloomed = tab.widget->findChild<QAction *>(
-        QStringLiteral("pelican.graphCanvasFilter.only_bloomed"));
+        QStringLiteral("pelican.graphCanvasFilter.filter.only_bloomed"));
     REQUIRE(only_bloomed != nullptr);
     only_bloomed->trigger();
     QCoreApplication::processEvents();
@@ -29589,7 +29619,7 @@ TEST_CASE("GF-1a Show and reveal both win over the filter, and a stub press brin
     CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
 
     only_bloomed = tab.widget->findChild<QAction *>(
-        QStringLiteral("pelican.graphCanvasFilter.only_bloomed"));
+        QStringLiteral("pelican.graphCanvasFilter.filter.only_bloomed"));
     REQUIRE(only_bloomed != nullptr);
     only_bloomed->trigger();
     QCoreApplication::processEvents();
@@ -29607,7 +29637,7 @@ TEST_CASE("GF-1a Show and reveal both win over the filter, and a stub press brin
     auto &value_model = value_tab.widget->model();
     auto &value_scene = value_tab.widget->scene();
     auto *both =
-        value_tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.both"));
+        value_tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.both"));
     REQUIRE(both != nullptr);
     both->trigger();
     QCoreApplication::processEvents();
@@ -31198,4 +31228,202 @@ TEST_CASE("OSC-3b deleting a node ends its hand without sending its name again",
     osc3bRelease(h.scene, from + QPointF{9.0, 0.0});
     CHECK_FALSE(h.scene.liveKnobActive());
     CHECK(h.take().empty());
+}
+
+
+TEST_CASE("GF-1b the dialog saves through the transport, updates the Graph from the reply, and undoes",
+          "[devstudio][graph-canvas][scene][gf1b]") {
+    (void)application();
+    QTemporaryDir root;
+    REQUIRE(root.isValid());
+    Ux2Tab tab{false, true, false, true};
+    const auto project = std::filesystem::path{root.path().toStdString()};
+    tab.widget->setProjectRoot(project);
+    tab.answer("get_graph_filters", Json{{"digest", nullptr}, {"document", nullptr}, {"error", nullptr}});
+    tab.read(gf1aRead(), "gf1b-scene");
+    tab.answer("get_frame_plan", gf1aPlan());
+    auto &model = tab.widget->model();
+    auto &scene = tab.widget->scene();
+    REQUIRE(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+    REQUIRE(nodeItem(scene, QStringLiteral("bloomed")) != nullptr);
+
+    auto *edit = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"));
+    REQUIRE(edit != nullptr);
+    edit->trigger();
+    QCoreApplication::processEvents();
+    auto *dialog = tab.widget->findChild<QDialog *>(QStringLiteral("pelican.graphFiltersDialog"));
+    REQUIRE(dialog != nullptr);
+    CHECK(dialog->isVisible());
+    auto *add = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.addFilter"));
+    auto *label = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.label"));
+    auto *node_edit = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.nodeIds.edit"));
+    auto *node_add = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.nodeIds.add"));
+    auto *save = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.save"));
+    REQUIRE((add && label && node_edit && node_add && save));
+    add->click();
+    label->setText(QStringLiteral("Blur only"));
+    Q_EMIT label->textEdited(label->text());
+    node_edit->setText(QStringLiteral("blur"));
+    node_add->click();
+    CHECK(dialog->findChild<QLabel *>(QStringLiteral("pelican.graphFiltersDialog.preview"))->text().contains(
+        QStringLiteral("blur")));
+    REQUIRE(save->isEnabled());
+    save->click();
+    REQUIRE(tab.reads("edit_graph_filters") == 1);
+    const auto sent = Json::parse(tab.transport.calls.back().body.toStdString());
+    CHECK(sent.at("base_digest").is_null());
+    CHECK(sent.at("document").at("filters").at(0).at("id") == "filter");
+    CHECK(sent.at("document").at("filters").at(0).at("match").at("node_ids") == Json::array({"blur"}));
+    tab.answer("edit_graph_filters",
+               Json{{"committed", true}, {"changed", true}, {"digest", "gf1b-1"},
+                    {"previous_digest", nullptr}, {"previous", nullptr}, {"document", sent.at("document")}});
+    CHECK(dialog->findChild<QLabel *>(QStringLiteral("pelican.graphFiltersDialog.state"))->text() ==
+          QStringLiteral("Saved"));
+    auto *blur_only = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.filter"));
+    REQUIRE(blur_only != nullptr);
+    blur_only->trigger();
+    QCoreApplication::processEvents();
+    CHECK(model.activeGraphFilter() == "filter");
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+
+    auto *undo = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.undo"));
+    REQUIRE(undo != nullptr);
+    REQUIRE(undo->isEnabled());
+    undo->click();
+    REQUIRE(tab.reads("edit_graph_filters") == 2);
+    const auto undone = Json::parse(tab.transport.calls.back().body.toStdString());
+    CHECK(undone.at("base_digest") == "gf1b-1");
+    CHECK(undone.at("document").at("filters").empty());
+    tab.answer("edit_graph_filters",
+               Json{{"committed", true}, {"changed", true}, {"digest", "gf1b-empty"},
+                    {"previous_digest", "gf1b-1"}, {"previous", sent.at("document")},
+                    {"document", undone.at("document")}});
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(tab.field<QToolButton>("pelican.graphCanvasFilter")->text() == QStringLiteral("Filter: All"));
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) != nullptr);
+    CHECK_FALSE(undo->isEnabled());
+}
+
+TEST_CASE("GF-1b a typed feature uses a renamed category without changing its id",
+          "[devstudio][graph-canvas][scene][gf1b]") {
+    (void)application();
+    QTemporaryDir root;
+    REQUIRE(root.isValid());
+    Ux2Tab tab{false, true, false, true};
+    tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
+    tab.answer("get_graph_filters",
+               Json{{"digest", "all-base"},
+                    {"document",
+                     Json{{"schema", "pelican.graph_filters"}, {"version", 1},
+                          {"categories", Json::array()}, {"feature_categories", Json::object()},
+                          {"filters", Json::array({Json{{"id", "all"}, {"label", "all"},
+                                                        {"match", Json::object()}}})}}},
+                    {"error", nullptr}});
+    tab.read(gf1aRead(), "gf1b-category");
+    tab.answer("get_frame_plan", gf1aPlan());
+    auto *edit = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"));
+    REQUIRE(edit != nullptr);
+    edit->trigger();
+    QCoreApplication::processEvents();
+    auto *dialog = tab.widget->findChild<QDialog *>(QStringLiteral("pelican.graphFiltersDialog"));
+    REQUIRE(dialog != nullptr);
+    auto *category_label = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.categoryLabel"));
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.addCategory"))->click();
+    REQUIRE(category_label != nullptr);
+    category_label->setText(QStringLiteral("Signals"));
+    Q_EMIT category_label->textEdited(category_label->text());
+    auto *feature = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.featureName"));
+    feature->setText(QStringLiteral("bloom"));
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.addFeature"))->click();
+    auto *box = dialog->findChild<QCheckBox *>(QStringLiteral("pelican.graphFiltersDialog.feature.bloom.category"));
+    REQUIRE(box != nullptr);
+    box->click();
+    QCoreApplication::processEvents();
+    CHECK(dialog->findChild<QLabel *>(QStringLiteral("pelican.graphFiltersDialog.categoryReferences"))->text().contains(
+        QStringLiteral("1 features")));
+
+    auto *label = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.label"));
+    CHECK(label->text() == QStringLiteral("all"));
+    auto *category_edit = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.categories.edit"));
+    category_edit->setText(QStringLiteral("category"));
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.categories.add"))->click();
+    auto *save = dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.save"));
+    REQUIRE(save->isEnabled());
+    save->click();
+    const auto sent = Json::parse(tab.transport.calls.back().body.toStdString());
+    CHECK(sent.at("document").at("categories").at(0).at("id") == "category");
+    CHECK(sent.at("document").at("categories").at(0).at("label") == "Signals");
+    CHECK(sent.at("document").at("feature_categories").at("bloom") == Json::array({"category"}));
+    CHECK(sent.at("document").at("filters").at(0).at("id") == "all");
+    tab.answer("edit_graph_filters",
+               Json{{"committed", true}, {"changed", true}, {"digest", "gf1b-category"},
+                    {"previous_digest", nullptr}, {"previous", nullptr}, {"document", sent.at("document")}});
+    REQUIRE(tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.all")) != nullptr);
+    REQUIRE(tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.all")) !=
+            tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.all")));
+    auto *filter = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.all"));
+    filter->trigger();
+    QCoreApplication::processEvents();
+    CHECK(nodeItem(tab.widget->scene(), QStringLiteral("feature:bloom")) != nullptr);
+    CHECK(nodeItem(tab.widget->scene(), QStringLiteral("blur")) == nullptr);
+}
+
+
+TEST_CASE("GF-1b a dirty dialog draft belongs to its project across a switch",
+          "[devstudio][graph-canvas][scene][gf1b]") {
+    (void)application();
+    QTemporaryDir first;
+    QTemporaryDir second;
+    REQUIRE(first.isValid());
+    REQUIRE(second.isValid());
+    Ux2Tab tab{false, false, false, true};
+    tab.widget->setProjectRoot(std::filesystem::path{first.path().toStdString()});
+    tab.answer("get_graph_filters", Json{{"digest", nullptr}, {"document", nullptr}, {"error", nullptr}});
+    auto *edit = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"));
+    REQUIRE(edit != nullptr);
+    edit->trigger();
+    QCoreApplication::processEvents();
+    auto *dialog = tab.widget->findChild<QDialog *>(QStringLiteral("pelican.graphFiltersDialog"));
+    REQUIRE(dialog != nullptr);
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.addFilter"))->click();
+    auto *label = dialog->findChild<QLineEdit *>(QStringLiteral("pelican.graphFiltersDialog.label"));
+    label->setText(QStringLiteral("Keep me"));
+    Q_EMIT label->textEdited(label->text());
+    auto *state = dialog->findChild<QLabel *>(QStringLiteral("pelican.graphFiltersDialog.state"));
+    CHECK(state->text() == QStringLiteral("Unsaved changes"));
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.close"))->click();
+    CHECK_FALSE(dialog->isVisible());
+    edit = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"));
+    edit->trigger();
+    QCoreApplication::processEvents();
+    CHECK(dialog->isVisible());
+    CHECK(label->text() == QStringLiteral("Keep me"));
+
+    tab.widget->setProjectRoot(std::filesystem::path{second.path().toStdString()});
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("get_graph_filters") == 2);
+    CHECK(tab.reads("edit_graph_filters") == 0);
+    tab.widget->setProjectRoot(std::filesystem::path{first.path().toStdString()});
+    QCoreApplication::processEvents();
+    CHECK(tab.reads("get_graph_filters") == 2);
+    CHECK(label->text() == QStringLiteral("Keep me"));
+    CHECK(state->text() == QStringLiteral("Unsaved changes"));
+    CHECK(dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.discard"))->isEnabled());
+
+    const qint64 stale_second = tab.transport.idOf(QStringLiteral("get_graph_filters"), 1);
+    tab.transport.deliver(stale_second,
+                          QByteArray::fromStdString(Json{{"digest", "other"}, {"document", Json::object()},
+                                                         {"error", nullptr}}.dump()));
+    QCoreApplication::processEvents();
+    CHECK(label->text() == QStringLiteral("Keep me"));
+    CHECK(state->text() == QStringLiteral("Unsaved changes"));
+    CHECK(tab.reads("edit_graph_filters") == 0);
+    dialog->findChild<QPushButton *>(QStringLiteral("pelican.graphFiltersDialog.save"))->click();
+    REQUIRE(tab.reads("edit_graph_filters") == 1);
+    const auto sent = Json::parse(tab.transport.calls.back().body.toStdString());
+    CHECK(sent.at("base_digest").is_null());
+    CHECK(sent.at("document").at("filters").at(0).at("label") == "Keep me");
 }

@@ -7,6 +7,7 @@
 #include "graphcanvasdrawing.hpp"
 #include "graphcanvasfoldedpassfields.hpp"
 #include "graphcanvasfoldgroups.hpp"
+#include "graphfiltersdialog.hpp"
 #include "graphcanvaslayerspanel.hpp"
 #include "../model/graphcanvaslayertool.hpp"
 #include "graphcanvasloopfields.hpp"
@@ -9304,11 +9305,20 @@ struct GraphCanvasWidget::Impl {
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
     std::vector<std::pair<std::string, QCheckBox *>> domain_boxes;
-    // GF-1a: the project's filter menu, beside Show. It is hidden while the
-    // project has no graph_filters.json and says "invalid" when one is bad.
+    // GF-1b: the filter editor's draft sessions outlive project switches.
     QToolButton *graph_filter_button = nullptr;
     QMenu *graph_filter_menu = nullptr;
     QActionGroup *graph_filter_group = nullptr;
+    GraphFiltersDialog *graph_filter_dialog = nullptr;
+    std::map<std::filesystem::path, GraphFiltersEdit> graph_filter_sessions;
+    std::uint64_t graph_filter_project_generation = 0;
+    std::uint64_t graph_filter_engine_generation = 0;
+    bool graph_filter_engine_ready = false;
+    struct GraphFilterTransport {
+        std::filesystem::path root;
+        GraphFiltersEdit::Request request;
+    };
+    QHash<qint64, GraphFilterTransport> graph_filter_requests;
     // Decision 4: the line an edit inside a folded view gets, with its
     // "Expand to edit…" link (the named action), and the owner's two flows.
     QLabel *folded_notice = nullptr;
@@ -9648,18 +9658,40 @@ struct GraphCanvasWidget::Impl {
                 dispatch();
             });
         }
-        // GF-1a: the project's filter menu. With no graph_filters.json the
-        // button is hidden; a bad file leaves it on the row saying so.
+        // GF-1b: a missing file is an empty menu that can create the first filter.
         graph_filter_button = new QToolButton(&view);
         graph_filter_button->setObjectName(QStringLiteral("pelican.graphCanvasFilter"));
         graph_filter_button->setPopupMode(QToolButton::InstantPopup);
         graph_filter_button->setAutoRaise(true);
         graph_filter_button->setSizePolicy(QSizePolicy::Maximum, QSizePolicy::Fixed);
-        graph_filter_button->setMaximumWidth(210);
-        graph_filter_button->hide();
+        graph_filter_button->setMaximumWidth(
+            QFontMetrics(graph_filter_button->font()).averageCharWidth() * 24);
         graph_filter_menu = new QMenu(&view);
         graph_filter_menu->setObjectName(QStringLiteral("pelican.graphCanvasFilterMenu"));
+        graph_filter_menu->setToolTipsVisible(true);
         graph_filter_button->setMenu(graph_filter_menu);
+        graph_filter_dialog = new GraphFiltersDialog(&view);
+        graph_filter_dialog->requestReady = [this] { sendGraphFilterRequests(); };
+        graph_filter_dialog->rootFacts = [this] {
+            std::vector<GraphFilterFacts> facts;
+            for (const auto &node : model.nodes({}))
+                facts.push_back({GraphFilterFacts::Kind::node, node.id, node.op, {}});
+            for (const auto &node : model.foldedNodes())
+                facts.push_back({node.feature_group && !node.feature.empty()
+                                     ? GraphFilterFacts::Kind::folded_feature
+                                     : GraphFilterFacts::Kind::folded_other,
+                                 node.id, {}, node.feature});
+            return facts;
+        };
+        graph_filter_dialog->selection = [this] {
+            GraphFiltersDialog::Selection result;
+            result.root = model.currentScope().empty() && scene->selectedScope().empty();
+            for (QGraphicsItem *item : scene->selectedItems())
+                if (item->data(NodeGraphItemKindRole).toString() == QLatin1String{GraphCanvasNodeItem} &&
+                    item->data(GraphCanvasScopeRole).toString().isEmpty())
+                    result.node_ids.push_back(item->data(NodeGraphNameRole).toString().toStdString());
+            return result;
+        };
         controls_tools->addWidget(graph_filter_button);
         // The stretch comes before Auto layout / Fit view / Recompute once,
         // which are inserted after it below and so sit at the row's right.
@@ -10864,6 +10896,22 @@ struct GraphCanvasWidget::Impl {
                     document_reread = false;
                 }
                 if (!available) restart_asked = false;
+                graph_filter_engine_ready = available;
+                if (available) ++graph_filter_engine_generation;
+                const auto session = graph_filter_sessions.find(project_root);
+                if (session != graph_filter_sessions.end()) {
+                    if (available) {
+                        session->second.engineReady(graph_filter_engine_generation);
+                        const auto state = session->second.state();
+                        if (!state.loaded || state.commit_result_unknown)
+                            session->second.requestLoad();
+                        sendGraphFilterRequests();
+                    } else {
+                        session->second.engineGone();
+                    }
+                }
+                rebuildGraphFilterMenu();
+                syncGraphFilterControls();
                 model.setConnected(available);
                 dispatch();
             });
@@ -11900,6 +11948,11 @@ struct GraphCanvasWidget::Impl {
     void deliverResult(qint64 request_id, const QByteArray &result_json) {
         const NodeDragTraceSpan trace{scene, "deliver_result"};
         const GuiTraceSpan op_trace{"graph_deliver_result", double(request_id), double(result_json.size())};
+        if (deliverGraphFilterResult(request_id, result_json)) {
+            graph_filter_dialog->sync();
+            syncGraphFilterControls();
+            return;
+        }
         if (deliverPassEdit(request_id, result_json)) return;
         // GL-5a, decision 5: the root's planning decisions.
         if (folded_pass_fields != nullptr && folded_pass_fields->deliverResult(request_id, result_json)) {
@@ -12075,6 +12128,10 @@ struct GraphCanvasWidget::Impl {
     }
 
     void deliverFailure(qint64 request_id, const QString &message) {
+        if (deliverGraphFilterFailure(request_id, message)) {
+            graph_filter_dialog->sync();
+            return;
+        }
         if (analysis && analysis->deliverFailure(request_id, message)) {
             dispatch();
             return;
@@ -12373,9 +12430,7 @@ struct GraphCanvasWidget::Impl {
         syncDomainFilter();
     }
 
-    // GF-1a: the filter menu, rebuilt from the project's file. The button
-    // keeps its width; a long label is elided, and its whole text is in the
-    // tooltip and the accessible name.
+    // GF-1b: built-ins and user ids have separate action-name namespaces.
     void rebuildGraphFilterMenu() {
         if (graph_filter_menu == nullptr || graph_filter_button == nullptr) return;
         graph_filter_menu->clear();
@@ -12383,48 +12438,44 @@ struct GraphCanvasWidget::Impl {
         graph_filter_group = new QActionGroup(graph_filter_menu);
         graph_filter_group->setExclusive(true);
         const auto &read = model.graphFilters();
-        const auto addReload = [this] {
-            graph_filter_menu->addSeparator();
-            auto *reload = graph_filter_menu->addAction(QObject::tr("Reload"));
-            reload->setObjectName(QStringLiteral("pelican.graphCanvasFilter.reload"));
-            // The re-read rebuilds this menu, which deletes the action being
-            // activated; do it from the event loop, as a stub's press does.
-            QObject::connect(
-                reload, &QAction::triggered, &guard, [this] { reloadGraphFilters(); },
-                Qt::QueuedConnection);
-        };
-        if (!read.document) {
-            if (!read.error.empty()) {
-                auto *invalid =
-                    graph_filter_menu->addAction(QObject::tr("graph_filters.json is invalid"));
-                invalid->setObjectName(QStringLiteral("pelican.graphCanvasFilter.invalid"));
-                invalid->setEnabled(false);
-                invalid->setToolTip(qtext(read.error));
-                addReload();
-            }
-            return;
-        }
         auto *all = graph_filter_menu->addAction(QObject::tr("All"));
         all->setObjectName(QStringLiteral("pelican.graphCanvasFilter.all"));
+        all->setData(QString{});
         all->setCheckable(true);
         all->setChecked(!model.activeGraphFilter().has_value());
         graph_filter_group->addAction(all);
         QObject::connect(all, &QAction::triggered, &guard, [this] {
             selectGraphFilter(std::nullopt);
         });
-        // GF-1b adds the hierarchy to the menu; this first slice reads
-        // children but offers only the top-level filters, in file order.
-        for (const auto &filter : read.document->filters) {
-            auto *action = graph_filter_menu->addAction(qtext(filter.label));
-            action->setObjectName(QStringLiteral("pelican.graphCanvasFilter.") + qtext(filter.id));
-            action->setCheckable(true);
-            action->setChecked(model.activeGraphFilter() == filter.id);
-            action->setToolTip(qtext(filter.label));
-            graph_filter_group->addAction(action);
-            QObject::connect(action, &QAction::triggered, &guard,
-                             [this, id = filter.id] { selectGraphFilter(id); });
-        }
-        addReload();
+        if (read.document)
+            for (const auto &filter : read.document->filters) {
+                auto *action = graph_filter_menu->addAction(qtext(filter.label));
+                action->setObjectName(QStringLiteral("pelican.graphCanvasFilter.filter.") + qtext(filter.id));
+                action->setData(qtext(filter.id));
+                action->setCheckable(true);
+                action->setChecked(model.activeGraphFilter() == filter.id);
+                action->setToolTip(qtext(filter.label));
+                graph_filter_group->addAction(action);
+                QObject::connect(action, &QAction::triggered, &guard,
+                                 [this, id = filter.id] { selectGraphFilter(id); });
+            }
+        graph_filter_menu->addSeparator();
+        auto *edit = graph_filter_menu->addAction(QObject::tr("Edit filters..."));
+        edit->setObjectName(QStringLiteral("pelican.graphCanvasFilter.edit"));
+        QString reason;
+        if (!read.error.empty())
+            reason = QObject::tr("Fix or remove graph_filters.json first: %1").arg(qtext(read.error));
+        else if (!graph_filter_engine_ready)
+            reason = QObject::tr("No engine connected");
+        edit->setEnabled(reason.isEmpty() && !project_root.empty());
+        edit->setToolTip(reason);
+        QObject::connect(edit, &QAction::triggered, &guard, [this] {
+            openGraphFiltersDialog();
+        }, Qt::QueuedConnection);
+        auto *reload = graph_filter_menu->addAction(QObject::tr("Reload"));
+        reload->setObjectName(QStringLiteral("pelican.graphCanvasFilter.reload"));
+        QObject::connect(reload, &QAction::triggered, &guard, [this] { reloadGraphFilters(); },
+                         Qt::QueuedConnection);
     }
 
     void syncGraphFilterControls() {
@@ -12434,40 +12485,27 @@ struct GraphCanvasWidget::Impl {
             const QFontMetrics metrics{graph_filter_button->font()};
             return metrics.elidedText(text, Qt::ElideRight, metrics.averageCharWidth() * 24);
         };
-        if (!read.document) {
-            if (read.error.empty()) {
-                graph_filter_button->hide();
-            } else {
-                graph_filter_button->show();
-                graph_filter_button->setText(elide(QObject::tr("Filter: invalid")));
-                graph_filter_button->setToolTip(qtext(read.error));
-                graph_filter_button->setAccessibleName(QObject::tr("Graph filter: invalid"));
-            }
-        } else {
-            const auto *filter = model.activeGraphFilter()
-                                     ? findGraphFilter(*read.document, *model.activeGraphFilter())
-                                     : nullptr;
-            const auto label = filter != nullptr ? qtext(filter->label) : QObject::tr("All");
-            const auto text = QObject::tr("Filter: %1").arg(label);
-            graph_filter_button->show();
-            graph_filter_button->setText(elide(text));
-            graph_filter_button->setToolTip(text);
-            graph_filter_button->setAccessibleName(text);
-        }
-        if (graph_filter_group != nullptr) {
+        const auto *filter = read.document && model.activeGraphFilter()
+                                 ? findGraphFilter(*read.document, *model.activeGraphFilter())
+                                 : nullptr;
+        const auto label = !read.document && !read.error.empty()
+                               ? QObject::tr("invalid")
+                               : (filter != nullptr ? qtext(filter->label) : QObject::tr("All"));
+        const auto text = QObject::tr("Filter: %1").arg(label);
+        graph_filter_button->setVisible(!project_root.empty());
+        graph_filter_button->setText(elide(text));
+        auto tooltip = text;
+        if (!read.error.empty()) tooltip += QStringLiteral("\n") + qtext(read.error);
+        if (!graph_filter_engine_ready) tooltip += QStringLiteral("\n") + QObject::tr("No engine connected");
+        graph_filter_button->setToolTip(tooltip);
+        graph_filter_button->setAccessibleName(text);
+        if (graph_filter_group != nullptr)
             for (QAction *action : graph_filter_group->actions()) {
                 const QSignalBlocker block{action};
-                action->setChecked(model.activeGraphFilter() ==
-                                   action->objectName()
-                                       .mid(QStringLiteral("pelican.graphCanvasFilter.").size())
-                                       .toStdString());
+                const auto id = action->data().toString().toStdString();
+                action->setChecked(id.empty() ? !model.activeGraphFilter().has_value()
+                                              : model.activeGraphFilter() == id);
             }
-            if (!graph_filter_group->actions().isEmpty()) {
-                const QSignalBlocker block{graph_filter_group->actions().front()};
-                graph_filter_group->actions().front()->setChecked(
-                    !model.activeGraphFilter().has_value());
-            }
-        }
     }
 
     void selectGraphFilter(std::optional<std::string> id) {
@@ -12494,6 +12532,109 @@ struct GraphCanvasWidget::Impl {
         const bool had_document = model.graphFilters().document.has_value();
         refreshGraphFilters();
         if (had_active || had_document != model.graphFilters().document.has_value()) dispatch();
+    }
+
+    GraphFiltersEdit &currentGraphFilterSession() {
+        auto [found, inserted] = graph_filter_sessions.try_emplace(project_root);
+        auto &session = found->second;
+        if (inserted) {
+            session.committed = [this, root = project_root](const GraphFilters &document) {
+                if (root != project_root) return;
+                model.setGraphFilters({document, {}});
+                rebuildGraphFilterMenu();
+                syncGraphFilterControls();
+                dispatch();
+            };
+        }
+        return session;
+    }
+
+    void activateGraphFilterProject() {
+        ++graph_filter_project_generation;
+        auto &session = currentGraphFilterSession();
+        session.activateProject(graph_filter_project_generation);
+        graph_filter_dialog->bind(&session);
+        if (graph_filter_engine_ready && !project_root.empty()) {
+            session.engineReady(graph_filter_engine_generation);
+            const auto state = session.state();
+            if (!state.loaded || state.commit_result_unknown) session.requestLoad();
+            sendGraphFilterRequests();
+        }
+    }
+
+    void openGraphFiltersDialog() {
+        if (project_root.empty() || !graph_filter_engine_ready) return;
+        auto &session = currentGraphFilterSession();
+        graph_filter_dialog->bind(&session);
+        if (!session.state().loaded) session.requestLoad();
+        sendGraphFilterRequests();
+        graph_filter_dialog->sync();
+        graph_filter_dialog->show();
+        graph_filter_dialog->raise();
+        graph_filter_dialog->activateWindow();
+    }
+
+    void sendGraphFilterRequests() {
+        if (project_root.empty()) return;
+        auto &session = currentGraphFilterSession();
+        for (const auto &request : session.takeRequests()) {
+            QString error;
+            const auto bytes = request.params.dump();
+            const auto json = QJsonDocument::fromJson(QByteArray::fromStdString(bytes));
+            qint64 transport = 0;
+            if (request.kind == GraphFiltersEdit::RequestKind::load && graph.requestGraphFilters)
+                transport = graph.requestGraphFilters(&error);
+            else if (request.kind != GraphFiltersEdit::RequestKind::load && graph.requestEditGraphFilters)
+                transport = graph.requestEditGraphFilters(json.object(), &error);
+            else
+                error = QObject::tr("The engine does not support graph filter editing");
+            if (transport == 0) {
+                session.applyFailure(request.id, request.project_generation, request.engine_generation,
+                                     request.kind, error.toStdString());
+                continue;
+            }
+            graph_filter_requests.insert(transport, {project_root, request});
+        }
+    }
+
+    bool deliverGraphFilterResult(qint64 id, const QByteArray &bytes) {
+        const auto found = graph_filter_requests.find(id);
+        if (found == graph_filter_requests.end()) return false;
+        const auto pending = found.value();
+        graph_filter_requests.erase(found);
+        if (pending.root != project_root) return true;
+        auto &session = currentGraphFilterSession();
+        try {
+            const auto result = nlohmann::json::parse(bytes.constData(), bytes.constData() + bytes.size());
+            const auto code = result.value("error_code", std::string{});
+            if (!code.empty()) {
+                const auto fields = result.value("error_fields", nlohmann::json::object());
+                const auto message = fields.value("reason", fields.dump());
+                session.applyRefusal(pending.request.id, pending.request.project_generation,
+                                     pending.request.engine_generation, pending.request.kind, code, message);
+                return true;
+            }
+            session.applyReply(pending.request.id, pending.request.project_generation,
+                               pending.request.engine_generation, pending.request.kind,
+                               result.value("committed", pending.request.kind == GraphFiltersEdit::RequestKind::load),
+                               result);
+        } catch (const std::exception &error) {
+            session.applyFailure(pending.request.id, pending.request.project_generation,
+                                 pending.request.engine_generation, pending.request.kind, error.what());
+        }
+        return true;
+    }
+
+    bool deliverGraphFilterFailure(qint64 id, const QString &message) {
+        const auto found = graph_filter_requests.find(id);
+        if (found == graph_filter_requests.end()) return false;
+        const auto pending = found.value();
+        graph_filter_requests.erase(found);
+        if (pending.root == project_root)
+            currentGraphFilterSession().applyFailure(pending.request.id, pending.request.project_generation,
+                                                     pending.request.engine_generation, pending.request.kind,
+                                                     message.toStdString());
+        return true;
     }
 
     // GL-1, decision 5: a root node another panel reveals is drawn, whatever
@@ -15107,6 +15248,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
         (void)impl_->model.setActiveGraphFilter(std::nullopt);
     }
     impl_->project_root = project_root;
+    impl_->activateGraphFilterProject();
     // NB-3: where the canvas nodes' pictures read their images and fonts.
     impl_->scene->setProjectRoot(project_root);
     impl_->pass_fields->setProjectRoot(project_root);
