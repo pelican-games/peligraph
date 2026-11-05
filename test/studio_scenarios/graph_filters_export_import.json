@@ -6,43 +6,232 @@
   "tab": "graph",
   "probe_no_automation": false,
   "steps": [
-    {"label": "the fixture engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
-    {"label": "the Graph tab", "cmd": "action", "name": "pelican.view.renderTools.graph"},
-    {"label": "Edit filters", "cmd": "action", "name": "pelican.graphCanvasFilter.edit"},
-    {"label": "the dialog and initial load", "cmd": "wait", "name": "pelican.graphFiltersDialog.addFilter", "enabled": true, "timeout_ms": 30000},
-    {"label": "add a filter", "cmd": "click", "name": "pelican.graphFiltersDialog.addFilter"},
-    {"label": "save it", "cmd": "click", "name": "pelican.graphFiltersDialog.save"},
-    {"label": "the save completed", "cmd": "wait", "name": "pelican.graphFiltersDialog.state", "text": "Saved", "timeout_ms": 30000},
-    {"label": "export is available only after saving", "cmd": "wait", "name": "pelican.graphFiltersDialog.export", "enabled": true},
-    {"label": "Export...", "cmd": "click", "name": "pelican.graphFiltersDialog.export"},
-    {"label": "the Qt export chooser", "cmd": "wait", "name": "pelican.graphFiltersDialog.exportDialog", "visible": true, "timeout_ms": 20000},
-    {"label": "the exported path", "cmd": "type", "name": "pelican.graphFiltersDialog.exportDialog.fileName", "text": "{artifacts}/filters.json"},
-    {"label": "choose it", "cmd": "key", "name": "pelican.graphFiltersDialog.exportDialog.fileName", "sequence": "Return"},
-    {"label": "the chooser closed", "cmd": "wait", "name": "pelican.graphFiltersDialog.exportDialog", "missing": true, "timeout_ms": 20000},
-    {"label": "the exported document exists", "file": "exists", "path": "{artifacts}/filters.json", "value": true},
-    {"label": "it has the saved filter", "file": "contains", "path": "{artifacts}/filters.json", "text": "\"id\": \"filter\"", "value": true},
-    {"label": "close the source dialog", "cmd": "click", "name": "pelican.graphFiltersDialog.close"},
-    {"label": "open the other project", "cmd": "open_project", "dir": "{other_project}"},
-    {"label": "the source document counts as a change", "cmd": "wait", "name": "pelican.unsavedScenePrompt", "visible": true, "timeout_ms": 30000},
-    {"label": "save when leaving", "cmd": "click", "name": "pelican.unsavedScenePrompt.save"},
-    {"label": "the other engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
-    {"label": "the other Graph tab", "cmd": "action", "name": "pelican.view.renderTools.graph"},
-    {"label": "Edit filters in the other project", "cmd": "action", "name": "pelican.graphCanvasFilter.edit"},
-    {"label": "the other document loaded", "cmd": "wait", "name": "pelican.graphFiltersDialog.import", "enabled": true, "timeout_ms": 30000},
-    {"label": "Import...", "cmd": "click", "name": "pelican.graphFiltersDialog.import"},
-    {"label": "the Qt import chooser", "cmd": "wait", "name": "pelican.graphFiltersDialog.importDialog", "visible": true, "timeout_ms": 20000},
-    {"label": "the import path", "cmd": "type", "name": "pelican.graphFiltersDialog.importDialog.fileName", "text": "{artifacts}/filters.json"},
-    {"label": "choose it", "cmd": "key", "name": "pelican.graphFiltersDialog.importDialog.fileName", "sequence": "Return"},
-    {"label": "the chooser closed", "cmd": "wait", "name": "pelican.graphFiltersDialog.importDialog", "missing": true, "timeout_ms": 20000},
-    {"label": "one imported", "cmd": "wait", "name": "pelican.graphFiltersDialog.state", "text": "Imported 1 filters, skipped 0", "timeout_ms": 30000},
-    {"label": "Save the reviewed merge", "cmd": "click", "name": "pelican.graphFiltersDialog.save"},
-    {"label": "the merge is saved", "cmd": "wait", "name": "pelican.graphFiltersDialog.state", "text": "Saved", "timeout_ms": 30000},
-    {"label": "the menu has the filter", "cmd": "wait", "name": "pelican.graphCanvasFilter.filter.filter", "enabled": true, "timeout_ms": 30000},
-    {"label": "import the same ids again", "cmd": "click", "name": "pelican.graphFiltersDialog.import"},
-    {"label": "the second import chooser", "cmd": "wait", "name": "pelican.graphFiltersDialog.importDialog", "visible": true, "timeout_ms": 20000},
-    {"label": "the same path", "cmd": "type", "name": "pelican.graphFiltersDialog.importDialog.fileName", "text": "{artifacts}/filters.json"},
-    {"label": "choose it again", "cmd": "key", "name": "pelican.graphFiltersDialog.importDialog.fileName", "sequence": "Return"},
-    {"label": "the duplicate is reported", "cmd": "wait", "name": "pelican.graphFiltersDialog.state", "text": "Imported 0 filters, skipped 1: filter", "timeout_ms": 30000}
+    {
+      "label": "the fixture engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "Edit filters",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.edit"
+    },
+    {
+      "label": "the dialog and initial load",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.addFilter",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "add a filter",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.addFilter"
+    },
+    {
+      "label": "save it",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.save"
+    },
+    {
+      "label": "the save completed",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Saved",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "export is available only after saving",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.export",
+      "enabled": true
+    },
+    {
+      "label": "Export...",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.export"
+    },
+    {
+      "label": "the Qt export chooser",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.exportDialog",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the exported path",
+      "cmd": "type",
+      "name": "pelican.graphFiltersDialog.exportDialog.fileName",
+      "text": "{artifacts}/filters.json"
+    },
+    {
+      "label": "choose it",
+      "cmd": "key",
+      "name": "pelican.graphFiltersDialog.exportDialog.fileName",
+      "sequence": "Return"
+    },
+    {
+      "label": "the chooser closed",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.exportDialog",
+      "missing": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the exported document exists",
+      "file": "exists",
+      "path": "{artifacts}/filters.json",
+      "value": true
+    },
+    {
+      "label": "it has the saved filter",
+      "file": "contains",
+      "path": "{artifacts}/filters.json",
+      "text": "\"id\": \"filter\"",
+      "value": true
+    },
+    {
+      "label": "close the source dialog",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.close"
+    },
+    {
+      "label": "open the other project",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the source document counts as a change",
+      "cmd": "wait",
+      "name": "pelican.unsavedScenePrompt",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "save when leaving",
+      "cmd": "click",
+      "name": "pelican.unsavedScenePrompt.save"
+    },
+    {
+      "label": "the other engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the other Graph tab",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "Edit filters in the other project",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.edit"
+    },
+    {
+      "label": "the other document loaded",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.import",
+      "enabled": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Import...",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.import"
+    },
+    {
+      "label": "the Qt import chooser",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.importDialog",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the import path",
+      "cmd": "type",
+      "name": "pelican.graphFiltersDialog.importDialog.fileName",
+      "text": "{artifacts}/filters.json"
+    },
+    {
+      "label": "choose it",
+      "cmd": "key",
+      "name": "pelican.graphFiltersDialog.importDialog.fileName",
+      "sequence": "Return"
+    },
+    {
+      "label": "the chooser closed",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.importDialog",
+      "missing": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "one imported",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Imported 1 filters, skipped 0",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "Save the reviewed merge",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.save"
+    },
+    {
+      "label": "the merge is saved",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Saved",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the menu has the filter",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.filter.filter"
+    },
+    {
+      "label": "choosing it works",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasFilter",
+      "contains": "Filter: ",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "import the same ids again",
+      "cmd": "click",
+      "name": "pelican.graphFiltersDialog.import"
+    },
+    {
+      "label": "the second import chooser",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.importDialog",
+      "visible": true,
+      "timeout_ms": 20000
+    },
+    {
+      "label": "the same path",
+      "cmd": "type",
+      "name": "pelican.graphFiltersDialog.importDialog.fileName",
+      "text": "{artifacts}/filters.json"
+    },
+    {
+      "label": "choose it again",
+      "cmd": "key",
+      "name": "pelican.graphFiltersDialog.importDialog.fileName",
+      "sequence": "Return"
+    },
+    {
+      "label": "the duplicate is reported",
+      "cmd": "wait",
+      "name": "pelican.graphFiltersDialog.state",
+      "text": "Imported 0 filters, skipped 1: filter",
+      "timeout_ms": 30000
+    }
   ],
   "invariants": {
     "undo": false,

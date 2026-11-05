@@ -820,6 +820,9 @@ TEST_CASE("HUB-1a a real Outliner rebuild leaves the Graph front standing",
     // this test reaches into; the refresh itself stays a signal away.
     QTreeWidgetItem *before = rig.row("Cube");
     REQUIRE(before != nullptr);
+    // A mark, not the pointer: a rebuilt row can land at the freed row's address.
+    constexpr int hub1a_old_row = Qt::UserRole + 900;
+    before->setData(0, hub1a_old_row, true);
     // The revision moves because a new object is declared: a poll that only
     // moved the number would leave the same outline, and the window would
     // rightly keep the rows it has.
@@ -828,7 +831,8 @@ TEST_CASE("HUB-1a a real Outliner rebuild leaves the Graph front standing",
     rig.window.outliner_refresh_timer_->setInterval(0);
     rig.window.outliner_refresh_timer_->start();
     REQUIRE(rig.pumpUntil([&] { return rig.row("Added") != nullptr; }));
-    CHECK(rig.row("Cube") != before);
+    REQUIRE(rig.row("Cube") != nullptr);
+    CHECK_FALSE(rig.row("Cube")->data(0, hub1a_old_row).toBool());
     rig.window.outliner_refresh_timer_->setInterval(250);
     rig.pumpFor(100);
     CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);

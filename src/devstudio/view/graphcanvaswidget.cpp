@@ -15237,6 +15237,10 @@ void GraphCanvasWidget::importSounds(const std::vector<std::filesystem::path> &f
     impl_->importSounds(files);
 }
 
+void GraphCanvasWidget::projectEngineChanging() {
+    impl_->graph_filter_engine_ready = false;
+}
+
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
     // REV-1: the old project's hand on a live band doesn't survive the switch,
     // or its next move would send a value to the new engine.

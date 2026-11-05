@@ -3385,6 +3385,7 @@ void MainWindow::openProjectNow(const QString &path) {
         refreshSelectionViews();
         frame_plan_->setProjectRoot(project_model_->projectRoot());
         fullscreen_pass_->setProjectRoot(project_model_->projectRoot());
+        graph_canvas_->projectEngineChanging();
         graph_canvas_->setProjectRoot(project_model_->projectRoot());
         const QString opened_root = displayPath(project_model_->projectRoot());
         // MG-1: a migration just applied to this project leaves its one line

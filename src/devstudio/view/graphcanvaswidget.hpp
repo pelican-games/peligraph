@@ -1509,6 +1509,10 @@ class GraphCanvasWidget final : public QWidget {
     void setConnected(bool connected);
     // Q-8. The project whose UI document names the nodes a ui.* sink can
     // write. Read again whenever the list is about to be offered.
+    // Before setProjectRoot on a project switch: what's connected still serves
+    // the old project until the viewport has opened the new engine, so nothing
+    // may ask it about the new project.
+    void projectEngineChanging();
     void setProjectRoot(const std::filesystem::path &project_root);
     // RTL-2s, decision 1: a ray tracing task's Enable hit groups… (a project
     // without a ray group layout) opens the Ray layout.
