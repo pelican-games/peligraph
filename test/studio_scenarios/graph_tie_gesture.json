@@ -1,0 +1,112 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_tie_gesture",
+  "description": "GT-1: inside the owned instance's body, Shift and the right button draw across the two lines entering sum and tie them at the crossings, and one Undo removes the bundle. The drag command applies right and Shift on press, moves and release.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the engine viewport answers editor RPC",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the owned instance is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "descend into its definition, which is where the lines are",
+      "cmd": "double_click",
+      "name": "pelican.graphCanvasView::graph_node#left"
+    },
+    {
+      "label": "the body's nodes are drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#sum",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "place both lines",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.autoLayout"
+    },
+    {
+      "label": "the automatic placement was saved",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasNotice",
+      "text": "Graph change saved.",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "fit the two lines",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.fitView"
+    },
+    {
+      "label": "no tie before the gesture",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.layout.ties.$len",
+      "value": 0
+    },
+    {
+      "label": "draw a Shift-right line across both lines entering sum",
+      "cmd": "drag",
+      "button": "right",
+      "modifiers": [
+        "shift"
+      ],
+      "from": {
+        "name": "pelican.graphCanvasView",
+        "scene": [
+          245,
+          0
+        ]
+      },
+      "to": {
+        "name": "pelican.graphCanvasView",
+        "scene": [
+          245,
+          320
+        ]
+      },
+      "steps": 12
+    },
+    {
+      "label": "the tie marker appears",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_tie#0",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the saved layout contains the two-line tie",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.layout.ties[0].edges.$len",
+      "value": 2,
+      "retry_ms": 60000
+    },
+    {
+      "label": "Undo",
+      "cmd": "action",
+      "name": "pelican.graphCanvas.undo"
+    },
+    {
+      "label": "the saved tie is gone",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "definitions.gain_curve.layout.ties.$len",
+      "value": 0,
+      "retry_ms": 60000
+    }
+  ]
+}

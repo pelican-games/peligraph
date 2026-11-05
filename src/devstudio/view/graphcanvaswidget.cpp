@@ -64,6 +64,7 @@
 #include <QGraphicsSceneMouseEvent>
 #include <QGraphicsSimpleTextItem>
 #include <QGraphicsView>
+#include <QWindow>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QDebug>
@@ -713,6 +714,10 @@ GraphCanvasScene::GraphCanvasScene(QObject *parent)
     layout_timer_->setInterval(GraphCanvasLayoutDebounceMs);
     QObject::connect(layout_timer_, &QTimer::timeout, this,
                      [this] { flushLayout(); });
+    // GT-1: a focus loss is delivered to the view or its viewport, not to
+    // this scene, so the scene watches for those two events itself. Only a
+    // pending tie gesture reacts; everything else is left alone.
+    if (auto *app = qApp) app->installEventFilter(this);
 }
 
 void GraphCanvasScene::setModel(GraphCanvasModel *model) {
@@ -1540,6 +1545,49 @@ bool GraphCanvasScene::insertReroute(const std::string &scope, const GraphCanvas
     return true;
 }
 
+namespace {
+double tieCross(const QPointF &a, const QPointF &b) {
+    return a.x() * b.y() - a.y() * b.x();
+}
+double tieDot(const QPointF &a, const QPointF &b) {
+    return a.x() * b.x() + a.y() * b.y();
+}
+} // namespace
+
+bool graphCanvasSegmentsCross(const QPointF &a, const QPointF &b, const QPointF &c,
+                              const QPointF &d, QPointF *at) {
+    const QPointF r = b - a;
+    const QPointF s = d - c;
+    if (r.isNull() || s.isNull()) return false;
+    const QPointF qp = c - a;
+    const double denom = tieCross(r, s);
+    // Collinear and otherwise parallel segments do not cross. In particular,
+    // drawing back over a line is not a tie crossing.
+    if (denom == 0.0) return false;
+    const double t = tieCross(qp, s) / denom;
+    const double u = tieCross(qp, r) / denom;
+    if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) return false;
+    if (at != nullptr) *at = a + r * t;
+    return true;
+}
+
+void GraphCanvasScene::createTie(const std::string &scope,
+                                 const std::vector<GraphCanvasEdgeKey> &edges,
+                                 QPointF position) {
+    if (model_ == nullptr || edges.size() < 2) return;
+    GraphCanvasTie tie;
+    tie.position = position;
+    auto &layout = placement(scope).layout;
+    for (const GraphCanvasEdgeKey &edge : edges) {
+        // One line belongs to at most one bundle.
+        detachFromTies(scope, edge);
+        tie.edges.push_back(edge);
+    }
+    layout.ties.push_back(std::move(tie));
+    noteLayoutChange(scope);
+    repopulate();
+}
+
 bool GraphCanvasScene::tieSelection() {
     if (model_ == nullptr) return false;
     const std::string scope = selection_scope_;
@@ -1614,20 +1662,268 @@ bool GraphCanvasScene::tieSelection() {
         return entry.points.empty();
     });
 
-    GraphCanvasTie tie;
-    tie.position = QPointF{x, picks.front().at.y()};
-    for (const Pick &pick : picks) {
-        // One line belongs to at most one bundle.
-        detachFromTies(scope, pick.key);
-        tie.edges.push_back(pick.key);
-    }
-    layout.ties.push_back(std::move(tie));
+    const QPointF position{x, picks.front().at.y()};
+    std::vector<GraphCanvasEdgeKey> keys;
+    keys.reserve(picks.size());
+    for (const Pick &pick : picks) keys.push_back(pick.key);
     clearControlSelection();
     selected_edges_.clear();
     selected_edge_.reset();
-    noteLayoutChange(scope);
-    repopulate();
+    createTie(scope, keys, position);
     return true;
+}
+
+bool GraphCanvasScene::tieScopeEditable(const std::string &scope) const {
+    // A folded view draws a node's pieces, not a layout it can write.
+    if (model_ == nullptr || !model_->canEdit() || model_->foldedView()) return false;
+    if (std::ranges::find(drawn_scopes_, scope) == drawn_scopes_.end()) return false;
+    return !GraphCanvasDrawing::layerScopeReadOnly(*model_, scope);
+}
+
+bool GraphCanvasScene::beginTieGesture(QGraphicsSceneMouseEvent &event) {
+    if (event.button() != Qt::RightButton ||
+        !event.modifiers().testFlag(Qt::ShiftModifier))
+        return false;
+    if (model_ == nullptr || !model_->canEdit() || model_->foldedView() || model_->busy())
+        return false;
+    // Another hand is already on something. A tie is a gesture of its own.
+    if (dragging()) return false;
+    TieGesture gesture;
+    gesture.scope = model_->currentScope();
+    gesture.press_scene = event.scenePos();
+    gesture.points.push_back(gesture.press_scene);
+    tie_gesture_ = std::move(gesture);
+    return true;
+}
+
+void GraphCanvasScene::drawTiePreview() {
+    if (!tie_gesture_ || !tie_gesture_->travelled || tie_gesture_->points.size() < 2)
+        return;
+    if (tie_gesture_->preview == nullptr) {
+        auto *preview = new QGraphicsPathItem;
+        QPen pen{currentStudioTheme().canvas.edge_selected, 1.8, Qt::DashLine};
+        // A line a hand sees is a line on screen: the dashes do not grow with
+        // the zoom, and the hand does not have to find the document's width.
+        pen.setCosmetic(true);
+        preview->setPen(pen);
+        preview->setZValue(1.0e9);
+        preview->setAcceptedMouseButtons(Qt::NoButton);
+        preview->setData(NodeGraphItemKindRole,
+                         QString::fromLatin1(GraphCanvasTiePreviewItem));
+        preview->setData(GraphCanvasScopeRole, qtext(tie_gesture_->scope));
+        addItem(preview);
+        tie_gesture_->preview = preview;
+    }
+    QPainterPath path{tie_gesture_->points.front()};
+    for (std::size_t index = 1; index < tie_gesture_->points.size(); ++index)
+        path.lineTo(tie_gesture_->points[index]);
+    tie_gesture_->preview->setPath(path);
+}
+
+void GraphCanvasScene::updateTieGesture(QGraphicsSceneMouseEvent &event) {
+    if (!tie_gesture_) return;
+    TieGesture &gesture = *tie_gesture_;
+    // Shift is the gesture's whole meaning, the scope its target, and a busy
+    // model cannot take a layout edit. Any of them going leaves nothing to
+    // finish.
+    if (!event.modifiers().testFlag(Qt::ShiftModifier) ||
+        event.buttons() != Qt::RightButton ||
+        model_ == nullptr || model_->busy() || model_->foldedView() ||
+        model_->currentScope() != gesture.scope) {
+        cancelTieGesture();
+        event.accept();
+        return;
+    }
+    if (!gesture.travelled) {
+        QPointF moved = event.scenePos() - gesture.press_scene;
+        if (!views().isEmpty()) {
+            const QTransform transform = views().front()->viewportTransform();
+            moved = transform.map(event.scenePos()) - transform.map(gesture.press_scene);
+        }
+        if (QLineF{QPointF{}, moved}.length() <= 4.0) {
+            event.accept();
+            return;
+        }
+        gesture.travelled = true;
+    }
+    // A move that says the same place again adds no segment; a zero-length
+    // one would only be skipped while crossing.
+    if (gesture.points.empty() || gesture.points.back() != event.scenePos())
+        gesture.points.push_back(event.scenePos());
+    drawTiePreview();
+    event.accept();
+}
+
+void GraphCanvasScene::cancelTieGesture() {
+    if (!tie_gesture_) return;
+    if (tie_gesture_->preview != nullptr) {
+        removeItem(tie_gesture_->preview);
+        delete tie_gesture_->preview;
+    }
+    tie_gesture_.reset();
+}
+
+void GraphCanvasScene::finishTieGesture(QGraphicsSceneMouseEvent &event) {
+    if (!tie_gesture_) return;
+    const bool travelled = tie_gesture_->travelled;
+    const bool context_seen = tie_gesture_->context_seen;
+    const QPointF context_scene = tie_gesture_->context_scene;
+    const QPoint context_screen = tie_gesture_->context_screen;
+    const std::string press_scope = tie_gesture_->scope;
+    std::vector<QPointF> points = tie_gesture_->points;
+    const bool valid = travelled && event.button() == Qt::RightButton &&
+                       event.buttons() == Qt::NoButton &&
+                       event.modifiers().testFlag(Qt::ShiftModifier) &&
+                       model_ != nullptr && !model_->busy() && !model_->foldedView() &&
+                       model_->currentScope() == press_scope;
+    if (valid && !points.empty() && points.back() != event.scenePos())
+        points.push_back(event.scenePos());
+
+    struct Crossing {
+        std::string scope;
+        GraphCanvasEdgeKey key;
+        QPointF at;
+        double along = 0.0;
+        double t = 0.0;
+    };
+    std::string chosen_scope;
+    std::vector<GraphCanvasEdgeKey> chosen_edges;
+    QPointF chosen_at;
+    std::size_t total = 0;
+    if (valid) {
+        // The drawn line, as segments with the distance along it each starts
+        // at. A repeated point is no segment at all.
+        struct DrawnSegment {
+            QPointF from;
+            QPointF to;
+            double start = 0.0;
+            double length = 0.0;
+        };
+        std::vector<DrawnSegment> drawn;
+        double cumulative = 0.0;
+        for (std::size_t index = 1; index < points.size(); ++index) {
+            const QPointF from = points[index - 1];
+            const QPointF to = points[index];
+            const double length = QLineF{from, to}.length();
+            if (length <= 0.0) continue;
+            drawn.push_back(DrawnSegment{from, to, cumulative, length});
+            cumulative += length;
+        }
+        std::vector<Crossing> crossings;
+        // A scope's real edges, read once: an item that claims to be a line
+        // the document does not hold (a derived drawing of something else,
+        // an item left by a refresh in flight) is not a line to tie.
+        std::map<std::string, std::set<GraphCanvasEdgeKey>> edges_by_scope;
+        for (QGraphicsItem *item : items()) {
+            if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeItem}) continue;
+            if (item->data(GraphCanvasDerivedRole).toBool()) continue;
+            if (!item->isVisible() || !item->isVisibleTo(nullptr)) continue;
+            auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+            if (line == nullptr) continue;
+            const std::string scope = itemScope(*item);
+            if (std::ranges::find(drawn_scopes_, scope) == drawn_scopes_.end()) continue;
+            const auto key = GraphCanvasEdgeKey{
+                item->data(NodeGraphToNameRole).toString().toStdString(),
+                item->data(GraphCanvasToPortRole).toString().toStdString()};
+            auto &known = edges_by_scope[scope];
+            if (known.empty()) {
+                for (const GraphCanvasEdge &edge : model_->edges(scope))
+                    known.insert(GraphCanvasEdgeKey{edge.to_node, edge.to_port});
+            }
+            if (!known.contains(key)) continue;
+            // toSubpathPolygons flattens the cubics the curve is drawn with.
+            // The centre line is what counts, not shape() (which is the wide
+            // stroke), so a line that passes near a curve does not graze it.
+            for (const QPolygonF &polygon : line->path().toSubpathPolygons()) {
+                if (polygon.size() < 2) continue;
+                QPolygonF mapped;
+                mapped.reserve(polygon.size());
+                for (const QPointF &point : polygon) mapped.push_back(line->mapToScene(point));
+                for (std::size_t index = 1; index < mapped.size(); ++index) {
+                    for (const DrawnSegment &segment : drawn) {
+                        QPointF at;
+                        if (!graphCanvasSegmentsCross(segment.from, segment.to, mapped[index - 1],
+                                                      mapped[index], &at))
+                            continue;
+                        const QPointF along = segment.to - segment.from;
+                        const double length2 = tieDot(along, along);
+                        const double t = length2 > 0.0
+                                             ? std::clamp(tieDot(at - segment.from, along) / length2,
+                                                          0.0, 1.0)
+                                             : 0.0;
+                        crossings.push_back(Crossing{scope, key, at,
+                                                     segment.start + t * segment.length, t});
+                    }
+                }
+            }
+        }
+        std::ranges::stable_sort(crossings, [](const Crossing &a, const Crossing &b) {
+            if (a.along != b.along) return a.along < b.along;
+            if (a.t != b.t) return a.t < b.t;
+            if (a.scope != b.scope) return a.scope < b.scope;
+            return a.key < b.key;
+        });
+        // One line is one crossing, the first one met along the drawn line,
+        // whatever its item or reroute segment did.
+        std::set<std::pair<std::string, GraphCanvasEdgeKey>> seen;
+        std::vector<Crossing> unique;
+        for (const Crossing &crossing : crossings)
+            if (seen.emplace(crossing.scope, crossing.key).second) unique.push_back(crossing);
+        total = unique.size();
+        const auto first_editable = std::ranges::find_if(
+            unique, [this](const Crossing &crossing) {
+                return tieScopeEditable(crossing.scope);
+            });
+        if (first_editable != unique.end()) {
+            chosen_scope = first_editable->scope;
+            QPointF sum;
+            std::size_t kept = 0;
+            for (const Crossing &crossing : unique) {
+                if (crossing.scope != chosen_scope) continue;
+                chosen_edges.push_back(crossing.key);
+                // The crossing is a scene point; a tie is stored in the
+                // scope's own layout coordinates, which a zone's body does
+                // not share with the scene.
+                sum += toScopePoint(chosen_scope, crossing.at);
+                ++kept;
+            }
+            if (kept > 0) chosen_at = sum / static_cast<qreal>(kept);
+        }
+    }
+
+    // The preview is not a line and the document does not answer for it: it
+    // goes before anything is written, and no state of the gesture outlives
+    // the call that finishes it.
+    cancelTieGesture();
+    if (!travelled) {
+        // A press and release in place is a right click. The context event
+        // that came before this release (Windows) was held, and is what
+        // opens the menu now; one that comes after (X11) is let through.
+        if (context_seen) {
+            tie_context_ = TieContextAction::consume;
+            showContextMenu(context_scene, context_screen);
+        } else {
+            tie_context_ = TieContextAction::pass;
+        }
+        event.accept();
+        return;
+    }
+    // This gesture's context event, if the platform sends one after the
+    // release, belongs to the click that was turned into a tie.
+    tie_context_ = TieContextAction::consume;
+    if (!valid) {
+        event.accept();
+        return;
+    }
+    if (chosen_edges.size() >= 2) {
+        createTie(chosen_scope, chosen_edges, chosen_at);
+    } else if (model_ != nullptr) {
+        model_->setEditNotice({InspectorNoticeKind::Error,
+                               "A tie needs at least two lines; this crossed " +
+                                   std::to_string(total) + "."});
+        if (noticeChanged) noticeChanged();
+    }
+    event.accept();
 }
 
 bool GraphCanvasScene::untieSelection() {
@@ -1911,6 +2207,9 @@ void GraphCanvasScene::refreshLayerBands() {
 }
 
 void GraphCanvasScene::clear() {
+    // GT-1: the preview is an item like any other; the pointer must not
+    // outlive the base class's clear.
+    cancelTieGesture();
     routing_index_.invalidate();
     QGraphicsScene::clear();
 }
@@ -2388,6 +2687,7 @@ void GraphCanvasScene::repopulate() {
     // selected as long as the document still holds it (N-1's recorded hole).
     const auto previous_node = selected_node_;
     const auto previous_edge = selected_edge_;
+    cancelTieGesture();
     clear();
     { const GuiTraceSpan mark{"graph_repop_mark", 1}; } // LT-1: the scene emptied; reading the model begins
     zone_content_.clear();
@@ -4226,7 +4526,22 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
     // NB-5: while a stack's edit is in the air the canvas stays enabled for
     // that stack's rows alone; any other press is what a disabled canvas
     // would make of it -- nothing.
+    // GT-1: the one-shot context state a finished tie click left belongs to
+    // that click; a new press is a new question.
+    tie_context_.reset();
     if (model_ != nullptr && model_->busy() && layerEditInFlight() && !takesWhileBusy(event->scenePos(), false)) {
+        event->accept();
+        return;
+    }
+    // GT-1: another button while a tie is in the hand is not part of it.
+    if (tie_gesture_) {
+        cancelTieGesture();
+        event->accept();
+        return;
+    }
+    // GT-1: a Shift+right press is a tie before it is a pick, a lift or a
+    // node drag. The scene owns every move and the release from here.
+    if (beginTieGesture(*event)) {
         event->accept();
         return;
     }
@@ -4476,6 +4791,11 @@ void GraphCanvasScene::mousePressEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
+    if (tie_gesture_) {
+        updateTieGesture(*event);
+        event->accept();
+        return;
+    }
     rehideLiftedEdges();
     // GC-1: a press on a connected input has not lifted anything yet. The
     // slop is four pixels on screen, so the scene distance it takes follows
@@ -4516,6 +4836,14 @@ void GraphCanvasScene::mouseMoveEvent(QGraphicsSceneMouseEvent *event) {
 }
 
 void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
+    // GT-1: the release finishes the tie; no base-class dispatch and no
+    // partial redraw's follow-up may read the items the tie just replaced.
+    if (tie_gesture_) {
+        finishTieGesture(*event);
+        event->accept();
+        if (gestureEnded) gestureEnded();
+        return;
+    }
     // GS-3a: a node drawn again partly waited for the hand on it.
     const auto follow = qScopeGuard([this] { followAfterGesture(); });
     if (layer_drag_) {
@@ -4537,23 +4865,18 @@ void GraphCanvasScene::mouseReleaseEvent(QGraphicsSceneMouseEvent *event) {
     if (gestureEnded) gestureEnded();
 }
 
-void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
-    if (model_ != nullptr && model_->busy() && layerEditInFlight()) {
-        event->accept();
-        return;
-    }
-    context_position_ = event->scenePos();
+bool GraphCanvasScene::showContextMenu(const QPointF &scene_position,
+                                       const QPoint &screen_position) {
+    context_position_ = scene_position;
     // GL-3a: a fold group's heading has its own menu.
     if (foldItemMenu)
-        for (QGraphicsItem *item : items(event->scenePos())) {
-            if (foldItemMenu(*item, event->screenPos())) {
-                event->accept();
-                return;
-            }
+        for (QGraphicsItem *item : items(scene_position)) {
+            if (foldItemMenu(*item, screen_position))
+                return true;
             if (isNodeSurface(nodeGraphItemKind(*item))) break;
         }
     // GL-1e, decision 2: a line into a rendering-section pass offers Delete.
-    for (QGraphicsItem *item : items(event->scenePos())) {
+    for (QGraphicsItem *item : items(scene_position)) {
         if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasPassInputEdgeItem}) continue;
         selectPassInput(item->data(NodeGraphToNameRole).toString().toStdString(),
                         static_cast<std::size_t>(
@@ -4571,20 +4894,19 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
             QMetaObject::invokeMethod(
                 this, [this] { deletePassInput(); }, Qt::QueuedConnection);
         });
-        event->accept();
-        menu.exec(event->screenPos());
-        return;
+        menu.exec(screen_position);
+        return true;
     }
     // LP-4d1: opened inside a zone, the menu adds to the zone's body.
     const std::string scope = scopeAt(context_position_);
     const bool root = scope.empty();
     QMenu menu;
     // NB-3: over a stack's row, Add filter ▸ first.
-    if (addLayerRowMenuEntries(menu, event->scenePos())) menu.addSeparator();
+    if (addLayerRowMenuEntries(menu, scene_position)) menu.addSeparator();
     // GL-5d: over a node, what only the Frame Plan offered for it (Order…,
     // Fix sockets, Edit target…, Expand to edit…), the node picked first.
     if (nodeMenuEntries)
-        for (QGraphicsItem *item : items(event->scenePos())) {
+        for (QGraphicsItem *item : items(scene_position)) {
             if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
             nodeMenuEntries(menu, itemScope(*item),
                             item->data(NodeGraphNameRole).toString().toStdString(), false);
@@ -4593,7 +4915,7 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     // UX-3, decision 3: over a render node's input socket, how that port
     // reads -- what `ports` held as JSON -- comes first.
     if (model_ != nullptr)
-        for (QGraphicsItem *item : items(event->scenePos())) {
+        for (QGraphicsItem *item : items(scene_position)) {
             if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} ||
                 item->data(GraphCanvasSocketDirectionRole).toString() != QLatin1String{"input"})
                 continue;
@@ -4636,7 +4958,7 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     // Decision 6: an input of a root loop can read one element of another
     // loop's p[].
     if (model_ != nullptr && perIterationRequested && model_->currentScope().empty()) {
-        for (QGraphicsItem *item : items(event->scenePos())) {
+        for (QGraphicsItem *item : items(scene_position)) {
             if (nodeGraphItemKind(*item) != QLatin1String{GraphCanvasSocketItem} &&
                 nodeGraphItemKind(*item) != QLatin1String{GraphCanvasNodeLabelItem})
                 continue;
@@ -4695,7 +5017,7 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     std::string definition;
     if (model_ != nullptr && rename_definition_action_ != nullptr &&
         delete_definition_action_ != nullptr)
-        for (QGraphicsItem *item : items(event->scenePos())) {
+        for (QGraphicsItem *item : items(scene_position)) {
             const QString kind = nodeGraphItemKind(*item);
             if (kind == QLatin1String{GraphCanvasBreadcrumbItem}) {
                 definition = model_->currentScope();
@@ -4719,7 +5041,7 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
     // NB-1 (design_node_bodies 2.2): over a node, its three views by name --
     // for every picked node when it is one of them.
     if (model_ != nullptr)
-        for (QGraphicsItem *item : items(event->scenePos())) {
+        for (QGraphicsItem *item : items(scene_position)) {
             if (!isNodeSurface(nodeGraphItemKind(*item))) continue;
             // Not a folded node, a fold group, or the inside of a zone.
             if (item->data(GraphCanvasDerivedRole).toBool() ||
@@ -4760,17 +5082,43 @@ void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
         }
     // GL-3a, decision 1: the picked root nodes into one fold group.
     if (foldMenuEntries && root) foldMenuEntries(menu);
-    if (menu.actions().isEmpty()) {
-        QGraphicsScene::contextMenuEvent(event);
-        return;
-    }
-    event->accept();
+    if (menu.actions().isEmpty()) return false;
     menu_scope_ = scope;
-    menu.exec(event->screenPos());
+    menu.exec(screen_position);
     menu_scope_.reset();
     if (!definition.empty() && definition_target_) definition_target_(std::nullopt);
+    return true;
 }
 
+void GraphCanvasScene::contextMenuEvent(QGraphicsSceneContextMenuEvent *event) {
+    if (model_ != nullptr && model_->busy() && layerEditInFlight()) {
+        event->accept();
+        return;
+    }
+    // GT-1: a context event that belongs to a tie press is held until the
+    // release says whether the press was a click or a line. Some platforms
+    // send it before the release, some after; both end up at the same menu.
+    if (tie_gesture_ && event->reason() == QGraphicsSceneContextMenuEvent::Mouse) {
+        tie_gesture_->context_seen = true;
+        tie_gesture_->context_scene = event->scenePos();
+        tie_gesture_->context_screen = event->screenPos();
+        event->accept();
+        return;
+    }
+    if (tie_context_ && event->reason() == QGraphicsSceneContextMenuEvent::Mouse) {
+        const TieContextAction action = *tie_context_;
+        tie_context_.reset();
+        if (action == TieContextAction::consume) {
+            event->accept();
+            return;
+        }
+    }
+    if (showContextMenu(event->scenePos(), event->screenPos())) {
+        event->accept();
+        return;
+    }
+    QGraphicsScene::contextMenuEvent(event);
+}
 // One editor at a time, over the thing it edits. It owns nothing the scene
 // owns: the proxy is an item like any other, and clearing the scene ends it.
 struct GraphCanvasScene::InlineEditor {
@@ -4801,6 +5149,47 @@ GraphCanvasScene::~GraphCanvasScene() {
     // must not be left watching a widget the base class is about to delete.
     if (editor_ && editor_->widget != nullptr && editor_->filter)
         editor_->widget->removeEventFilter(editor_->filter.get());
+    if (auto *app = qApp) app->removeEventFilter(this);
+}
+
+bool GraphCanvasScene::event(QEvent *event) {
+    if (tie_gesture_ &&
+        (event->type() == QEvent::FocusOut || event->type() == QEvent::WindowDeactivate))
+        cancelTieGesture();
+    return QGraphicsScene::event(event);
+}
+
+bool GraphCanvasScene::eventFilter(QObject *watched, QEvent *event) {
+    if (!tie_gesture_) return QGraphicsScene::eventFilter(watched, event);
+    const QEvent::Type type = event->type();
+    if (type != QEvent::FocusOut && type != QEvent::WindowDeactivate)
+        return QGraphicsScene::eventFilter(watched, event);
+    bool ours = false;
+    for (QGraphicsView *view : views()) {
+        if (watched == view || watched == view->viewport()) {
+            ours = true;
+            break;
+        }
+        if (type == QEvent::FocusOut) {
+            // A proxy editor or a scrollbar of the view losing focus is still
+            // this canvas losing the hand that was drawing.
+            if (auto *widget = qobject_cast<QWidget *>(watched);
+                widget != nullptr && view->isAncestorOf(widget)) {
+                ours = true;
+                break;
+            }
+        } else {
+            QWidget *window = view->window();
+            if (watched == window ||
+                (window != nullptr && window->windowHandle() != nullptr &&
+                 watched == static_cast<QObject *>(window->windowHandle()))) {
+                ours = true;
+                break;
+            }
+        }
+    }
+    if (ours) cancelTieGesture();
+    return QGraphicsScene::eventFilter(watched, event);
 }
 
 namespace {
@@ -5450,6 +5839,12 @@ bool GraphCanvasScene::deleteSelection() {
 }
 
 void GraphCanvasScene::keyPressEvent(QKeyEvent *event) {
+    // GT-1: Escape puts a tie gesture down before it is a click either.
+    if (event->key() == Qt::Key_Escape && tie_gesture_) {
+        cancelTieGesture();
+        event->accept();
+        return;
+    }
     // GC-1: a line in the hand is the scene's, and Escape puts it back. This
     // is before the shortcuts below so a pending line is never mistaken for
     // history while nothing else on the canvas has a claim on Escape.

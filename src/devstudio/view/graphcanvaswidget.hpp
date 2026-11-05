@@ -47,6 +47,19 @@ class RenderEditHistory;
 
 class RenderConfigDigest;
 
+// GT-1: the dashed line a tie gesture draws before it is let go. It is not an
+// edge -- nothing in the document answers for it yet -- and a picture of the
+// canvas leaves it out.
+inline constexpr auto GraphCanvasTiePreviewItem = "graph_tie_preview";
+
+// GT-1: where two segments cross, inclusive of their endpoints. Parallel
+// segments, including a collinear overlap, and zero-length segments do not
+// cross. No pixel tolerance: a line a fraction of a unit off the centre line
+// has not crossed it.
+[[nodiscard]] bool graphCanvasSegmentsCross(const QPointF &a, const QPointF &b,
+                                            const QPointF &c, const QPointF &d,
+                                            QPointF *at);
+
 // Everything the document says about where one scope was drawn. The canvas
 // keeps one of these for the scope on screen; it is what `set_layout` writes
 // and what `get_graph_instances` reads back.
@@ -291,6 +304,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     // GC-1: called when the model has answered; a refused cut draws its line again.
     void settleLiftedCut();
     bool tieSelection();
+    // GT-1: tie `edges` at `position`, in `scope`'s own layout coordinates.
+    // Splits tieSelection's last half: this makes the tie and says one layout
+    // change; it does not touch the selection.
+    void createTie(const std::string &scope, const std::vector<GraphCanvasEdgeKey> &edges,
+                   QPointF position);
     // The other way: every slot of the picked tie becomes a reroute of its own.
     bool untieSelection();
     [[nodiscard]] const std::vector<GraphCanvasEdge> &selectedEdges() const noexcept {
@@ -482,7 +500,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // in-place editor to close.
     [[nodiscard]] bool dragging() const {
         return handling_press_ || pending_connection_.has_value() || layer_drag_.has_value() ||
-               mouseGrabberItem() != nullptr;
+               tie_gesture_.has_value() || mouseGrabberItem() != nullptr;
     }
     // What the open editor currently holds, and a way to set it without a
     // keyboard: the same text the user would have typed.
@@ -635,6 +653,11 @@ class GraphCanvasScene final : public QGraphicsScene {
     void mouseDoubleClickEvent(QGraphicsSceneMouseEvent *event) override;
     void contextMenuEvent(QGraphicsSceneContextMenuEvent *event) override;
     void keyPressEvent(QKeyEvent *event) override;
+    // GT-1: focus loss and window deactivation end a tie gesture. They arrive
+    // at the view or its viewport, not at the scene, so the scene watches the
+    // application for the two event types while a gesture is pending.
+    bool event(QEvent *event) override;
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
   private:
     // GC-1: a connected input that a press lifted. The edge stays where it
@@ -673,6 +696,36 @@ class GraphCanvasScene final : public QGraphicsScene {
         // takes it.
         bool from_folded = false;
     };
+    // GT-1: a Shift+right press that may draw a tie. Until the hand travels
+    // past the view's slop it is still a click, and the context menu it would
+    // have opened is held until the release says which it was.
+    struct TieGesture {
+        // The scope that was on screen at the press: a gesture that leaves it
+        // is not a tie in this scope.
+        std::string scope;
+        QPointF press_scene;
+        std::vector<QPointF> points;
+        bool travelled = false;
+        // A Mouse-reason context event that arrived while the press was still
+        // pending. Kept, not shown, so a release in place opens it once.
+        bool context_seen = false;
+        QPointF context_scene;
+        QPoint context_screen;
+        QGraphicsPathItem *preview = nullptr;
+    };
+    std::optional<TieGesture> tie_gesture_;
+    // GT-1: after a release, the context event that belongs to the same
+    // gesture is consumed once (or passed once, when nothing was tied). The
+    // next press drops the state.
+    enum class TieContextAction { pass, consume };
+    std::optional<TieContextAction> tie_context_;
+    bool beginTieGesture(QGraphicsSceneMouseEvent &event);
+    void updateTieGesture(QGraphicsSceneMouseEvent &event);
+    void finishTieGesture(QGraphicsSceneMouseEvent &event);
+    void cancelTieGesture();
+    void drawTiePreview();
+    [[nodiscard]] bool tieScopeEditable(const std::string &scope) const;
+    bool showContextMenu(const QPointF &scene_position, const QPoint &screen_position);
     // Decision 7: what a zone's frame is drawn around, per body, so the
     // frame can follow a body node through a drag.
     struct ZoneGeometry {

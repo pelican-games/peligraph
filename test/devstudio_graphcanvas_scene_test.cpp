@@ -100,6 +100,7 @@
 #include <QStringList>
 #include <QTimer>
 #include <QUrl>
+#include <QWindow>
 
 #include <algorithm>
 #include <chrono>
@@ -19028,6 +19029,9 @@ std::vector<std::string> gs2Picture(QGraphicsScene &scene) {
     for (QGraphicsItem *item : scene.items()) {
         const QString kind = nodeGraphItemKind(*item);
         if (kind.isEmpty()) continue;
+        // GT-1: the line a tie gesture is still drawing is feedback, not the
+        // picture of the graph; it belongs to no rebuild and no document.
+        if (kind == QLatin1String{GraphCanvasTiePreviewItem}) continue;
         QStringList key{kind};
         for (const int role : {GraphCanvasScopeRole, NodeGraphNameRole, GraphCanvasPortRole,
                                NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
@@ -19526,6 +19530,7 @@ std::vector<std::string> gs3aPicture(QGraphicsScene &scene) {
     for (QGraphicsItem *item : scene.items()) {
         const QString kind = nodeGraphItemKind(*item);
         if (kind.isEmpty()) continue;
+        if (kind == QLatin1String{GraphCanvasTiePreviewItem}) continue;
         QStringList key{kind};
         for (const int role : {GraphCanvasScopeRole, NodeGraphNameRole, GraphCanvasPortRole,
                                NodeGraphFromNameRole, GraphCanvasFromPortRole, NodeGraphToNameRole,
@@ -29454,4 +29459,602 @@ TEST_CASE("GF-1a Show and reveal both win over the filter, and a stub press brin
     CHECK(value_model.activeGraphFilter() == "both");
     CHECK(nodeItem(value_scene, QStringLiteral("producer")) != nullptr);
     CHECK(nodeItem(value_scene, QStringLiteral("consumer")) != nullptr);
+}
+
+
+namespace {
+using namespace PelicanStudio;
+struct Gt1View {
+    GraphCanvasModel model;
+    GraphCanvasScene scene;
+    QGraphicsView view;
+    Json document = twoEdgeDocument();
+    int commits = 0;
+
+    Gt1View() {
+        model.setConnected(true);
+        answer(model, document);
+        scene.setModel(&model);
+        view.setScene(&scene);
+        view.resize(1100, 800);
+        view.show();
+        QApplication::processEvents();
+    }
+
+    Json commit() {
+        INFO("fixture commit " << ++commits);
+        QCoreApplication::processEvents(QEventLoop::AllEvents,
+                                        GraphCanvasScene::GraphCanvasLayoutDebounceMs + 50);
+        scene.flushLayout();
+        const Json layout = takeLayoutEdit(model);
+        document["layout"] = layout;
+        for (const auto &request : model.takeRpcRequests()) {
+            REQUIRE(request.method == "get_edit_result");
+            model.receiveRpcResult(request.request_id,
+                Json{{"status", "committed"}, {"committed", true},
+                     {"source_digest", {{"hex", "gt1-" + std::to_string(commits)}}}}.dump());
+        }
+        const std::string digest = "gt1-" + std::to_string(commits);
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances") {
+                Json reply = context(document);
+                reply["source_digest"] = {{"hex", digest}};
+                model.receiveRpcResult(request.request_id, reply.dump());
+            } else if (request.method == "get_graph_catalog") {
+                model.receiveRpcResult(request.request_id,
+                    Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
+                         {"modules", Json::array()}}.dump());
+            } else if (request.method == "get_live_inputs") {
+                model.receiveRpcResult(request.request_id, Json{{"inputs", Json::array()}}.dump());
+            }
+        }
+        scene.repopulate();
+        return layout;
+    }
+
+    void send(QEvent::Type type, const QPointF &scene_point,
+              Qt::MouseButton button = Qt::NoButton,
+              Qt::MouseButtons buttons = Qt::NoButton,
+              Qt::KeyboardModifiers modifiers = Qt::ShiftModifier) {
+        const QPoint local = view.mapFromScene(scene_point);
+        const QPoint global = view.viewport()->mapToGlobal(local);
+        QMouseEvent event{type, QPointF{local}, QPointF{global}, button, buttons, modifiers};
+        QApplication::sendEvent(view.viewport(), &event);
+        QCoreApplication::processEvents();
+    }
+
+    void press(const QPointF &at, Qt::MouseButton button = Qt::RightButton,
+               Qt::KeyboardModifiers modifiers = Qt::ShiftModifier) {
+        send(QEvent::MouseButtonPress, at, button, button, modifiers);
+    }
+    void move(const QPointF &at, Qt::MouseButtons buttons = Qt::RightButton,
+              Qt::KeyboardModifiers modifiers = Qt::ShiftModifier) {
+        send(QEvent::MouseMove, at, Qt::NoButton, buttons, modifiers);
+    }
+    void release(const QPointF &at, Qt::MouseButton button = Qt::RightButton,
+                 Qt::KeyboardModifiers modifiers = Qt::ShiftModifier) {
+        send(QEvent::MouseButtonRelease, at, button, Qt::NoButton, modifiers);
+    }
+    void drag(const std::vector<QPointF> &points) {
+        REQUIRE(points.size() >= 2);
+        press(points.front());
+        for (std::size_t i = 1; i < points.size(); ++i) move(points[i]);
+        release(points.back());
+    }
+
+    QRectF bothEdges() const {
+        QRectF result;
+        for (QGraphicsItem *item : scene.items())
+            if (item->data(GraphCanvasScopeRole).toString().isEmpty() &&
+                nodeGraphItemKind(*item) == QLatin1String{GraphCanvasEdgeItem})
+                result = result.isNull() ? item->sceneBoundingRect()
+                                        : result.united(item->sceneBoundingRect());
+        return result;
+    }
+
+    std::vector<QPointF> across(double x) const {
+        const QRectF box = bothEdges();
+        return {QPointF{x, box.top() - 50}, QPointF{x, box.bottom() + 50}};
+    }
+};
+
+std::vector<QPointF> gt1Crossings(const Gt1View &fixture, double x) {
+    std::vector<QPointF> found;
+    for (QGraphicsItem *item : fixture.scene.items()) {
+        auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+        if (line == nullptr || nodeGraphItemKind(*item) != QLatin1String{GraphCanvasEdgeItem})
+            continue;
+        const QRectF box = fixture.bothEdges();
+        for (const QPolygonF &poly : line->path().toSubpathPolygons())
+            for (int i = 1; i < poly.size(); ++i) {
+                QPointF at;
+                if (graphCanvasSegmentsCross({x, box.top() - 50}, {x, box.bottom() + 50},
+                                             line->mapToScene(poly[i - 1]),
+                                             line->mapToScene(poly[i]), &at))
+                    found.push_back(at);
+            }
+    }
+    std::ranges::sort(found, {}, &QPointF::y);
+    found.erase(std::unique(found.begin(), found.end(), [](const QPointF &a, const QPointF &b) {
+        return QLineF{a, b}.length() < 1e-6;
+    }), found.end());
+    return found;
+}
+
+std::size_t gt1PreviewCount(GraphCanvasScene &scene) {
+    return itemsOfKind(scene, GraphCanvasTiePreviewItem).size();
+}
+
+int gt1Context(QGraphicsView &view, const QPointF &at,
+               QContextMenuEvent::Reason reason = QContextMenuEvent::Mouse) {
+    const QPoint local = view.mapFromScene(at);
+    QCoreApplication::postEvent(view.viewport(), new QContextMenuEvent(
+        reason, local, view.viewport()->mapToGlobal(local)));
+    QCoreApplication::processEvents();
+    return 0;
+}
+
+struct Gt1Menus {
+    int shown = 0;
+    QTimer timer;
+    Gt1Menus() {
+        timer.setInterval(0);
+        QObject::connect(&timer, &QTimer::timeout, &timer, [this] {
+            for (QWidget *widget : QApplication::topLevelWidgets())
+                if (auto *menu = qobject_cast<QMenu *>(widget); menu && menu->isVisible()) {
+                    ++shown;
+                    menu->close();
+                }
+        });
+        timer.start();
+    }
+};
+} // namespace
+
+TEST_CASE("GT-1 segment crossings include endpoints but reject overlap and empty segments",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    QPointF at;
+    CHECK(graphCanvasSegmentsCross({0, 0}, {10, 0}, {10, 0}, {10, 10}, &at));
+    CHECK(at == QPointF{10, 0});
+    CHECK_FALSE(graphCanvasSegmentsCross({0, 0}, {10, 0}, {5, 0}, {15, 0}, &at));
+    CHECK_FALSE(graphCanvasSegmentsCross({0, 0}, {0, 0}, {-1, 0}, {1, 0}, &at));
+}
+
+TEST_CASE("GT-1 a Shift-right line ties its crossings with exact coordinates and one Undo",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    QGraphicsPathItem *gain = edgeItem(f.scene, "clock", "value", "left", "gain");
+    REQUIRE(gain != nullptr);
+    f.scene.selectEdge(GraphCanvasEdge{"clock", "value", "left", "gain"}, false);
+    const auto selected = f.scene.selectedEdges();
+    // Translate both nodes: the edge item coordinates and scene coordinates differ.
+    for (QGraphicsItem *item : f.scene.items())
+        if (nodeGraphItemKind(*item) == QLatin1String{GraphCanvasNodeItem})
+            item->setPos(item->pos() + QPointF{135, 85});
+    QCoreApplication::processEvents();
+    gain = edgeItem(f.scene, "clock", "value", "left", "gain");
+    REQUIRE(gain != nullptr);
+    const double x = f.view.mapToScene(
+        f.view.mapFromScene(gain->mapToScene(gain->path().pointAtPercent(0.5)))).x();
+    const std::vector<QPointF> expected = gt1Crossings(f, x);
+    REQUIRE(expected.size() == 2);
+    const QPointF mean = (expected[0] + expected[1]) / 2.0;
+    const auto before_picture = gs3aPicture(f.scene);
+    f.press({x, f.bothEdges().top() - 50});
+    f.move({x, f.bothEdges().bottom() + 50});
+    REQUIRE(gt1PreviewCount(f.scene) == 1);
+    CHECK(gs3aPicture(f.scene) == before_picture);
+    CHECK(f.scene.dragging());
+    f.release({x, f.bothEdges().bottom() + 50});
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    CHECK(f.scene.layout().ties[0].edges.size() == 2);
+    CHECK(std::abs(f.scene.layout().ties[0].position.x() - mean.x()) < 1e-6);
+    CHECK(std::abs(f.scene.layout().ties[0].position.y() - mean.y()) < 1e-6);
+    REQUIRE(f.scene.selectedEdges().size() == selected.size());
+    CHECK(f.scene.selectedEdges()[0].to_node == selected[0].to_node);
+    CHECK(f.scene.selectedEdges()[0].to_port == selected[0].to_port);
+    CHECK_FALSE(f.scene.dragging());
+    CHECK(gt1PreviewCount(f.scene) == 0);
+    f.commit();
+    gs3aSameAsRebuilt(f.scene);
+    f.scene.undoEdit();
+    f.commit();
+    CHECK(f.scene.layout().ties.empty());
+    f.scene.redoEdit();
+    f.commit();
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    CHECK(f.scene.layout().ties[0].edges.size() == 2);
+}
+
+TEST_CASE("GT-1 zero lines crossed reports zero without a layout edit",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    f.drag({{-1000, -1000}, {-980, -980}});
+    CHECK(f.model.editNotice().message == "A tie needs at least two lines; this crossed 0.");
+    CHECK(f.scene.layout().ties.empty());
+    (void)f.model.takeRpcRequests();
+}
+
+TEST_CASE("GT-1 an edge crossed more than once counts once and reroutes survive",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    auto *line = edgeItem(f.scene, "clock", "value", "left", "gain");
+    REQUIRE(line != nullptr);
+    REQUIRE(f.scene.insertReroute(GraphCanvasEdge{"clock", "value", "left", "gain"},
+                                  line->path().pointAtPercent(0.5) + QPointF{0, 80}));
+    f.scene.flushLayout();
+    f.commit();
+    edgeItem(f.scene, "clock", "value", "left", "bias")->setVisible(false);
+    const auto reroutes = f.scene.layout().reroutes;
+    const QRectF box = edgeItem(f.scene, "clock", "value", "left", "gain")->sceneBoundingRect();
+    const double y = box.center().y();
+    const auto cut = std::vector<QPointF>{{box.left() - 20, y - 30},
+                                          {box.right() + 20, y - 30},
+                                          {box.left() - 20, y + 30}};
+    f.drag(cut);
+    CHECK(f.model.editNotice().message == "A tie needs at least two lines; this crossed 1.");
+    CHECK(f.scene.layout().ties.empty());
+    REQUIRE(f.scene.layout().reroutes.size() == reroutes.size());
+    CHECK(f.scene.layout().reroutes[0].points == reroutes[0].points);
+    CHECK(f.scene.layout().reroutes[0].edge.node == reroutes[0].edge.node);
+    CHECK(f.scene.layout().reroutes[0].edge.port == reroutes[0].edge.port);
+    (void)f.model.takeRpcRequests();
+}
+
+TEST_CASE("GT-1 cancel paths remove the preview and permit a fresh gesture",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    const auto path = f.across(f.bothEdges().center().x());
+    enum class Cancel { Escape, Focus, Deactivate, Repopulate, Shift, OtherButton };
+    const auto cancel = GENERATE(Cancel::Escape, Cancel::Focus, Cancel::Deactivate,
+                                 Cancel::Repopulate, Cancel::Shift, Cancel::OtherButton);
+    f.press(path[0]);
+    f.move(path[1]);
+    REQUIRE(gt1PreviewCount(f.scene) == 1);
+    if (cancel == Cancel::Escape) {
+        QKeyEvent key{QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier};
+        QApplication::sendEvent(f.view.viewport(), &key);
+    } else if (cancel == Cancel::Focus) {
+        QFocusEvent out{QEvent::FocusOut, Qt::OtherFocusReason};
+        QApplication::sendEvent(f.view.viewport(), &out);
+    } else if (cancel == Cancel::Deactivate) {
+        QEvent deactivated{QEvent::WindowDeactivate};
+        QCoreApplication::sendEvent(f.view.windowHandle(), &deactivated);
+    } else if (cancel == Cancel::Repopulate) {
+        f.scene.repopulate();
+    } else if (cancel == Cancel::Shift) {
+        f.move(path[1], Qt::RightButton, Qt::NoModifier);
+    } else {
+        f.send(QEvent::MouseButtonPress, path[1], Qt::LeftButton,
+               Qt::LeftButton | Qt::RightButton, Qt::ShiftModifier);
+    }
+    CHECK(gt1PreviewCount(f.scene) == 0);
+    CHECK(f.scene.layout().ties.empty());
+    CHECK_FALSE(f.scene.dragging());
+    f.drag(path);
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    (void)f.model.takeRpcRequests();
+}
+
+
+TEST_CASE("GT-1 crossing a line twice and a hidden partner still reports one",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    auto *bias = edgeItem(f.scene, "clock", "value", "left", "bias");
+    REQUIRE(bias != nullptr);
+    bias->setVisible(false);
+    const QRectF box = edgeItem(f.scene, "clock", "value", "left", "gain")->sceneBoundingRect();
+    const double y = box.center().y();
+    f.drag({{box.left() - 20, y - 30}, {box.right() + 20, y - 30},
+            {box.left() - 20, y + 30}});
+    CHECK(f.model.editNotice().message == "A tie needs at least two lines; this crossed 1.");
+    CHECK(f.scene.layout().ties.empty());
+    (void)f.model.takeRpcRequests();
+}
+
+TEST_CASE("GT-1 replacing an old tie deletes its singleton and Undo restores both",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    f.scene.selectEdge(GraphCanvasEdge{"clock", "value", "left", "gain"}, false);
+    f.scene.selectEdge(GraphCanvasEdge{"clock", "value", "left", "bias"}, true);
+    REQUIRE(f.scene.tieSelection());
+    f.commit();
+    const GraphCanvasTie original = f.scene.layout().ties[0];
+    f.document = twoEdgeDocument();
+    f.document["layout"] = graphCanvasLayoutToJson(f.scene.layout());
+    f.document["nodes"].push_back({{"id", "right"}, {"op", "value.add"},
+        {"inputs", {{"b", {{"node", "clock"}, {"port", "value"}}}}},
+        {"outputs", {"value"}}});
+    f.model.refresh();
+    answer(f.model, f.document);
+    f.scene.repopulate();
+    const QRectF all = f.bothEdges();
+    f.drag(f.across(all.center().x()));
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    CHECK(f.scene.layout().ties[0].edges.size() == 3);
+    f.commit();
+    f.scene.undoEdit();
+    f.commit();
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    CHECK(f.scene.layout().ties[0].edges.size() == 2);
+    CHECK(f.scene.layout().ties[0].position == original.position);
+}
+
+TEST_CASE("GT-1 zoom does not change crossings or the four-view-pixel threshold",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    const double scale = GENERATE(0.5, 2.0);
+    f.view.setTransform(QTransform::fromScale(scale, scale));
+    f.drag(f.across(f.bothEdges().right() + 0.01));
+    CHECK(f.model.editNotice().message == "A tie needs at least two lines; this crossed 0.");
+    const auto path = f.across(f.bothEdges().center().x());
+    f.press(path[0]);
+    const QPointF below_slop = f.view.mapToScene(
+        f.view.mapFromScene(path[0]) + QPoint{3, 0});
+    f.move(below_slop);
+    CHECK(gt1PreviewCount(f.scene) == 0);
+    f.move(path[0]);
+    f.move(path[1]);
+    CHECK(gt1PreviewCount(f.scene) == 1);
+    f.release(path[1]);
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    f.commit();
+}
+
+TEST_CASE("GT-1 click and gesture consume or show context menus in both event orders",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    Gt1Menus menus;
+    const QRectF box = f.bothEdges();
+    const QPointF at = nodeItem(f.scene, "left")->sceneBoundingRect().center();
+    // Plain right click, context after release.
+    f.press(at, Qt::RightButton, Qt::NoModifier);
+    f.release(at, Qt::RightButton, Qt::NoModifier);
+    gt1Context(f.view, at);
+    QCoreApplication::processEvents();
+    CHECK(menus.shown == 1);
+
+    // Shift-right click with a press-order context event is shown once on release.
+    f.press(at);
+    gt1Context(f.view, at);
+    CHECK(menus.shown == 1);
+    f.release(at);
+    QCoreApplication::processEvents();
+    CHECK(menus.shown == 2);
+    // Its release-order duplicate is consumed because the menu was already shown.
+    gt1Context(f.view, at);
+    CHECK(menus.shown == 2);
+
+    // Release order: a no-travel click lets the event through exactly once.
+    f.press(at);
+    f.release(at);
+    gt1Context(f.view, at);
+    QCoreApplication::processEvents();
+    CHECK(menus.shown == 3);
+
+    const auto path = f.across(box.center().x());
+    // Travel, then context, including after an event-loop turn: never a menu.
+    f.press(path[0]);
+    f.move(path[1]);
+    f.release(path[1]);
+    gt1Context(f.view, path[1]);
+    CHECK(menus.shown == 3);
+    f.commit();
+    f.press(path[0]);
+    f.move(path[1]);
+    f.release(path[1]);
+    QCoreApplication::processEvents();
+    gt1Context(f.view, path[1]);
+    CHECK(menus.shown == 3);
+    f.commit();
+    // A later plain click is not swallowed by the previous gesture.
+    f.press(at, Qt::RightButton, Qt::NoModifier);
+    f.release(at, Qt::RightButton, Qt::NoModifier);
+    gt1Context(f.view, at);
+    QCoreApplication::processEvents();
+    CHECK(menus.shown == 4);
+    // Keyboard menu requests are never held back.
+    f.press(at);
+    gt1Context(f.view, at, QContextMenuEvent::Keyboard);
+    QCoreApplication::processEvents();
+    CHECK(menus.shown == 5);
+    QKeyEvent escape{QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier};
+    QApplication::sendEvent(f.view.viewport(), &escape);
+}
+
+TEST_CASE("GT-1 busy, unrelated buttons and no Shift retain existing mouse behaviour",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    const QPointF at = nodeItem(f.scene, "left")->sceneBoundingRect().center();
+    f.scene.setLayoutMember("gt1_busy_probe", 1);
+    f.scene.flushLayout();
+    REQUIRE(f.model.busy());
+    f.press(at);
+    CHECK(gt1PreviewCount(f.scene) == 0);
+    f.release(at);
+    // Reject the outstanding edit so this fixture can make further edits.
+    for (const auto &request : f.model.takeRpcRequests())
+        if (request.method == "edit_graph_document")
+            f.model.receiveRpcResult(request.request_id,
+                Json{{"status", "rejected"}, {"committed", false}}.dump());
+    QCoreApplication::processEvents();
+    f.press(at, Qt::LeftButton, Qt::ShiftModifier);
+    f.release(at, Qt::LeftButton, Qt::ShiftModifier);
+    CHECK(f.scene.layout().ties.empty());
+    f.press(at, Qt::RightButton, Qt::NoModifier);
+    f.move(at + QPointF{40, 40}, Qt::RightButton, Qt::NoModifier);
+    f.release(at + QPointF{40, 40}, Qt::RightButton, Qt::NoModifier);
+    CHECK(gt1PreviewCount(f.scene) == 0);
+    CHECK(f.scene.layout().ties.empty());
+    (void)f.model.takeRpcRequests();
+}
+
+
+TEST_CASE("GT-1 a freehand bend adds the third crossing after the bend",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    f.document = twoEdgeDocument();
+    f.document["nodes"].push_back({{"id", "right"}, {"op", "value.add"},
+        {"inputs", {{"b", {{"node", "clock"}, {"port", "value"}}}}},
+        {"outputs", {"value"}}});
+    f.model.refresh();
+    answer(f.model, f.document);
+    f.scene.repopulate();
+    auto *first = edgeItem(f.scene, "clock", "value", "left", "gain");
+    auto *third = edgeItem(f.scene, "clock", "value", "right", "b");
+    REQUIRE(first != nullptr);
+    REQUIRE(third != nullptr);
+    const QRectF left = first->sceneBoundingRect();
+    const QPointF bend{left.center().x(), third->sceneBoundingRect().center().y()};
+    f.drag({{left.center().x(), left.top() - 30}, bend,
+            {third->sceneBoundingRect().right() + 30, bend.y()}});
+    REQUIRE(f.scene.layout().ties.size() == 1);
+    CHECK(f.scene.layout().ties[0].edges.size() >= 3);
+    (void)f.model.takeRpcRequests();
+}
+
+TEST_CASE("GT-1 starts over nodes sockets edges and reroutes without moving or lifting them",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    auto *node = nodeItem(f.scene, "left");
+    REQUIRE(node != nullptr);
+    const QPointF original = node->pos();
+    f.scene.selectNode("left");
+    auto *gain = edgeItem(f.scene, "clock", "value", "left", "gain");
+    REQUIRE(gain != nullptr);
+    REQUIRE(f.scene.insertReroute(GraphCanvasEdge{"clock", "value", "left", "gain"},
+                                  gain->path().pointAtPercent(0.5)));
+    f.scene.flushLayout();
+    f.commit();
+    node = nodeItem(f.scene, "left");
+    gain = edgeItem(f.scene, "clock", "value", "left", "gain");
+    const QPointF starts[] = {node->sceneBoundingRect().center(),
+        socketOf(f.scene, "", "left", "gain", "input")->sceneBoundingRect().center(),
+        gain->mapToScene(gain->path().pointAtPercent(0.5)),
+        controlItem(f.scene, GraphCanvasRerouteItem, "left/gain/0")->sceneBoundingRect().center()};
+    for (const QPointF &start : starts) {
+        f.press(start);
+        f.move(start + QPointF{20, 10});
+        QKeyEvent escape{QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier};
+        QApplication::sendEvent(f.view.viewport(), &escape);
+        CHECK(nodeItem(f.scene, "left")->pos() == original);
+        CHECK(f.scene.property("pelicanGraphSelectedNode").toString() == QStringLiteral("left"));
+        CHECK(f.scene.layout().ties.empty());
+        CHECK_FALSE(f.scene.dragging());
+    }
+}
+
+
+TEST_CASE("GT-1 a zone-body tie is averaged in the body layout coordinates",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    ZoneHarness h;
+    h.document["layout"] = {
+        {"nodes", {{"a", {{"x", 0}, {"y", 0}}},
+                   {"curve", {{"x", 0}, {"y", 200}}},
+                   {"steps", {{"x", 1100}, {"y", 900}}}}}};
+    h.document["definitions"]["first"]["layout"] = {{"nodes", {{"target", {{"x", 30}, {"y", 40}}},
+        {"a", {{"x", 30}, {"y", 200}}}, {"sum", {{"x", 360}, {"y", 100}}}}}};
+    h.open();
+    h.scene.repopulate();
+    QGraphicsView view{&h.scene};
+    view.resize(1400, 1000);
+    view.show();
+    auto *first = scopedEdge(h.scene, "first", "target", "value", "sum", "a");
+    auto *second = scopedEdge(h.scene, "first", "a", "value", "sum", "b");
+    REQUIRE(first != nullptr);
+    REQUIRE(second != nullptr);
+    QCoreApplication::processEvents();
+    const QPointF a_layout = h.scene.layout("first").nodes.at("a");
+    const QPointF offset = scopedNode(h.scene, "first", "a")->scenePos() - a_layout;
+    QRectF box = first->sceneBoundingRect().united(second->sceneBoundingRect());
+    double x = 0.0;
+    bool cuts_both = false;
+    for (int step = 0; step <= 50 && !cuts_both; ++step) {
+        x = view.mapToScene(view.mapFromScene(QPointF{
+            box.left() + step * box.width() / 50.0, box.center().y()})).x();
+        cuts_both = true;
+        for (QGraphicsItem *item : {first, second}) {
+            auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+            bool cut = false;
+            for (const QPolygonF &polygon : line->path().toSubpathPolygons())
+                for (int i = 1; i < polygon.size(); ++i)
+                    cut = cut || graphCanvasSegmentsCross(
+                        {x, box.top() - 50}, {x, box.bottom() + 50},
+                        line->mapToScene(polygon[i - 1]), line->mapToScene(polygon[i]), nullptr);
+            cuts_both = cuts_both && cut;
+        }
+    }
+    REQUIRE(cuts_both);
+    const QPointF top{x, box.top() - 50};
+    const QPointF bottom{x, box.bottom() + 50};
+    const auto send = [&](QEvent::Type type, const QPointF &at, Qt::MouseButton button,
+                          Qt::MouseButtons buttons) {
+        const QPoint local = view.mapFromScene(at);
+        QMouseEvent event{type, QPointF{local}, QPointF{view.viewport()->mapToGlobal(local)},
+                          button, buttons, Qt::ShiftModifier};
+        QApplication::sendEvent(view.viewport(), &event);
+    };
+    // The tie bends both lines once it exists, so the crossings are taken from
+    // the lines the gesture actually cuts.
+    std::vector<QPointF> crossings;
+    for (QGraphicsItem *item : {first, second}) {
+        auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+        REQUIRE(line != nullptr);
+        bool found = false;
+        for (const QPolygonF &polygon : line->path().toSubpathPolygons())
+            for (int i = 1; i < polygon.size() && !found; ++i) {
+                QPointF at;
+                found = graphCanvasSegmentsCross(top, bottom, line->mapToScene(polygon[i - 1]),
+                                                 line->mapToScene(polygon[i]), &at);
+                if (found) crossings.push_back(at);
+            }
+    }
+    REQUIRE(crossings.size() == 2);
+    send(QEvent::MouseButtonPress, top, Qt::RightButton, Qt::RightButton);
+    send(QEvent::MouseMove, bottom, Qt::NoButton, Qt::RightButton);
+    INFO("zone preview " << gt1PreviewCount(h.scene) << " dragging " << h.scene.dragging());
+    send(QEvent::MouseButtonRelease, bottom, Qt::RightButton, Qt::NoButton);
+    INFO("zone notice " << h.model.editNotice().message << " busy " << h.model.busy()
+         << " scope " << h.model.currentScope());
+    const auto &layout = h.scene.layout("first");
+    REQUIRE(layout.ties.size() == 1);
+    CHECK(layout.ties[0].edges.size() == 2);
+    CHECK(h.scene.layout().ties.empty());
+    const QPointF expected = (crossings[0] + crossings[1]) / 2.0 - offset;
+    CHECK(std::abs(layout.ties[0].position.x() - expected.x()) < 1e-6);
+    CHECK(std::abs(layout.ties[0].position.y() - expected.y()) < 1e-6);
+    QEventLoop settle;
+    QTimer::singleShot(GraphCanvasScene::GraphCanvasLayoutDebounceMs + 50,
+                       &settle, &QEventLoop::quit);
+    settle.exec();
+    h.commit();
+    CHECK(h.document.at("definitions").at("first").at("layout").at("ties").size() == 1);
+}
+
+
+TEST_CASE("GT-1 pass-input designated lines are not tie candidates",
+          "[devstudio][graph-canvas][scene][gt1]") {
+    (void)application();
+    Gt1View f;
+    auto *pass_input = edgeItem(f.scene, "clock", "value", "left", "gain");
+    REQUIRE(pass_input != nullptr);
+    pass_input->setData(NodeGraphItemKindRole,
+                        QString::fromLatin1(GraphCanvasPassInputEdgeItem));
+    const auto path = f.across(f.bothEdges().center().x());
+    f.drag(path);
+    CHECK(f.model.editNotice().message == "A tie needs at least two lines; this crossed 1.");
+    CHECK(f.scene.layout().ties.empty());
+    (void)f.model.takeRpcRequests();
 }
