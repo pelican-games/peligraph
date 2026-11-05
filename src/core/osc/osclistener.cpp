@@ -45,7 +45,6 @@ using SocketHandle = int;
 inline constexpr SocketHandle invalid_socket = -1;
 #endif
 
-constexpr int poll_timeout_ms = 100;
 constexpr unsigned receive_error_limit = 100;
 
 int lastSocketError() noexcept {
@@ -107,14 +106,14 @@ enum class WaitResult {
     error,
 };
 
-WaitResult waitReadable(SocketHandle socket) noexcept {
+WaitResult waitReadable(SocketHandle socket, int timeout_ms) noexcept {
 #if defined(_WIN32)
     fd_set read_set;
     FD_ZERO(&read_set);
     FD_SET(socket, &read_set);
     timeval timeout{};
-    timeout.tv_sec = 0;
-    timeout.tv_usec = poll_timeout_ms * 1000;
+    timeout.tv_sec = timeout_ms / 1000;
+    timeout.tv_usec = (timeout_ms % 1000) * 1000;
     const int result =
         ::select(0, &read_set, nullptr, nullptr, &timeout);
     if (result == 0) return WaitResult::timeout;
@@ -129,10 +128,7 @@ WaitResult waitReadable(SocketHandle socket) noexcept {
     pollfd descriptor{};
     descriptor.fd = socket;
     descriptor.events = POLLIN;
-    int result = 0;
-    do {
-        result = ::poll(&descriptor, 1, poll_timeout_ms);
-    } while (result < 0 && errno == EINTR);
+    const int result = ::poll(&descriptor, 1, timeout_ms);
     if (result == 0) return WaitResult::timeout;
     if (result < 0) return WaitResult::error;
     if ((descriptor.revents & POLLIN) != 0) return WaitResult::readable;
@@ -187,7 +183,11 @@ struct OscListener::Impl {
         unsigned consecutive_errors = 0;
 
         while (!stop_requested.load(std::memory_order_acquire)) {
-            const auto wait = waitReadable(socket);
+            auto &input = GET_MODULE(OscInput);
+            input.releaseDue(ntpNowUtc());
+            const auto wait_ms = static_cast<int>(
+                input.listenerWait(ntpNowUtc()).count());
+            const auto wait = waitReadable(socket, wait_ms);
             if (wait == WaitResult::timeout) continue;
             if (wait == WaitResult::error) {
                 const int code = lastSocketError();
@@ -461,6 +461,11 @@ void OscListener::stop() {
     auto &state = *impl_;
     state.stop_requested.store(true, std::memory_order_release);
     if (state.worker.joinable()) state.worker.join();
+    const auto discarded = GET_MODULE(OscInput).discardScheduled();
+    if (discarded != 0 && logger != nullptr) {
+        LOG_INFO(logger, "OSC listener stop discarded {} scheduled messages",
+                 discarded);
+    }
 
     SocketHandle socket = invalid_socket;
     bool winsock_started = false;

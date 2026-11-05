@@ -5,6 +5,10 @@
 #include "../watch/problemlist.hpp"
 #include "../../project/projectdocumenttransaction.hpp"
 
+#if PELICAN_WITH_OSC
+#include "../osc/oscinput.hpp"
+#endif
+
 #include <algorithm>
 #include <iterator>
 #include <cctype>
@@ -448,6 +452,9 @@ void LiveInputRecordingRuntime::startReplay(
     replay_.emplace(std::move(state));
     launch_recording_.reset();
     GET_MODULE(LiveInputs).beginLiveReplay();
+#if PELICAN_WITH_OSC
+    GET_MODULE(OscInput).discardScheduledForReplay();
+#endif
 }
 
 void LiveInputRecordingRuntime::setReplayClock(const LiveRecordingClock &clock) {

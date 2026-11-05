@@ -19,6 +19,7 @@
 #include <chrono>
 #include <cstdint>
 #include <functional>
+#include <iostream>
 #include <memory>
 #include <optional>
 #include <span>
@@ -66,6 +67,19 @@ void putU32(Bytes &out, std::uint32_t value) {
     out.push_back(static_cast<std::uint8_t>(value >> 16));
     out.push_back(static_cast<std::uint8_t>(value >> 8));
     out.push_back(static_cast<std::uint8_t>(value));
+}
+
+void putU64(Bytes &out, std::uint64_t value) {
+    putU32(out, static_cast<std::uint32_t>(value >> 32));
+    putU32(out, static_cast<std::uint32_t>(value));
+}
+
+Bytes bundleFor(std::uint64_t timetag, const Bytes &message) {
+    Bytes out{'#', 'b', 'u', 'n', 'd', 'l', 'e', 0};
+    putU64(out, timetag);
+    putU32(out, static_cast<std::uint32_t>(message.size()));
+    out.insert(out.end(), message.begin(), message.end());
+    return out;
 }
 
 Bytes messageFor(std::string_view address, float value) {
@@ -499,4 +513,63 @@ TEST_CASE("OSC-2b a maximum UDP payload is accepted and counted as malformed",
         return counter(snapshot, "received") >= 1 &&
                counter(snapshot.at("dropped"), "malformed") >= 1;
     }));
+}
+
+
+TEST_CASE("OSC-5a the listener releases a real UDP bundle on its timeout path",
+          "[osc5a][osc][listener]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    configureLive();
+    OscListener listener;
+    OscListenerConfig config;
+    config.port = 0;
+    REQUIRE(listener.start(config));
+    const auto port = listener.statusJson().at("port").get<std::uint16_t>();
+    TestUdpSender sender;
+    REQUIRE(sender.valid());
+
+    constexpr std::uint64_t ahead_ticks =
+        (50ULL * (1ULL << 32) + 999ULL) / 1000ULL;
+    const auto sent_at = std::chrono::steady_clock::now();
+    REQUIRE(sender.sendTo(port, bundleFor(ntpNowUtc() + ahead_ticks,
+                                          messageFor("/phase", 0.625f))));
+    auto &osc = GET_MODULE(OscInput);
+    REQUIRE(waitFor([&] { return osc.snapshotJson().at("scheduled") == 1; },
+                    std::chrono::seconds{2}));
+    REQUIRE(osc.snapshotJson().at("applied") == 0);
+    auto &live = GET_MODULE(LiveInputs);
+    live.freeze(false, 2);
+    REQUIRE(live.frozenInputs().at("live:phase") == Catch::Approx(0.0));
+    REQUIRE(waitFor([&] { return osc.snapshotJson().at("applied") == 1; },
+                    std::chrono::seconds{5}));
+    const auto delay = std::chrono::duration<double, std::milli>(
+        std::chrono::steady_clock::now() - sent_at).count() - 50.0;
+    std::cout << "OSC-5a listener release delay: " << delay
+              << " ms (before the next render frame)\n";
+    REQUIRE(osc.snapshotJson().at("recent").back().at("scheduled") == true);
+    live.freeze(false, 3);
+    REQUIRE(live.frozenInputs().at("live:phase") == Catch::Approx(0.625));
+}
+
+TEST_CASE("OSC-5a stopping the listener discards its held UDP bundle",
+          "[osc5a][osc][listener][stop]") {
+    ensureLogger();
+    FastModuleContainer modules;
+    configureLive();
+    OscListener listener;
+    OscListenerConfig config;
+    config.port = 0;
+    REQUIRE(listener.start(config));
+    const auto port = listener.statusJson().at("port").get<std::uint16_t>();
+    TestUdpSender sender;
+    REQUIRE(sender.valid());
+    REQUIRE(sender.sendTo(port, bundleFor(ntpNowUtc() + (5ULL << 32),
+                                          messageFor("/phase", 0.875f))));
+    auto &osc = GET_MODULE(OscInput);
+    REQUIRE(waitFor([&] { return osc.snapshotJson().at("scheduled") == 1; },
+                    std::chrono::seconds{2}));
+    listener.stop();
+    REQUIRE(osc.snapshotJson().at("scheduled") == 0);
+    REQUIRE(osc.snapshotJson().at("applied") == 0);
 }

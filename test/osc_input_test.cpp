@@ -4,6 +4,7 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/os/liveinputs.hpp"
+#include "../src/core/os/liveinputrecording.hpp"
 #include "../src/core/osc/oscbindings.hpp"
 #include "../src/core/osc/oscinput.hpp"
 #include "../src/core/osc/oscparser.hpp"
@@ -128,8 +129,8 @@ Bytes rawBundle(std::uint64_t timetag, const Bytes &tail) {
     return out;
 }
 
-Osc::Packet parse(const Bytes &bytes, std::uint64_t now = 1ULL << 40) {
-    return Osc::parsePacket(std::span<const std::uint8_t>{bytes}, now);
+Osc::Packet parse(const Bytes &bytes, std::uint64_t = 1ULL << 40) {
+    return Osc::parsePacket(std::span<const std::uint8_t>{bytes});
 }
 
 std::vector<Osc::OscBinding> bindings(Json profile) {
@@ -263,23 +264,13 @@ TEST_CASE("OSC-2a parser accepts valid messages and bundles and decodes argument
         REQUIRE(packet.messages.empty());
     }
 
-    SECTION("future timetags are refused across the 2036 wrap") {
-        auto packet = parse(makeBundle(ntp(1001), {makeMessage("/x", ",i", {i32(1)})}),
-                            ntp(1000));
-        REQUIRE(packet.drop == Osc::PacketDrop::future_timetag);
-        REQUIRE(packet.messages.empty());
-
-        // A packet one second before the wrap is in the past for a receiver
-        // half a second after the wrap.
-        packet = parse(makeBundle(ntp(0xFFFFFFFFu, 0x80000000u), {}),
-                       ntp(0x00000000u, 0x80000000u));
+    SECTION("future timetags remain in the parsed packet") {
+        const auto packet = parse(
+            makeBundle(ntp(1001), {makeMessage("/x", ",i", {i32(1)})}),
+            ntp(1000));
         REQUIRE(packet.drop == Osc::PacketDrop::none);
-
-        // The reverse is genuinely in the future, although the unsigned
-        // timetag wrapped to a small number.
-        packet = parse(makeBundle(ntp(0x00000000u, 0x80000000u), {}),
-                       ntp(0xFFFFFFFFu, 0x80000000u));
-        REQUIRE(packet.drop == Osc::PacketDrop::future_timetag);
+        REQUIRE(packet.timetag == ntp(1001));
+        REQUIRE(packet.messages.size() == 1);
     }
 
     SECTION("NTP helper is UTC in 32.32 fixed point") {
@@ -616,8 +607,10 @@ TEST_CASE("OSC-2a counters, recent records and replay are observable as one snap
     live.freeze(false, 3);
     REQUIRE(live.snapshot()[0].value == Catch::Approx(0.0));
 
-    // A future bundle is a packet drop; a valid bundle commits all messages.
-    osc.receive(makeBundle(ntp(5000), {}), ntp(1000));
+    // A bundle too far ahead is a packet drop; a valid bundle commits together.
+    osc.receive(makeBundle(ntp(5000),
+                           {makeMessage("/level", ",f", {f32(0.4f)})}),
+                ntp(1000));
     REQUIRE(osc.snapshotJson().at("dropped").at("future_timetag") == 1);
 
     osc.receive(makeBundle(ntp(999),
@@ -974,4 +967,265 @@ TEST_CASE("OSC-2a fixed-seed fuzzing reaches valid messages and bundles without 
     REQUIRE(valid_messages > 0);
     REQUIRE(valid_bundles > 0);
     REQUIRE(decoded_numbers > 0);
+}
+
+
+namespace {
+struct Osc5aFixture {
+    OscInput osc;
+    LiveInputs &live = GET_MODULE(LiveInputs);
+
+    Osc5aFixture() {
+        if (live.isLiveReplaying()) live.endLiveReplay();
+        live.setDeclarationJson(liveDeclaration);
+        live.freeze(false, 1);
+        osc.setBindings({
+            {"/level", "level", LiveInputType::floating, false, {}},
+            {"/count", "count", LiveInputType::integer, false, {}},
+        });
+    }
+
+    Bytes level(float value) const {
+        return makeMessage("/level", ",f", {f32(value)});
+    }
+    Bytes count(std::int32_t value) const {
+        return makeMessage("/count", ",i", {i32(value)});
+    }
+    double levelValue() const { return live.snapshot()[0].value; }
+    double countValue() const { return live.snapshot()[3].value; }
+};
+} // namespace
+
+TEST_CASE("OSC-5a immediate past and due bundles apply at the right time",
+          "[osc5a][osc]") {
+    Osc5aFixture fixture;
+    const auto now = ntp(1000);
+    fixture.osc.receive(makeBundle(1, {fixture.level(0.25f)}), now);
+    fixture.osc.receive(makeBundle(now - 1, {fixture.level(0.5f)}), now);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 0);
+    REQUIRE(fixture.osc.snapshotJson().at("applied") == 2);
+    REQUIRE(fixture.osc.snapshotJson().at("recent")[0].at("scheduled") == false);
+
+    const auto due = now + 10;
+    fixture.osc.receive(makeBundle(due, {fixture.level(0.75f)}), now, "sender:1");
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 1);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").size() == 2);
+    fixture.osc.releaseDue(due - 1);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 1);
+    REQUIRE(fixture.osc.snapshotJson().at("applied") == 2);
+    fixture.osc.releaseDue(due);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 0);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").size() == 3);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("scheduled") == true);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("sender") ==
+            "sender:1");
+    fixture.live.freeze(false, 2);
+    REQUIRE(fixture.levelValue() == Catch::Approx(0.75));
+}
+
+TEST_CASE("OSC-5a one scheduled bundle is one atomic stage batch",
+          "[osc5a][osc]") {
+    Osc5aFixture fixture;
+    const auto now = ntp(1000);
+    const auto due = now + 100;
+    fixture.osc.receive(
+        makeBundle(due, {fixture.level(0.75f), fixture.count(7)}), now);
+    const auto before = fixture.osc.snapshotJson()
+                            .at("staged_batches").get<std::uint64_t>();
+    REQUIRE(before == 0);
+    fixture.osc.releaseDue(due);
+    REQUIRE(fixture.osc.snapshotJson().at("staged_batches") == before + 1);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").size() == 2);
+
+    std::atomic_bool release_again{true};
+    std::thread writer([&] {
+        std::uint64_t clock = due + 1;
+        while (release_again.load(std::memory_order_acquire)) {
+            fixture.osc.receive(
+                makeBundle(clock, {fixture.level(0.75f), fixture.count(7)}),
+                clock);
+            ++clock;
+        }
+    });
+    for (int frame = 2; frame < 1000; ++frame) {
+        fixture.live.freeze(false, static_cast<std::uint64_t>(frame));
+        const bool initial = fixture.levelValue() == Catch::Approx(0.0) &&
+                             fixture.countValue() == Catch::Approx(0.0);
+        const bool complete = fixture.levelValue() == Catch::Approx(0.75) &&
+                              fixture.countValue() == Catch::Approx(7.0);
+        REQUIRE((initial || complete));
+    }
+    release_again.store(false, std::memory_order_release);
+    writer.join();
+}
+
+TEST_CASE("OSC-5a release orders time arrival and the NTP wrap independently",
+          "[osc5a][osc]") {
+    Osc5aFixture fixture;
+    const auto now = ntp(1000);
+    fixture.osc.receive(makeBundle(now + 20, {fixture.level(0.3f)}), now);
+    fixture.osc.receive(makeBundle(now + 10, {fixture.level(0.2f)}), now);
+    fixture.osc.releaseDue(now + 10);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("value")
+                .get<double>() == Catch::Approx(0.2));
+    fixture.osc.releaseDue(now + 20);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("value")
+                .get<double>() == Catch::Approx(0.3));
+
+    fixture.osc.receive(makeBundle(now + 30, {fixture.level(0.4f)}), now);
+    fixture.osc.receive(makeBundle(now + 30, {fixture.level(0.5f)}), now);
+    fixture.osc.releaseDue(now + 30);
+    const auto recent = fixture.osc.snapshotJson().at("recent");
+    REQUIRE(recent[recent.size() - 2].at("value").get<double>() ==
+            Catch::Approx(0.4));
+    REQUIRE(recent.back().at("value").get<double>() == Catch::Approx(0.5));
+
+    Osc5aFixture wrapped;
+    const auto before_wrap = ntp(0xfffffffeu);
+    wrapped.osc.receive(
+        makeBundle(ntp(0u, 0x40000000u), {wrapped.level(0.8f)}), before_wrap);
+    wrapped.osc.receive(
+        makeBundle(ntp(0xffffffffu, 0x80000000u), {wrapped.level(0.7f)}),
+        before_wrap);
+    wrapped.osc.releaseDue(ntp(0u, 0x80000000u));
+    const auto wrapped_recent = wrapped.osc.snapshotJson().at("recent");
+    REQUIRE(wrapped_recent.size() == 2);
+    REQUIRE(wrapped_recent[0].at("value").get<double>() == Catch::Approx(0.7));
+    REQUIRE(wrapped_recent[1].at("value").get<double>() == Catch::Approx(0.8));
+}
+
+
+TEST_CASE("OSC-5a scheduling window messages entries and bytes are bounded",
+          "[osc5a][osc][limits]") {
+    Osc5aFixture fixture;
+    const auto now = ntp(1000);
+    const auto future = makeBundle(now + (10ULL << 32) + 1,
+                                   {fixture.level(0.5f)});
+    fixture.osc.receive(future, now);
+    REQUIRE(fixture.osc.snapshotJson().at("dropped").at("future_timetag") == 1);
+    fixture.osc.receive(makeBundle(now + (10ULL << 32),
+                                   {fixture.level(0.5f)}), now);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 1);
+
+    SECTION("empty bundles are consumed and never occupy entries") {
+        Osc5aFixture empty;
+        const auto packet = makeBundle(now + (1ULL << 32), {});
+        for (int i = 0; i < 4096; ++i)
+            empty.osc.receive(packet, now);
+        REQUIRE(empty.osc.snapshotJson().at("received") == 4096);
+        REQUIRE(empty.osc.snapshotJson().at("scheduled") == 0);
+        REQUIRE(empty.osc.snapshotJson().at("dropped").at("scheduled_full") == 0);
+    }
+
+    SECTION("a bundle that exceeds the message room is dropped whole") {
+        Osc5aFixture bounded;
+        std::vector<Bytes> messages;
+        for (int i = 0; i < 256; ++i) messages.push_back(bounded.level(0.5f));
+        const auto packet = makeBundle(now + (1ULL << 32), messages);
+        for (int i = 0; i < 4; ++i) bounded.osc.receive(packet, now);
+        REQUIRE(bounded.osc.snapshotJson().at("scheduled") == 1024);
+        bounded.osc.receive(makeBundle(now + (2ULL << 32),
+                                       {bounded.level(0.5f), bounded.count(1)}),
+                            now);
+        REQUIRE(bounded.osc.snapshotJson().at("scheduled") == 1024);
+        REQUIRE(bounded.osc.snapshotJson().at("dropped").at("scheduled_full") == 1);
+        REQUIRE(bounded.osc.snapshotJson().at("recent").empty());
+    }
+
+    SECTION("the entry limit rejects the next nonempty bundle") {
+        Osc5aFixture bounded;
+        const auto packet = makeBundle(now + (1ULL << 32), {bounded.level(0.5f)});
+        for (int i = 0; i < 1024; ++i) bounded.osc.receive(packet, now);
+        REQUIRE(bounded.osc.snapshotJson().at("scheduled") == 1024);
+        bounded.osc.receive(packet, now);
+        REQUIRE(bounded.osc.snapshotJson().at("dropped").at("scheduled_full") == 1);
+    }
+
+    SECTION("longest messages reject only the bundle beyond the byte limit") {
+        Osc5aFixture bounded;
+        Bytes message;
+        putString(message, "/x");
+        putString(message, ",s");
+        putString(message, std::string(65472, 'x'));
+        const auto packet = makeBundle(now + (1ULL << 32), {message});
+        REQUIRE(packet.size() == 65504);
+        for (int i = 0; i < 256; ++i) bounded.osc.receive(packet, now);
+        REQUIRE(bounded.osc.snapshotJson().at("scheduled") == 256);
+        REQUIRE(bounded.osc.snapshotJson().at("dropped").at("scheduled_full") == 0);
+        bounded.osc.receive(packet, now);
+        REQUIRE(bounded.osc.snapshotJson().at("scheduled") == 256);
+        REQUIRE(bounded.osc.snapshotJson().at("dropped").at("scheduled_full") == 1);
+    }
+}
+
+TEST_CASE("OSC-5a replay refuses held and newly received future bundles",
+          "[osc5a][osc][replay]") {
+    Osc5aFixture fixture;
+    const auto now = ntp(1000);
+    const auto due = ntp(1001);
+    fixture.osc.receive(makeBundle(due, {fixture.level(0.75f)}), now);
+    fixture.live.freeze(true, 2);
+    fixture.osc.releaseDue(due);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 0);
+    REQUIRE(fixture.osc.snapshotJson().at("dropped").at("replay") == 1);
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("reason") == "replay");
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("scheduled") == true);
+
+    fixture.osc.receive(makeBundle(due, {fixture.level(0.5f)}), now);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 0);
+    REQUIRE(fixture.osc.snapshotJson().at("dropped").at("replay") == 2);
+    fixture.live.freeze(false, 3);
+    fixture.osc.releaseDue(due + 1);
+    fixture.live.freeze(false, 4);
+    REQUIRE(fixture.levelValue() == Catch::Approx(0.0));
+}
+
+TEST_CASE("OSC-5a starting and ending replay before due time discards the queue",
+          "[osc5a][osc][replay]") {
+    auto &live = GET_MODULE(LiveInputs);
+    if (live.isLiveReplaying()) live.endLiveReplay();
+    live.setDeclarationJson(liveDeclaration);
+    live.freeze(false, 1);
+    auto &osc = GET_MODULE(OscInput);
+    osc.discardScheduled();
+    osc.setBindings({{"/level", "level", LiveInputType::floating, false, {}}});
+    const auto before = osc.snapshotJson().at("dropped").at("replay")
+                            .get<std::uint64_t>();
+    osc.receive(makeBundle(ntp(1001), {makeMessage("/level", ",f", {f32(0.75f)})}),
+                ntp(1000));
+    REQUIRE(osc.snapshotJson().at("scheduled") == 1);
+
+    LiveInputRecordingRuntime runtime;
+    auto recording = std::make_shared<LiveInputRecording>();
+    recording->inputs = live.declarations();
+    const LiveRecordingClock clock;
+    runtime.startReplay(recording, clock);
+    REQUIRE(osc.snapshotJson().at("scheduled") == 0);
+    REQUIRE(osc.snapshotJson().at("dropped").at("replay") == before + 1);
+    REQUIRE(osc.snapshotJson().at("recent").back().at("scheduled") == true);
+    runtime.stopReplay();
+    osc.releaseDue(ntp(1002));
+    live.freeze(false, 2);
+    REQUIRE(live.snapshot()[0].value == Catch::Approx(0.0));
+    REQUIRE(osc.snapshotJson().at("dropped").at("replay") == before + 1);
+}
+
+TEST_CASE("OSC-5a release uses new bindings and stop discard is explicit",
+          "[osc5a][osc]") {
+    Osc5aFixture fixture;
+    const auto now = ntp(1000);
+    fixture.osc.receive(makeBundle(ntp(1001), {fixture.level(0.75f)}), now);
+    fixture.osc.setBindings({});
+    fixture.osc.releaseDue(ntp(1001));
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("reason") == "unbound");
+    REQUIRE(fixture.osc.snapshotJson().at("recent").back().at("scheduled") == true);
+
+    fixture.osc.setBindings(
+        {{"/level", "level", LiveInputType::floating, false, {}}});
+    fixture.osc.receive(makeBundle(ntp(1002), {fixture.level(0.5f)}), now);
+    REQUIRE(fixture.osc.discardScheduled() == 1);
+    REQUIRE(fixture.osc.snapshotJson().at("scheduled") == 0);
+    fixture.osc.releaseDue(ntp(1003));
+    fixture.live.freeze(false, 2);
+    REQUIRE(fixture.levelValue() == Catch::Approx(0.0));
 }

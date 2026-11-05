@@ -291,7 +291,7 @@ void decodeBundle(std::span<const std::uint8_t> bytes, std::size_t begin,
 
 } // namespace
 
-Packet parsePacket(std::span<const std::uint8_t> bytes, std::uint64_t now_ntp) {
+Packet parsePacket(std::span<const std::uint8_t> bytes) {
     Packet packet;
     if (bytes.size() > max_packet_bytes) {
         packet.drop = PacketDrop::limit;
@@ -318,12 +318,6 @@ Packet parsePacket(std::span<const std::uint8_t> bytes, std::uint64_t now_ntp) {
         }
         if (check != Check::ok) {
             packet.drop = PacketDrop::malformed;
-            return packet;
-        }
-        // 32.32 fixed point: the unsigned difference cast to signed is the
-        // right test across the 2036 era wrap for intervals below 2^63.
-        if (static_cast<std::int64_t>(packet.timetag - now_ntp) > 0) {
-            packet.drop = PacketDrop::future_timetag;
             return packet;
         }
         decodeBundle(bytes, 0, bytes.size(), packet);

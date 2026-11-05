@@ -219,12 +219,32 @@ struct Fuzz {
 
 void runFuzz(std::size_t count, std::uint64_t seed) {
     Fuzz fuzz{seed};
+    std::uint64_t now = 0xffffffffULL << 32;
     for (std::size_t i = 0; i < count; ++i) {
-        const auto bytes = fuzz.next(i);
+        auto bytes = fuzz.next(i);
+        now += static_cast<std::uint32_t>(fuzz.random());
+        if ((i & 1u) != 0) {
+            std::uint64_t timetag = 0;
+            switch (fuzz.random() % 6) {
+            case 0: timetag = 1; break;
+            case 1: timetag = now - (fuzz.random() % (4ULL << 32)); break;
+            case 2: timetag = now + (fuzz.random() % (10ULL << 32)); break;
+            case 3: timetag = now + (10ULL << 32) + 1 +
+                              (fuzz.random() % (10ULL << 32)); break;
+            case 4: timetag = now + (fuzz.random() & 0xffffffffu); break;
+            default: timetag = fuzz.random(); break;
+            }
+            bytes = bundle(bytes);
+            for (int byte = 0; byte < 8; ++byte) {
+                bytes[8 + byte] = static_cast<std::uint8_t>(
+                    timetag >> (56 - byte * 8));
+            }
+        }
         const auto start = std::chrono::steady_clock::now();
-        const auto packet = Osc::parsePacket(bytes, 1ULL << 40);
-        fuzz.input.receive(bytes, 1ULL << 40, "fuzz");
+        const auto packet = Osc::parsePacket(bytes);
+        fuzz.input.receive(bytes, now, "fuzz");
         const auto elapsed = std::chrono::steady_clock::now() - start;
+        fuzz.input.releaseDue(now + fuzz.random() % (12ULL << 32));
         if (elapsed > std::chrono::milliseconds(50)) {
             INFO("input " << i << ": " << hex(bytes));
             FAIL("OSC processing exceeded 50 ms");
@@ -247,7 +267,8 @@ void runFuzz(std::size_t count, std::uint64_t seed) {
             state.at("dropped").at("limit").get<std::uint64_t>()};
         if (!std::equal(fuzz.counters.begin(), fuzz.counters.end(), current.begin(),
                         [](auto before, auto after) { return after >= before; }) ||
-            state.at("recent").size() > 64) {
+            state.at("recent").size() > 64 ||
+            state.at("scheduled").get<std::uint64_t>() > 1024) {
             INFO("input " << i << ": " << hex(bytes));
             FAIL("counter decreased or recent ring exceeded capacity");
         }
@@ -263,6 +284,9 @@ void runFuzz(std::size_t count, std::uint64_t seed) {
             }
         }
     }
+    fuzz.input.releaseDue(now + (20ULL << 32));
+    if (fuzz.input.snapshotJson().at("scheduled") != 0)
+        FAIL("scheduled queue did not empty after time passed");
 }
 } // namespace
 
@@ -302,6 +326,6 @@ TEST_CASE("OSC receive and binding swaps are thread safe", "[tsan1]") {
 
 TEST_CASE("OSC fuzz regression: empty input", "[osc-fuzz]") {
     const Bytes input{};
-    const auto packet = Osc::parsePacket(input, 0);
+    const auto packet = Osc::parsePacket(input);
     REQUIRE(packet.drop == Osc::PacketDrop::malformed);
 }

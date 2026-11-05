@@ -1,5 +1,6 @@
 #include "oscinput.hpp"
 
+#include <algorithm>
 #include <chrono>
 #include <cmath>
 #include <limits>
@@ -105,20 +106,23 @@ OscInput::Convert OscInput::convert(const Binding &binding,
     return Convert::ok;
 }
 
+constexpr std::uint64_t schedule_window = 10ULL << 32;
+constexpr std::size_t schedule_message_limit = 1024;
+constexpr std::size_t schedule_entry_limit = 1024;
+constexpr std::size_t schedule_byte_limit = 16 * 1024 * 1024;
+
 void OscInput::receive(std::span<const std::uint8_t> bytes,
                        std::uint64_t now_ntp, std::string_view sender) {
-    if (bytes.size() > Osc::max_packet_bytes) {
-        std::scoped_lock lock{mutex_};
-        ++counters_.received;
-        ++counters_.limit;
-        return;
-    }
     try {
-        // The whole parse is outside the lock; only resolving against the
-        // current table and committing touches shared state.
-        const auto packet = Osc::parsePacket(bytes, now_ntp);
+        Osc::Packet packet;
+        if (bytes.size() > Osc::max_packet_bytes)
+            packet.drop = Osc::PacketDrop::limit;
+        else
+            packet = Osc::parsePacket(bytes);
+        std::string owned_sender{sender};
 
         std::scoped_lock lock{mutex_};
+        releaseDueLocked(now_ntp);
         ++counters_.received;
         switch (packet.drop) {
         case Osc::PacketDrop::malformed:
@@ -134,6 +138,54 @@ void OscInput::receive(std::span<const std::uint8_t> bytes,
             break;
         }
 
+        const auto difference =
+            static_cast<std::int64_t>(packet.timetag - now_ntp);
+        const bool future = packet.bundle && packet.timetag != 1 &&
+                            difference > 0;
+        // An empty bundle has nothing to hold or apply, whatever its timetag.
+        if (future && !packet.messages.empty()) {
+            if (GET_MODULE(LiveInputs).isReplaying()) {
+                stagePacketLocked(packet, owned_sender, true);
+                return;
+            }
+            // The 10 s window is a local overload policy, not an OSC rule.
+            if (difference > static_cast<std::int64_t>(schedule_window)) {
+                ++counters_.future_timetag;
+                return;
+            }
+            if (packet.messages.size() > schedule_message_limit ||
+                scheduled_messages_ + packet.messages.size() >
+                    schedule_message_limit ||
+                scheduled_.size() == schedule_entry_limit ||
+                bytes.size() > schedule_byte_limit ||
+                scheduled_bytes_ + bytes.size() > schedule_byte_limit) {
+                ++counters_.scheduled_full;
+                return;
+            }
+            Scheduled entry{std::move(packet), std::move(owned_sender),
+                            bytes.size()};
+            auto position = scheduled_.end();
+            while (position != scheduled_.begin()) {
+                const auto previous = std::prev(position);
+                if (static_cast<std::int64_t>(previous->packet.timetag -
+                                              entry.packet.timetag) <= 0)
+                    break;
+                position = previous;
+            }
+            scheduled_messages_ += entry.packet.messages.size();
+            scheduled_bytes_ += entry.packet_bytes;
+            scheduled_.insert(position, std::move(entry));
+            return;
+        }
+        stagePacketLocked(packet, owned_sender, future);
+    } catch (...) {
+        // A non-engine thread must never see an OSC datagram raise into it.
+    }
+}
+
+void OscInput::stagePacketLocked(const Osc::Packet &packet,
+                                 const std::string &sender, bool scheduled) {
+    try {
         struct Event {
             Recent recent;
             bool has_update = false;
@@ -147,7 +199,8 @@ void OscInput::receive(std::span<const std::uint8_t> bytes,
         for (const auto &message : packet.messages) {
             Event event;
             event.recent.address = message.address;
-            event.recent.sender = std::string{sender};
+            event.recent.sender = sender;
+            event.recent.scheduled = scheduled;
             if (message.arguments.size() == 1) {
                 const auto &argument = message.arguments.front();
                 switch (argument.tag) {
@@ -232,6 +285,7 @@ void OscInput::receive(std::span<const std::uint8_t> bytes,
         }
 
         if (!updates.empty()) {
+            ++counters_.staged_batches;
             const auto staged =
                 GET_MODULE(LiveInputs).stageBatch(updates, LiveInputSource::osc);
             counters_.applied += staged.applied;
@@ -263,6 +317,61 @@ void OscInput::receive(std::span<const std::uint8_t> bytes,
         }
     } catch (...) {
         // A non-engine thread must never see an OSC datagram raise into it.
+    }
+}
+
+void OscInput::releaseDue(std::uint64_t now_ntp) noexcept {
+    try {
+        std::scoped_lock lock{mutex_};
+        releaseDueLocked(now_ntp);
+    } catch (...) {
+    }
+}
+
+void OscInput::releaseDueLocked(std::uint64_t now_ntp) {
+    while (!scheduled_.empty() &&
+           static_cast<std::int64_t>(scheduled_.front().packet.timetag -
+                                     now_ntp) <= 0) {
+        Scheduled entry = std::move(scheduled_.front());
+        scheduled_.pop_front();
+        scheduled_messages_ -= entry.packet.messages.size();
+        scheduled_bytes_ -= entry.packet_bytes;
+        stagePacketLocked(entry.packet, entry.sender, true);
+    }
+}
+
+std::chrono::milliseconds OscInput::listenerWait(
+    std::uint64_t now_ntp, std::chrono::milliseconds idle) const {
+    std::scoped_lock lock{mutex_};
+    if (scheduled_.empty()) return idle;
+    const auto difference = static_cast<std::int64_t>(
+        scheduled_.front().packet.timetag - now_ntp);
+    if (difference <= 0) return std::chrono::milliseconds{0};
+    const auto due = std::chrono::milliseconds{static_cast<std::int64_t>(
+        (static_cast<std::uint64_t>(difference) * 1000 + 0xffffffffULL) >> 32)};
+    return std::min({idle, std::chrono::milliseconds{2}, due});
+}
+
+std::size_t OscInput::discardScheduled() noexcept {
+    std::scoped_lock lock{mutex_};
+    const auto discarded = scheduled_messages_;
+    scheduled_.clear();
+    scheduled_messages_ = 0;
+    scheduled_bytes_ = 0;
+    return discarded;
+}
+
+void OscInput::discardScheduledForReplay() noexcept {
+    try {
+        std::scoped_lock lock{mutex_};
+        while (!scheduled_.empty()) {
+            Scheduled entry = std::move(scheduled_.front());
+            scheduled_.pop_front();
+            scheduled_messages_ -= entry.packet.messages.size();
+            scheduled_bytes_ -= entry.packet_bytes;
+            stagePacketLocked(entry.packet, entry.sender, true);
+        }
+    } catch (...) {
     }
 }
 
@@ -298,6 +407,7 @@ nlohmann::json OscInput::snapshotJson() const {
             {"reason", event.reason},
             {"sender", event.sender},
             {"arg_type", event.arg_type},
+            {"scheduled", event.scheduled},
             {"value", event.has_value ? nlohmann::json(event.value)
                                       : nlohmann::json(nullptr)},
         });
@@ -308,11 +418,14 @@ nlohmann::json OscInput::snapshotJson() const {
         {"received", counters_.received},
         {"applied", counters_.applied},
         {"unbound", counters_.unbound},
+        {"scheduled", scheduled_messages_},
+        {"staged_batches", counters_.staged_batches},
         {"dropped",
          {
              {"malformed", counters_.malformed},
              {"limit", counters_.limit},
              {"future_timetag", counters_.future_timetag},
+             {"scheduled_full", counters_.scheduled_full},
              {"nested_bundle", counters_.nested_bundle},
              {"unsupported_type", counters_.unsupported_type},
              {"argument_count", counters_.argument_count},

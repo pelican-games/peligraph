@@ -54,9 +54,8 @@ struct Packet {
     std::vector<Message> messages;
 };
 
-// Parse one OSC 1.0 packet. `now_ntp` is the caller's single timestamp for this
-// datagram (32.32 NTP fixed point) and is used only for a top-level bundle's
-// future check. Parsing allocates but never throws for bad input.
-Packet parsePacket(std::span<const std::uint8_t> bytes, std::uint64_t now_ntp);
+// Parse one OSC 1.0 packet. The receiver decides when a bundle's 32.32 NTP
+// timetag is applied. Parsing allocates but never throws for bad input.
+Packet parsePacket(std::span<const std::uint8_t> bytes);
 
 } // namespace Pelican::Osc
