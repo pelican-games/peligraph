@@ -346,6 +346,10 @@ DECLARE_MODULE(Renderer) {
     // plan does not contain, is inactive; an unlaid-out target is no_contents.
     OutputReadResult readOutputRenderTargetForSink(
         std::string_view name, std::string_view graph);
+    OutputCaptureResult submitOutputCapture(
+        std::string_view name, std::string_view graph,
+        vk::Buffer staging_buffer, vk::CommandBuffer command_buffer,
+        vk::Fence fence);
 #endif
     R8RenderTargetReadback readR8RenderTargetForTesting(
         std::string_view name);

@@ -18,6 +18,9 @@ struct OutputSinkSpec {
     bool enabled = true;
     // VO-1b: "raw" (PVO1) or "png". Lowering refuses anything else.
     std::string format = "raw";
+    // VO-2: "wait" preserves every frame and is the file sink's default;
+    // "drop" bounds render-thread latency when all four slots are busy.
+    std::string when_full = "wait";
     std::string graph;
     std::string target;
     std::string source_node;

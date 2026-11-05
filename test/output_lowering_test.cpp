@@ -494,6 +494,27 @@ TEST_CASE("VO-1a output.file refuses names and parameters", "[vo1a][output-lower
     }
 }
 
+TEST_CASE("VO-2 when_full defaults to wait without changing the document digest",
+          "[vo2][output-lowering]") {
+    const auto implicit = Pelican::lowerOutputNodes(document());
+    const auto explicit_wait = Pelican::lowerOutputNodes(
+        document(Json{{"name", "shot"}, {"when_full", "wait"}}));
+    CHECK(implicit.sinks.sinks.front().when_full == "wait");
+    CHECK(explicit_wait.sinks.sinks.front().when_full == "wait");
+    CHECK(implicit.report == explicit_wait.report);
+    CHECK(implicit.document == explicit_wait.document);
+    CHECK(Pelican::renderConfigSourceDigest(implicit.document.dump()) ==
+          "c8ab8e70722b8dd8595980c3daf64a85b900b3fe776b69a2292ab6d592a12841");
+    const auto drop = Pelican::lowerOutputNodes(
+        document(Json{{"name", "shot"}, {"when_full", "drop"}}));
+    CHECK(drop.sinks.sinks.front().when_full == "drop");
+    for (const auto value : Json::array({"block", "DROP", 1, true, nullptr})) {
+        INFO(value.dump());
+        CHECK(refusal(document(Json{{"name", "shot"}, {"when_full", value}})) ==
+              "output.when_full_unknown@1");
+    }
+}
+
 TEST_CASE("VO-1a output.file resolves its source to a graph and target", "[vo1a][output-lowering]") {
     SECTION("an unconnected sink") {
         auto graph = document();

@@ -92,6 +92,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cctype>
 #include <cstdint>
 #include <filesystem>
@@ -117,6 +118,10 @@
 namespace Pelican {
 
 namespace {
+
+#if PELICAN_WITH_VIDEO_OUTPUT && PELICAN_OUTPUT_TEST_SEAMS
+std::atomic_bool output_status_after_step{true};
+#endif
 
 nlohmann::json inactiveOpenXrStatusJson() {
     return {
@@ -1648,6 +1653,38 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return problemListJson(FastModuleContainer::tryGet<ProblemList>());
     });
 
+#if PELICAN_WITH_VIDEO_OUTPUT && PELICAN_OUTPUT_TEST_SEAMS
+    server.setHandler("test_output_worker_pause", [](const nlohmann::json &params) {
+        const auto paused = params.at("paused").get<bool>();
+        auto *sinks = FastModuleContainer::tryGet<OutputSinks>();
+        if (sinks == nullptr) throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+            "output sinks are unavailable");
+        sinks->pauseWorkerForTesting(paused);
+        if (paused && params.contains("resume_after_ms"))
+            sinks->resumeWorkerAfterForTesting(std::chrono::milliseconds{
+                params.at("resume_after_ms").get<std::int64_t>()});
+        return nlohmann::json{{"paused", paused}};
+    });
+    server.setHandler("test_output_capture_timings", [](const nlohmann::json &params) {
+        requireObjectParams(params, "test_output_capture_timings");
+        auto *sinks = FastModuleContainer::tryGet<OutputSinks>();
+        if (sinks == nullptr) throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+            "output sinks are unavailable");
+        return sinks->takeCaptureTimingsForTesting();
+    });
+    server.setHandler("test_output_step_status", [](const nlohmann::json &params) {
+        const bool enabled = params.at("enabled").get<bool>();
+        output_status_after_step.store(enabled);
+        return nlohmann::json{{"enabled", enabled}};
+    });
+    server.setHandler("test_render_gpu_timing", [](const nlohmann::json &params) {
+        requireObjectParams(params, "test_render_gpu_timing");
+        const auto *timing = FastModuleContainer::tryGet<RenderTiming>();
+        return timing != nullptr ? timing->statusJson()
+                                 : disabledGpuTimingStatusJson();
+    });
+#endif
+
     server.setHandler("get_status", [instance_id, &modules, &editor_service,
                                      &play_session](const nlohmann::json &params) {
         requireObjectParams(params, "get_status");
@@ -2262,6 +2299,15 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         modules.vulkan.setCurrentFrameIndex(modules.engine_time.evaluationIndex());
         updateFrameState();
         modules.renderer.render();
+#if PELICAN_WITH_VIDEO_OUTPUT
+        bool query_output_status = true;
+#if PELICAN_OUTPUT_TEST_SEAMS
+        query_output_status = output_status_after_step.load();
+#endif
+        if (query_output_status)
+            if (auto *sinks = FastModuleContainer::tryGet<OutputSinks>())
+                (void)sinks->status();
+#endif
         auto result = frameResult(modules.engine_time);
         result["problems"] = problemListJson(FastModuleContainer::tryGet<ProblemList>()).at("problems");
         result["edit_results"] = editor_rpc.takeCompletedEditResults();

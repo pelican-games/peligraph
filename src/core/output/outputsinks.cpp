@@ -1,15 +1,23 @@
 #include "outputsinks.hpp"
 
 #include "../launchconfig.hpp"
+#include "../log.hpp"
+#include "../vkcore/buf.hpp"
+#include "../vkcore/core.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../watch/problemlist.hpp"
+#include "outputslotqueue.hpp"
 
 #include <algorithm>
-#include <stdexcept>
+#include <chrono>
+#include <condition_variable>
+#include <cstring>
+#include <deque>
+#include <thread>
 
 namespace Pelican {
 namespace {
-
+using Clock = std::chrono::steady_clock;
 constexpr std::string_view outputProblemDomain = "output";
 
 std::string sinkError(const OutputSinkSpec &sink) {
@@ -17,12 +25,10 @@ std::string sinkError(const OutputSinkSpec &sink) {
     if (sink.error_message.empty()) return sink.error_code;
     return sink.error_code + ": " + sink.error_message;
 }
-
 bool sameIdentity(const OutputSinks::State &state, const OutputSinkSpec &sink) {
     return state.name == sink.name && state.kind == sink.kind &&
            state.graph == sink.graph && state.target == sink.target;
 }
-
 std::string problemCode(std::string_view error, std::string_view fallback) {
     const auto colon = error.find(':');
     auto code = error.substr(0, colon);
@@ -32,14 +38,12 @@ std::string problemCode(std::string_view error, std::string_view fallback) {
         return std::string{fallback};
     return std::string{code};
 }
-
 bool replaceOutputProblems(const std::vector<nlohmann::json> &problems) {
     auto *list = FastModuleContainer::tryGet<ProblemList>();
     if (list == nullptr) return false;
     list->replace(outputProblemDomain, problems);
     return true;
 }
-
 std::vector<OutputSinks::State> statesToValues(
     const std::vector<std::shared_ptr<OutputSinks::State>> &states) {
     std::vector<OutputSinks::State> values;
@@ -47,13 +51,8 @@ std::vector<OutputSinks::State> statesToValues(
     for (const auto &state : states) values.push_back(*state);
     return values;
 }
-
 } // namespace
 
-// The pure part of the sink status, shared with the CPU tests. A problem is
-// emitted only for a refused sink or a sink stopped by a limit. Running,
-// inactive and finished-without-a-limit sinks produce none, so a table reload
-// that drops a problem replaces the empty list and withdraws it.
 std::vector<nlohmann::json> outputSinkProblems(
     const std::vector<OutputSinks::State> &states) {
     std::vector<nlohmann::json> problems;
@@ -66,10 +65,7 @@ std::vector<nlohmann::json> outputSinkProblems(
         } else {
             continue;
         }
-        nlohmann::json fields{
-            {"graph", state.graph},
-            {"sink", state.name},
-        };
+        nlohmann::json fields{{"graph", state.graph}, {"sink", state.name}};
         if (state.state == "finished" && state.stop_reason != "none") {
             fields["limit"] = state.stop_reason;
             fields["value"] = state.stop_value;
@@ -82,289 +78,869 @@ std::vector<nlohmann::json> outputSinkProblems(
                            std::to_string(state.stop_value) + " reached";
             }
         }
-        problems.push_back(nlohmann::json{
-            {"severity", "error"},
-            {"source", "runtime"},
-            {"code", code},
-            {"message", message},
-            {"scope", state.graph},
-            {"node", state.name},
-            {"fields", std::move(fields)},
-        });
+        problems.push_back({{"severity", "error"},
+                            {"source", "runtime"}, {"code", code},
+                            {"message", message}, {"scope", state.graph},
+                            {"node", state.name}, {"fields", std::move(fields)}});
     }
     return problems;
 }
 
-OutputSinks::OutputSinks() {
+struct OutputSinks::Impl {
+    struct Pool;
+    struct Runtime {
+        OutputSinkSpec spec;
+        std::shared_ptr<State> state;
+        std::shared_ptr<Pool> pool;
+        std::uint64_t generation = 0;
+    };
+    struct SlotResource {
+        BufferWrapper buffer;
+        vk::UniqueCommandPool command_pool;
+        vk::UniqueCommandBuffer command_buffer;
+        vk::UniqueFence fence;
+        std::shared_ptr<const void> source_lease;
+        vk::DeviceSize bytes = 0;
+        bool coherent = true;
+    };
+    struct Pool {
+        OutputSlotQueue queue;
+        std::array<std::unique_ptr<SlotResource>, output_slot_count> resources;
+        vk::Extent2D extent{};
+        vk::Format format = vk::Format::eUndefined;
+        bool retired = false;
+    };
+    struct Work {
+        std::shared_ptr<Runtime> runtime;
+        std::shared_ptr<Pool> pool;
+        std::size_t slot = 0;
+        std::uint64_t frame = 0;
+        std::uint64_t generation = 0;
+        vk::Extent2D extent{};
+        vk::Format format = vk::Format::eUndefined;
+        OutputFileEncoding encoding = OutputFileEncoding::raw;
+        bool discard = false;
+        bool wait_for_fence = false;
+        bool submitted = false;
+    };
+
+    struct CaptureTiming {
+        std::uint64_t frame = 0;
+        double selection_ms = 0.0;
+        double record_submit_ms = 0.0;
+        double total_ms = 0.0;
+        std::uint64_t queue_depth = 0;
+    };
+
+    mutable std::mutex mutex;
+    mutable std::condition_variable work_cv;
+    std::condition_variable free_cv;
+    std::condition_variable pause_cv;
+    std::shared_ptr<const OutputSinkTable> table;
+    std::vector<std::shared_ptr<Runtime>> current;
+    std::vector<std::shared_ptr<Pool>> retired;
+    std::deque<Work> work;
+    std::thread worker;
+    bool active = false;
+    bool stopping = false;
+    bool device_lost = false;
+    bool worker_started = false;
+    bool worker_busy = false;
+    bool paused = false;
+    bool pause_acknowledged = false;
+    bool drain_expired = false;
+    std::uint64_t generation = 0;
+    std::uint64_t problems_revision = 0;
+    std::uint64_t published_revision = 0;
+    std::uint64_t bytes_written = 0;
+    std::uint32_t max_frames = 1000;
+    std::uint64_t max_bytes = 0;
+    std::uint64_t frames_skipped_inactive = 0;
+    std::uint64_t frames_skipped_no_contents = 0;
+    std::filesystem::path directory;
+    std::optional<Clock::time_point> resume_at;
+    std::vector<CaptureTiming> capture_timings;
+    std::uint64_t maximum_queue_depth = 0;
+
+    void syncCounters(const std::shared_ptr<Runtime> &runtime) {
+        runtime->state->frames_dropped = runtime->pool->queue.framesDropped();
+        runtime->state->frames_discarded = runtime->pool->queue.framesDiscarded();
+        runtime->state->queue_depth = runtime->pool->queue.queueDepth();
+    }
+    void noteProblem(const Runtime &runtime) {
+        ++problems_revision;
+        if (runtime.generation == generation) published_revision = 0;
+    }
+    void ensureWorker() {
+        if (worker_started) return;
+        stopping = false;
+        device_lost = false;
+        worker_started = true;
+        worker = std::thread([this] { run(); });
+    }
+    void run();
+    void process(Work entry);
+    void discardUnstarted();
+    void finishSlot(Work &entry, bool written, std::uint64_t written_bytes,
+                    std::string error, bool limit, bool device_error);
+    static void releaseResource(SlotResource &resource);
+};
+
+OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
+    // Reverse-order module teardown must join the worker and release slot
+    // resources before the device and allocator are destroyed.
+    (void)GET_MODULE(VulkanManageCore);
     if (const auto *config = FastModuleContainer::tryGet<EngineLaunchConfig>();
         config != nullptr) {
-        max_frames = config->output_max_frames;
-        max_bytes = config->output_max_bytes;
+        impl_->max_frames = config->output_max_frames;
+        impl_->max_bytes = config->output_max_bytes;
         if (config->output_dir) {
-            active = true;
-            directory = *config->output_dir;
+            impl_->active = true;
+            impl_->directory = *config->output_dir;
         }
     }
 }
 
+OutputSinks::~OutputSinks() {
+    {
+        std::lock_guard lock{impl_->mutex};
+        impl_->stopping = true;
+        impl_->paused = false;
+        impl_->pause_acknowledged = false;
+        impl_->resume_at.reset();
+        impl_->drain_expired = false;
+    }
+    impl_->work_cv.notify_all();
+    impl_->free_cv.notify_all();
+    impl_->pause_cv.notify_all();
+    if (impl_->worker_started) {
+        const auto deadline = Clock::now() + std::chrono::seconds(10);
+        std::unique_lock lock{impl_->mutex};
+        impl_->work_cv.wait_until(lock, deadline, [&] {
+            return impl_->work.empty();
+        });
+        if (!impl_->work.empty()) {
+            impl_->drain_expired = true;
+            const auto count = impl_->work.size();
+            LOG_WARNING(logger, "Output sink teardown discarded {} queued frames", count);
+            lock.unlock();
+            impl_->work_cv.notify_all();
+            impl_->free_cv.notify_all();
+        }
+    }
+    if (impl_->worker.joinable()) impl_->worker.join();
+}
+
 void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
     std::vector<nlohmann::json> problems;
+    std::uint64_t installed_generation = 0;
     {
-        std::lock_guard lock{mutex};
-        std::vector<std::shared_ptr<State>> old = std::move(states);
-        states.clear();
-        table = std::move(next);
-        if (table) {
-            states.reserve(table->sinks.size());
-            for (const auto &sink : table->sinks) {
+        std::lock_guard lock{impl_->mutex};
+        ++impl_->generation;
+        installed_generation = impl_->generation;
+        for (auto &entry : impl_->work) {
+            if (entry.generation == impl_->generation) continue;
+            const auto *queued = entry.pool->queue.entry(entry.slot);
+            if (queued == nullptr ||
+                entry.pool->queue.state(entry.slot) != OutputSlotState::sending) {
+                entry.discard = true;
+                if (queued != nullptr)
+                    const_cast<OutputSlotEntry *>(queued)->discard = true;
+            }
+        }
+        auto previous = std::move(impl_->current);
+        for (auto &old : previous) old->pool->retired = true;
+        impl_->current.clear();
+        impl_->table = std::move(next);
+        if (impl_->table) {
+            for (const auto &sink : impl_->table->sinks) {
+                auto runtime = std::make_shared<Impl::Runtime>();
+                runtime->spec = sink;
+                runtime->generation = impl_->generation;
                 auto state = std::make_shared<State>();
                 state->name = sink.name;
                 state->kind = sink.kind;
                 state->graph = sink.graph;
                 state->target = sink.target;
                 state->format = sink.format;
-                for (const auto &previous : old) {
-                    if (sameIdentity(*previous, sink)) {
-                        // A reload keeps the worked counters of the same sink
-                        // and starts its state afresh: a refusal or a finished
-                        // run is a property of the generation that produced it.
-                        state->frames_written = previous->frames_written;
-                        break;
-                    }
+                state->when_full = sink.when_full;
+                runtime->state = state;
+                runtime->pool = std::make_shared<Impl::Pool>();
+                for (const auto &old : previous) {
+                    if (!sameIdentity(*old->state, sink)) continue;
+                    runtime->state = old->state;
+                    runtime->pool = old->pool;
+                    runtime->pool->retired = false;
+                    state = old->state;
+                    state->format = sink.format;
+                    state->when_full = sink.when_full;
+                    state->stop_reason = "none";
+                    state->stop_value = 0;
+                    state->last_error.clear();
+                    break;
                 }
-                // No --output-dir means no sink is active. It also means it
-                // cannot refuse: an error_code carried by the document is not
-                // a runtime problem when no file can be written at all.
-                if (!active) {
-                    state->state = "inactive";
-                } else if (!sink.error_code.empty()) {
-                    state->state = "refused";
-                    state->last_error = sinkError(sink);
-                } else if (max_frames != 0 &&
-                           state->frames_written >= max_frames) {
-                    state->state = "finished";
-                    state->stop_reason = "max_frames";
-                    state->stop_value = max_frames;
-                } else if (max_bytes != 0 && bytes_written >= max_bytes) {
-                    // The run's byte budget was exhausted before this
-                    // generation was installed. The sink starts stopped by
-                    // that limit rather than pretending it can write.
-                    state->state = "finished";
-                    state->stop_reason = "max_bytes";
-                    state->stop_value = max_bytes;
-                    state->last_error = "output.limit_reached@1: max_bytes " +
-                                        std::to_string(max_bytes) + " reached";
-                } else {
-                    state->state = "running";
-                }
-                states.push_back(std::move(state));
+                impl_->current.push_back(runtime);
             }
         }
+        std::vector<std::shared_ptr<State>> states;
+        for (auto &runtime : impl_->current) {
+            auto &state = *runtime->state;
+            if (!impl_->active) {
+                state.state = "inactive";
+            } else if (!runtime->spec.error_code.empty()) {
+                state.state = "refused";
+                state.last_error = sinkError(runtime->spec);
+            } else if (impl_->max_bytes != 0 &&
+                       impl_->bytes_written >= impl_->max_bytes) {
+                state.state = "finished";
+                state.stop_reason = "max_bytes";
+                state.stop_value = impl_->max_bytes;
+                state.last_error = "output.limit_reached@1: max_bytes " +
+                    std::to_string(impl_->max_bytes) + " reached";
+            } else if (impl_->max_frames != 0 &&
+                       state.frames_written >= impl_->max_frames &&
+                       std::none_of(runtime->pool->queue.entries().begin(),
+                           runtime->pool->queue.entries().end(),
+                           [](const OutputSlotEntry &queued) {
+                               return !queued.discard;
+                           })) {
+                state.state = "finished";
+                state.stop_reason = "max_frames";
+                state.stop_value = impl_->max_frames;
+                state.last_error = "output.limit_reached@1: max_frames " +
+                    std::to_string(impl_->max_frames) + " reached";
+            } else {
+                state.state = "running";
+            }
+            states.push_back(runtime->state);
+        }
         problems = outputSinkProblems(statesToValues(states));
+        impl_->published_revision = impl_->problems_revision;
     }
-    // Never hold the sink mutex while another module takes its own.
     const bool published = replaceOutputProblems(problems);
+    std::lock_guard lock{impl_->mutex};
+    if (!published && impl_->generation == installed_generation) {
+        impl_->published_revision = 0;
+        impl_->problems_revision = impl_->generation;
+    }
+}
+
+namespace {
+void allocateSlot(OutputSinks::Impl::SlotResource &slot, vk::DeviceSize bytes) {
+    auto &vulkan = GET_MODULE(VulkanManageCore);
+    slot.buffer = vulkan.allocBuf(
+        bytes, vk::BufferUsageFlagBits::eTransferDst,
+        vma::MemoryUsage::eAutoPreferHost,
+        vma::AllocationCreateFlagBits::eMapped |
+            vma::AllocationCreateFlagBits::eHostAccessRandom);
+    const auto info = vulkan.getAllocator().getAllocationInfo(slot.buffer.allocation.get());
+    const auto memory = vulkan.getPhysDevice().getMemoryProperties();
+    const auto properties = memory.memoryTypes[info.memoryType].propertyFlags;
+    slot.coherent = bool(properties & vk::MemoryPropertyFlagBits::eHostCoherent);
+    slot.bytes = bytes;
+    slot.command_pool = vulkan.getDevice().createCommandPoolUnique(
+        {vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
+         vulkan.getGraphicsQueueFamilyIndex()});
+    vk::CommandBufferAllocateInfo alloc_info{slot.command_pool.get(),
+        vk::CommandBufferLevel::ePrimary, 1};
+    slot.command_buffer = std::move(
+        vulkan.getDevice().allocateCommandBuffersUnique(alloc_info).front());
+    slot.fence = vulkan.getDevice().createFenceUnique({});
+}
+void invalidateSlot(OutputSinks::Impl::SlotResource &slot, vk::DeviceSize bytes) {
+    if (slot.coherent) return;
+    auto &vulkan = GET_MODULE(VulkanManageCore);
+    const auto atom = vulkan.getPhysDevice().getProperties().limits.nonCoherentAtomSize;
+    const auto allocation = vulkan.getAllocator().getAllocationInfo(
+        slot.buffer.allocation.get());
+    const vk::DeviceSize atom_mask = atom - 1;
+    const auto end = std::min(allocation.size, (bytes + atom_mask) & ~atom_mask);
+    vulkan.getAllocator().invalidateAllocation(slot.buffer.allocation.get(), 0, end);
+}
+}
+
+void OutputSinks::Impl::discardUnstarted() {
+    std::size_t index = 0;
+    while (index < work.size()) {
+        auto &entry = work[index];
+        if (entry.pool->queue.state(entry.slot) == OutputSlotState::sending) {
+            ++index;
+            continue;
+        }
+        if (!entry.discard) {
+            const auto *queued = entry.pool->queue.entry(entry.slot);
+            if (queued != nullptr)
+                const_cast<OutputSlotEntry *>(queued)->discard = true;
+            entry.discard = true;
+        }
+        ++index;
+    }
+    noteProblem(*current.front());
+}
+
+void OutputSinks::Impl::finishSlot(Work &entry, bool written,
+    std::uint64_t written_bytes, std::string error, bool limit,
+    bool device_error) {
     std::lock_guard lock{mutex};
-    problems_need_sync = !published;
+    auto &slot = *entry.pool->resources[entry.slot];
+    if (written) {
+        bytes_written += written_bytes;
+        ++entry.runtime->state->frames_written;
+    }
+    const auto max_frame_complete = max_frames != 0 &&
+        entry.runtime->state->frames_written >= max_frames &&
+        entry.pool->queue.queueDepth() == 1;
+    if (!limit && !error.empty() && entry.generation == generation) {
+        entry.runtime->state->state = "refused";
+        entry.runtime->state->last_error = error;
+        noteProblem(*entry.runtime);
+    } else if (!limit && max_frame_complete && !entry.discard) {
+        entry.runtime->state->state = "finished";
+        entry.runtime->state->stop_reason = "max_frames";
+        entry.runtime->state->stop_value = max_frames;
+        noteProblem(*entry.runtime);
+    }
+    if (limit) {
+        for (auto &runtime : current) {
+            if (runtime->state->state != "running") continue;
+            runtime->state->state = "finished";
+            runtime->state->stop_reason = "max_bytes";
+            runtime->state->stop_value = max_bytes;
+            runtime->state->last_error = error.empty()
+                ? "output.limit_reached@1: max_bytes " +
+                    std::to_string(max_bytes) + " reached"
+                : error;
+            noteProblem(*runtime);
+        }
+        discardUnstarted();
+    }
+    if (device_error) device_lost = true;
+    entry.pool->queue.finish(entry.slot);
+    slot.source_lease.reset();
+    syncCounters(entry.runtime);
+    worker_busy = false;
+    work_cv.notify_all();
+    free_cv.notify_all();
+}
+
+void OutputSinks::Impl::process(Work entry) {
+    auto &slot = *entry.pool->resources[entry.slot];
+    std::string error;
+    bool device_error = false;
+    bool ready = entry.discard && drain_expired && !entry.wait_for_fence;
+    if (!ready) {
+        while (true) {
+            {
+                std::lock_guard lock{mutex};
+                if (device_lost || (drain_expired && !entry.wait_for_fence)) break;
+            }
+            try {
+                auto &vulkan = GET_MODULE(VulkanManageCore);
+                const vk::Fence fence = slot.fence.get();
+                const auto result = vulkan.getDevice().waitForFences(
+                    fence, vk::True,
+                    std::chrono::duration_cast<std::chrono::nanoseconds>(
+                        std::chrono::milliseconds(100)).count());
+                if (result == vk::Result::eSuccess) {
+                    ready = true;
+                    break;
+                }
+                if (result != vk::Result::eTimeout) {
+                    error = "output.read_failed@1: fence wait failed";
+                    break;
+                }
+            } catch (const vk::DeviceLostError &) {
+                device_error = true;
+                break;
+            } catch (const std::exception &e) {
+                error = std::string{"output.read_failed@1: "} + e.what();
+                break;
+            }
+        }
+    }
+    std::vector<std::uint8_t> pixels;
+    std::optional<std::uint64_t> budget;
+    const auto bytes = static_cast<vk::DeviceSize>(entry.extent.width) *
+        entry.extent.height * 4;
+    if (ready && !entry.discard && !device_error && error.empty()) {
+        invalidateSlot(slot, bytes);
+        const auto info = GET_MODULE(VulkanManageCore).getAllocator().
+            getAllocationInfo(slot.buffer.allocation.get());
+        pixels.resize(static_cast<std::size_t>(bytes));
+        std::memcpy(pixels.data(), info.pMappedData, pixels.size());
+        std::unique_lock lock{mutex};
+        if (max_bytes != 0) {
+            if (bytes_written >= max_bytes) {
+                lock.unlock();
+                finishSlot(entry, false, 0,
+                    "output.limit_reached@1: max_bytes " +
+                        std::to_string(max_bytes) + " reached", true, false);
+                return;
+            }
+            budget = max_bytes - bytes_written;
+        }
+    }
+    if ((!entry.discard && !device_error) && (ready || !error.empty())) {
+        if (ready) {
+            auto directory_copy = directory;
+            const auto format = outputFileFormat(entry.format);
+            const auto written = writeOutputFrameFile(directory_copy,
+                entry.runtime->spec.name, entry.frame,
+                OutputFileImage{.width = entry.extent.width,
+                    .height = entry.extent.height, .format = *format,
+                    .pixels = pixels},
+                entry.encoding, budget);
+            if (written.status == OutputFileWriteStatus::written) {
+                finishSlot(entry, true, written.bytes_written, {}, false, false);
+                return;
+            }
+            if (written.status == OutputFileWriteStatus::limit_reached) {
+                finishSlot(entry, false, 0, written.message, true, false);
+                return;
+            }
+            error = written.message.empty()
+                ? (written.status == OutputFileWriteStatus::exists
+                    ? "output.exists@1" : "output.write_failed@1")
+                : written.message;
+        }
+        std::unique_lock lock{mutex};
+        for (auto &queued : work) {
+            if (queued.runtime.get() != entry.runtime.get() ||
+                queued.pool->queue.state(queued.slot) == OutputSlotState::sending)
+                continue;
+            queued.discard = true;
+            const auto *item = queued.pool->queue.entry(queued.slot);
+            if (item != nullptr) const_cast<OutputSlotEntry *>(item)->discard = true;
+        }
+        lock.unlock();
+        finishSlot(entry, false, 0, std::move(error), false, false);
+        return;
+    }
+    finishSlot(entry, false, 0, {}, false, device_error);
+}
+
+void OutputSinks::Impl::run() {
+    while (true) {
+        std::optional<Work> selected;
+        {
+            std::unique_lock lock{mutex};
+            work_cv.wait(lock, [&] {
+                return (!work.empty() && work.front().submitted) ||
+                       stopping || paused;
+            });
+            if (paused) {
+                pause_acknowledged = true;
+                pause_cv.notify_all();
+                if (resume_at) {
+                    const auto deadline = *resume_at;
+                    work_cv.wait_until(lock, deadline, [&] {
+                        return !paused || stopping;
+                    });
+                    if (paused && Clock::now() >= deadline) {
+                        paused = false;
+                        resume_at.reset();
+                    }
+                } else {
+                    work_cv.wait(lock, [&] {
+                        return !paused || stopping || resume_at.has_value();
+                    });
+                }
+                free_cv.notify_all();
+                pause_cv.notify_all();
+            }
+            if (work.empty() || !work.front().submitted) {
+                if (work.empty() && stopping) return;
+                continue;
+            }
+            selected = std::move(work.front());
+            work.pop_front();
+            worker_busy = true;
+            selected->wait_for_fence = selected->pool->queue.state(selected->slot) ==
+                OutputSlotState::gpu_pending;
+            selected->pool->queue.markSending(selected->slot);
+            syncCounters(selected->runtime);
+            if (stopping && drain_expired) selected->discard = true;
+        }
+        try {
+            process(*selected);
+        } catch (const vk::DeviceLostError &) {
+            finishSlot(*selected, false, 0, {}, false, true);
+        } catch (const std::exception &e) {
+            finishSlot(*selected, false, 0,
+                std::string{"output.write_failed@1: "} + e.what(), false, false);
+        } catch (...) {
+            finishSlot(*selected, false, 0,
+                "output.write_failed@1: unknown output worker error", false, false);
+        }
+    }
 }
 
 void OutputSinks::captureFrame(Renderer &renderer) {
+    const auto capture_begin = Clock::now();
     if (renderer.publishedLogicalFrameCount() == 0) return;
-    // The file number is the just-published frame's zero-based position:
-    // publishedLogicalFrameCount() - 1. In the ordinary headless fixture the
-    // shader's frame_index starts at one, hence file n holds frame_index n+1.
-    // Do not extend that relation across reloads or unpublished frames.
     const auto frame = renderer.publishedLogicalFrameCount() - 1;
-    std::vector<std::pair<OutputSinkSpec, std::shared_ptr<State>>> work;
-    bool is_active = false;
-    bool sync_problems = false;
-    std::filesystem::path output_directory;
-    std::uint32_t frame_limit = 1000;
-    std::uint64_t byte_limit = 0;
-    std::vector<nlohmann::json> problems;
+    std::uint64_t capture_generation = 0;
     {
-        std::lock_guard lock{mutex};
-        is_active = active;
-        output_directory = directory;
-        frame_limit = max_frames;
-        byte_limit = max_bytes;
-        sync_problems = problems_need_sync;
-        if (!table || !is_active) {
-            if (sync_problems)
-                problems = outputSinkProblems(statesToValues(states));
-        } else {
-            work.reserve(states.size());
-            for (std::size_t index = 0;
-                 index < table->sinks.size() && index < states.size(); ++index) {
-                work.emplace_back(table->sinks[index], states[index]);
-            }
-        }
+        std::lock_guard lock{impl_->mutex};
+        if (impl_->device_lost) throw vk::DeviceLostError("Output capture device lost");
+        if (!impl_->active || !impl_->table) return;
+        capture_generation = impl_->generation;
+        impl_->ensureWorker();
     }
-    if (!is_active) {
-        if (sync_problems && replaceOutputProblems(problems)) {
-            std::lock_guard lock{mutex};
-            problems_need_sync = false;
-        }
-        return;
+    std::vector<std::shared_ptr<Impl::Runtime>> captures;
+    {
+        std::lock_guard lock{impl_->mutex};
+        captures = impl_->current;
     }
-
-    bool changed = false;
-    for (auto &[sink, state] : work) {
-        if (sink.every_n == 0 || frame % sink.every_n != 0) continue;
-        {
-            std::lock_guard lock{mutex};
-            if (state->state == "finished" || state->state == "refused" ||
-                state->state == "inactive")
-                continue;
-            if (frame_limit != 0 && state->frames_written >= frame_limit) {
-                state->state = "finished";
-                state->stop_reason = "max_frames";
-                state->stop_value = frame_limit;
-                changed = true;
-                continue;
-            }
-            if (byte_limit != 0 && bytes_written >= byte_limit) {
-                state->state = "finished";
-                state->stop_reason = "max_bytes";
-                state->stop_value = byte_limit;
-                state->last_error = "output.limit_reached@1: max_bytes " +
-                                    std::to_string(byte_limit) + " reached";
-                changed = true;
-                continue;
-            }
-        }
+    for (const auto &runtime : captures) {
+        if (runtime->generation != capture_generation) continue;
+        if (runtime->spec.every_n == 0 || frame % runtime->spec.every_n != 0)
+            continue;
+        double selection_ms = 0.0;
+        double record_submit_ms = 0.0;
+        Pelican::OutputCaptureResult read;
         try {
-            const auto readback =
-                renderer.readOutputRenderTargetForSink(sink.target, sink.graph);
-            if (readback.status == OutputReadStatus::inactive) {
-                std::lock_guard lock{mutex};
-                ++frames_skipped_inactive;
-                continue;
-            }
-            if (readback.status == OutputReadStatus::no_contents) {
-                std::lock_guard lock{mutex};
-                ++frames_skipped_no_contents;
-                continue;
-            }
-            if (readback.status == OutputReadStatus::refused) {
-                std::lock_guard lock{mutex};
-                state->state = "refused";
-                state->last_error = readback.error;
-                changed = true;
-                continue;
-            }
-            const auto format = outputFileFormat(readback.format);
-            if (!format) {
-                std::lock_guard lock{mutex};
-                state->state = "refused";
-                state->last_error = "output.format_unsupported@1: " +
-                                    vk::to_string(readback.format);
-                changed = true;
-                continue;
-            }
-            std::optional<std::uint64_t> budget;
-            {
-                std::lock_guard lock{mutex};
-                // The lock protects the run-wide counter while another sink
-                // (or a reload) could change it. The writer still checks the
-                // real encoded size, so this is only a fast path.
-                if (byte_limit != 0)
-                    budget = bytes_written < byte_limit
-                                 ? byte_limit - bytes_written
-                                 : 0;
-            }
-            const auto written = writeOutputFrameFile(
-                output_directory, sink.name, frame,
-                OutputFileImage{
-                    .width = readback.extent.width,
-                    .height = readback.extent.height,
-                    .format = *format,
-                    .pixels = readback.bytes,
-                },
-                sink.format == "png" ? OutputFileEncoding::png
-                                     : OutputFileEncoding::raw,
-                budget);
-            std::lock_guard lock{mutex};
-            if (written.status == OutputFileWriteStatus::written) {
-                // The real encoded size, not the uncompressed readback size,
-                // is what max_bytes bounds.
-                bytes_written += written.bytes_written;
-                ++state->frames_written;
-                if (frame_limit != 0 && state->frames_written >= frame_limit) {
-                    state->state = "finished";
-                    state->stop_reason = "max_frames";
-                    state->stop_value = frame_limit;
-                    changed = true;
+            read = renderer.submitOutputCapture(runtime->spec.target,
+                runtime->spec.graph, {}, {}, {});
+        } catch (const vk::DeviceLostError &) {
+            throw;
+        } catch (const std::exception &e) {
+            std::lock_guard lock{impl_->mutex};
+            runtime->state->state = "refused";
+            runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
+            impl_->noteProblem(*runtime);
+            continue;
+        }
+        if (read.status == OutputReadStatus::inactive) {
+            std::lock_guard lock{impl_->mutex};
+            ++impl_->frames_skipped_inactive;
+            continue;
+        }
+        if (read.status == OutputReadStatus::no_contents) {
+            std::lock_guard lock{impl_->mutex};
+            ++impl_->frames_skipped_no_contents;
+            continue;
+        }
+        if (read.status == OutputReadStatus::refused) {
+            std::lock_guard lock{impl_->mutex};
+            runtime->state->state = "refused";
+            runtime->state->last_error = read.error;
+            impl_->noteProblem(*runtime);
+            continue;
+        }
+        if (!outputFileFormat(read.format)) {
+            std::lock_guard lock{impl_->mutex};
+            runtime->state->state = "refused";
+            runtime->state->last_error = "output.format_unsupported@1: " +
+                vk::to_string(read.format);
+            impl_->noteProblem(*runtime);
+            continue;
+        }
+        const auto drop = runtime->spec.when_full == "drop";
+        OutputCaptureChoice choice = OutputCaptureChoice::full;
+        std::size_t slot = 0;
+        const auto selection_begin = Clock::now();
+        try {
+            std::unique_lock lock{impl_->mutex};
+            while (true) {
+                if (runtime->generation != impl_->generation ||
+                    impl_->stopping || runtime->state->state != "running") break;
+                if (impl_->max_frames != 0 &&
+                    runtime->state->frames_written + runtime->pool->queue.size() >=
+                        impl_->max_frames) break;
+                if (runtime->pool->queue.queueDepth() == output_slot_count) {
+                    auto &vulkan = GET_MODULE(VulkanManageCore);
+                    for (std::size_t candidate = 0; candidate < output_slot_count;
+                         ++candidate) {
+                        const auto *entry = runtime->pool->queue.entry(candidate);
+                        if (entry == nullptr || !entry->discard ||
+                            entry->generation == capture_generation ||
+                            runtime->pool->queue.state(candidate) !=
+                                OutputSlotState::gpu_pending) continue;
+                        auto &resource = *runtime->pool->resources[candidate];
+                        try {
+                            if (vulkan.getDevice().getFenceStatus(resource.fence.get()) !=
+                                vk::Result::eSuccess) continue;
+                        } catch (const vk::DeviceLostError &) {
+                            impl_->device_lost = true;
+                            impl_->work_cv.notify_all();
+                            impl_->free_cv.notify_all();
+                            throw;
+                        }
+                        runtime->pool->queue.markCpuReady(candidate);
+                        runtime->pool->queue.discardReady(candidate);
+                        resource.source_lease.reset();
+                        const auto found = std::find_if(impl_->work.begin(),
+                            impl_->work.end(), [&](const Impl::Work &queued) {
+                                return queued.pool == runtime->pool &&
+                                       queued.slot == candidate;
+                            });
+                        if (found != impl_->work.end()) impl_->work.erase(found);
+                        impl_->syncCounters(runtime);
+                        impl_->free_cv.notify_all();
+                    }
                 }
-            } else if (written.status == OutputFileWriteStatus::limit_reached) {
-                state->state = "finished";
-                state->stop_reason = "max_bytes";
-                state->stop_value = byte_limit;
-                state->last_error = written.message;
-                changed = true;
-            } else {
-                state->state = "refused";
-                state->last_error =
-                    written.message.empty()
-                        ? (written.status == OutputFileWriteStatus::exists
-                               ? "output.exists@1"
-                               : "output.write_failed@1")
-                        : written.message;
-                changed = true;
+                if (!drop && runtime->pool->queue.queueDepth() == output_slot_count) {
+                    const auto begin = Clock::now();
+                    impl_->free_cv.wait(lock, [&] {
+                        return runtime->pool->queue.queueDepth() < output_slot_count ||
+                               impl_->stopping ||
+                               runtime->generation != impl_->generation ||
+                               runtime->state->state != "running";
+                    });
+                    runtime->state->render_wait_ms += std::chrono::duration<double,
+                        std::milli>(Clock::now() - begin).count();
+                    continue;
+                }
+                if (drop && runtime->pool->queue.queueDepth() == output_slot_count) {
+                    auto &vulkan = GET_MODULE(VulkanManageCore);
+                    for (std::size_t candidate = 0; candidate < output_slot_count;
+                         ++candidate) {
+                        if (runtime->pool->queue.state(candidate) !=
+                            OutputSlotState::gpu_pending) continue;
+                        const auto &resource = *runtime->pool->resources[candidate];
+                        try {
+                            if (vulkan.getDevice().getFenceStatus(resource.fence.get()) ==
+                                vk::Result::eSuccess)
+                                runtime->pool->queue.markCpuReady(candidate);
+                        } catch (const vk::DeviceLostError &) {
+                            impl_->device_lost = true;
+                            impl_->work_cv.notify_all();
+                            impl_->free_cv.notify_all();
+                            throw;
+                        }
+                    }
+                }
+                const auto selected = runtime->pool->queue.capture(
+                    frame, capture_generation, drop);
+                choice = selected.choice;
+                if (selected.slot) slot = *selected.slot;
+                if (choice == OutputCaptureChoice::dropped_new) {
+                    impl_->syncCounters(runtime);
+                    break;
+                }
+                if (choice == OutputCaptureChoice::full) continue;
+                if (selected.replaced_frame) {
+                    const auto found = std::find_if(impl_->work.begin(),
+                        impl_->work.end(), [&](const Impl::Work &entry) {
+                            return entry.pool == runtime->pool && entry.slot == slot;
+                        });
+                    if (found != impl_->work.end()) impl_->work.erase(found);
+                    runtime->pool->resources[slot]->source_lease.reset();
+                }
+                auto &resource = runtime->pool->resources[slot];
+                const auto required = static_cast<vk::DeviceSize>(read.extent.width) *
+                    read.extent.height * 4;
+                if (!resource || resource->bytes != required) {
+                    resource = std::make_unique<Impl::SlotResource>();
+                    allocateSlot(*resource, required);
+                }
+                resource->source_lease = read.source_lease;
+                runtime->pool->extent = read.extent;
+                runtime->pool->format = read.format;
+                impl_->work.push_back({runtime, runtime->pool, slot, frame,
+                    capture_generation, read.extent, read.format,
+                    runtime->spec.format == "png" ? OutputFileEncoding::png
+                                                 : OutputFileEncoding::raw});
+                impl_->syncCounters(runtime);
+                break;
             }
         } catch (const vk::DeviceLostError &) {
             throw;
-        } catch (const std::exception &error) {
-            std::lock_guard lock{mutex};
-            state->state = "refused";
-            state->last_error = std::string{"output.read_failed@1: "} + error.what();
-            changed = true;
+        } catch (const std::exception &e) {
+            std::lock_guard lock{impl_->mutex};
+            runtime->state->state = "refused";
+            runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
+            impl_->noteProblem(*runtime);
+            continue;
         }
-    }
-    {
-        std::lock_guard lock{mutex};
-        // A sink that did not run this frame still cannot write once the
-        // run's budget is exhausted. Stop it at the same limit so its state
-        // and problem agree with the others.
-        if (byte_limit != 0 && bytes_written >= byte_limit) {
-            for (auto &state : states) {
-                if (state->state != "running") continue;
-                state->state = "finished";
-                state->stop_reason = "max_bytes";
-                state->stop_value = byte_limit;
-                state->last_error = "output.limit_reached@1: max_bytes " +
-                                    std::to_string(byte_limit) + " reached";
-                changed = true;
+
+        selection_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - selection_begin).count();
+        const auto record_timing = [&] {
+            std::lock_guard lock{impl_->mutex};
+            const auto depth = runtime->pool->queue.queueDepth();
+            impl_->maximum_queue_depth = std::max(impl_->maximum_queue_depth, depth);
+            impl_->capture_timings.push_back({frame, selection_ms, record_submit_ms,
+                std::chrono::duration<double, std::milli>(
+                    Clock::now() - capture_begin).count(), depth});
+        };
+        if (choice == OutputCaptureChoice::dropped_new ||
+            choice == OutputCaptureChoice::full) {
+            record_timing();
+            continue;
+        }
+        auto &resource = *runtime->pool->resources[slot];
+        const auto record_begin = Clock::now();
+        try {
+            const auto submitted = renderer.submitOutputCapture(
+                runtime->spec.target, runtime->spec.graph,
+                resource.buffer.buffer.get(), resource.command_buffer.get(),
+                resource.fence.get());
+            if (submitted.status != OutputReadStatus::ready) {
+                std::lock_guard lock{impl_->mutex};
+                runtime->pool->queue.cancel(slot);
+                resource.source_lease.reset();
+                const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
+                    [&](const Impl::Work &entry) {
+                        return entry.pool == runtime->pool && entry.slot == slot;
+                    });
+                if (found != impl_->work.end()) impl_->work.erase(found);
+                runtime->state->state = "refused";
+                runtime->state->last_error = submitted.error;
+                impl_->noteProblem(*runtime);
+                impl_->syncCounters(runtime);
+                impl_->free_cv.notify_all();
+            } else {
+                std::lock_guard lock{impl_->mutex};
+                const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
+                    [&](const Impl::Work &entry) {
+                        return entry.pool == runtime->pool && entry.slot == slot &&
+                               entry.frame == frame;
+                    });
+                if (found != impl_->work.end()) found->submitted = true;
             }
+        } catch (const vk::DeviceLostError &) {
+            std::lock_guard lock{impl_->mutex};
+            runtime->pool->queue.cancel(slot);
+            resource.source_lease.reset();
+            const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
+                [&](const Impl::Work &entry) {
+                    return entry.pool == runtime->pool && entry.slot == slot;
+                });
+            if (found != impl_->work.end()) impl_->work.erase(found);
+            impl_->device_lost = true;
+            impl_->syncCounters(runtime);
+            impl_->work_cv.notify_all();
+            impl_->free_cv.notify_all();
+            throw;
+        } catch (const std::exception &e) {
+            std::lock_guard lock{impl_->mutex};
+            runtime->pool->queue.cancel(slot);
+            resource.source_lease.reset();
+            const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
+                [&](const Impl::Work &entry) {
+                    return entry.pool == runtime->pool && entry.slot == slot;
+                });
+            if (found != impl_->work.end()) impl_->work.erase(found);
+            runtime->state->state = "refused";
+            runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
+            impl_->noteProblem(*runtime);
+            impl_->syncCounters(runtime);
+            impl_->free_cv.notify_all();
         }
-        if (sync_problems || changed)
-            problems = outputSinkProblems(statesToValues(states));
+        record_submit_ms = std::chrono::duration<double, std::milli>(
+            Clock::now() - record_begin).count();
+        record_timing();
+        impl_->work_cv.notify_one();
     }
-    if (sync_problems || changed) {
-        if (replaceOutputProblems(problems)) {
-            std::lock_guard lock{mutex};
-            problems_need_sync = false;
-        }
+
+    std::vector<nlohmann::json> problems;
+    std::uint64_t revision = 0;
+    {
+        std::lock_guard lock{impl_->mutex};
+        if (impl_->published_revision == impl_->problems_revision) return;
+        revision = impl_->problems_revision;
+        std::vector<std::shared_ptr<State>> states;
+        for (const auto &runtime : impl_->current) states.push_back(runtime->state);
+        problems = outputSinkProblems(statesToValues(states));
+    }
+    if (replaceOutputProblems(problems)) {
+        std::lock_guard lock{impl_->mutex};
+        if (impl_->generation == capture_generation &&
+            impl_->problems_revision == revision)
+            impl_->published_revision = revision;
     }
 }
 
 nlohmann::json OutputSinks::status() const {
-    std::lock_guard lock{mutex};
-    nlohmann::json sinks = nlohmann::json::array();
-    for (const auto &state : states) {
-        sinks.push_back({{"name", state->name},
-                         {"kind", state->kind},
-                         {"format", state->format},
-                         {"state", state->state},
-                         {"stop_reason", state->stop_reason},
-                         {"stop_value", state->stop_value},
-                         {"frames_written", state->frames_written},
-                         {"last_error", state->last_error}});
+    std::unique_lock lock{impl_->mutex};
+    if (impl_->worker_started && !impl_->paused) {
+        impl_->work_cv.wait(lock, [&] {
+            return (impl_->work.empty() && !impl_->worker_busy) ||
+                   impl_->paused || impl_->stopping;
+        });
     }
-    return {{"active", active},
-            {"sinks", std::move(sinks)},
-            {"frames_skipped_inactive", frames_skipped_inactive},
-            {"frames_skipped_no_contents", frames_skipped_no_contents}};
+    std::vector<nlohmann::json> problems;
+    std::uint64_t generation = impl_->generation;
+    std::uint64_t revision = impl_->problems_revision;
+    const bool publish = impl_->published_revision != revision;
+    if (publish) {
+        std::vector<std::shared_ptr<State>> states;
+        for (const auto &runtime : impl_->current) states.push_back(runtime->state);
+        problems = outputSinkProblems(statesToValues(states));
+    }
+    lock.unlock();
+    if (publish && replaceOutputProblems(problems)) {
+        lock.lock();
+        if (impl_->generation == generation && impl_->problems_revision == revision)
+            impl_->published_revision = revision;
+    } else {
+        lock.lock();
+    }
+    nlohmann::json sinks = nlohmann::json::array();
+    for (const auto &runtime : impl_->current) {
+        const auto &state = *runtime->state;
+        sinks.push_back({{"name", state.name}, {"kind", state.kind},
+            {"format", state.format}, {"when_full", state.when_full},
+            {"state", state.state}, {"stop_reason", state.stop_reason},
+            {"stop_value", state.stop_value},
+            {"frames_written", state.frames_written},
+            {"last_error", state.last_error},
+            {"queue_depth", runtime->pool->queue.queueDepth()},
+            {"frames_dropped", runtime->pool->queue.framesDropped()},
+            {"frames_discarded", runtime->pool->queue.framesDiscarded()},
+            {"render_wait_ms", state.render_wait_ms}});
+    }
+    return {{"active", impl_->active}, {"sinks", std::move(sinks)},
+        {"frames_skipped_inactive", impl_->frames_skipped_inactive},
+        {"frames_skipped_no_contents", impl_->frames_skipped_no_contents}};
 }
+
+#if PELICAN_OUTPUT_TEST_SEAMS
+void OutputSinks::pauseWorkerForTesting(bool paused) {
+    std::unique_lock lock{impl_->mutex};
+    if (!impl_->worker_started) return;
+    impl_->resume_at.reset();
+    impl_->paused = paused;
+    if (paused) {
+        impl_->work_cv.notify_all();
+        lock.unlock();
+        impl_->work_cv.notify_all();
+        lock.lock();
+        impl_->pause_cv.wait(lock, [&] {
+            return impl_->pause_acknowledged || !impl_->worker_started;
+        });
+    } else {
+        impl_->pause_acknowledged = false;
+        lock.unlock();
+        impl_->work_cv.notify_all();
+        impl_->free_cv.notify_all();
+    }
+}
+
+void OutputSinks::resumeWorkerAfterForTesting(std::chrono::milliseconds delay) {
+    std::lock_guard lock{impl_->mutex};
+    impl_->resume_at = Clock::now() + delay;
+    impl_->work_cv.notify_all();
+}
+
+nlohmann::json OutputSinks::takeCaptureTimingsForTesting() {
+    std::lock_guard lock{impl_->mutex};
+    nlohmann::json samples = nlohmann::json::array();
+    for (const auto &timing : impl_->capture_timings) {
+        samples.push_back({{"frame", timing.frame},
+            {"selection_ms", timing.selection_ms},
+            {"record_submit_ms", timing.record_submit_ms},
+            {"total_ms", timing.total_ms},
+            {"queue_depth", timing.queue_depth}});
+    }
+    const auto maximum_queue_depth = impl_->maximum_queue_depth;
+    impl_->capture_timings.clear();
+    impl_->maximum_queue_depth = 0;
+    return {{"samples", std::move(samples)},
+        {"maximum_queue_depth", maximum_queue_depth}};
+}
+#endif
 
 } // namespace Pelican

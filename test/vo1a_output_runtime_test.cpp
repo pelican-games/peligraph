@@ -199,8 +199,9 @@ Json fillNode(std::string id, std::string target_id,
 
 Json sinkNode(std::string name, std::string source = "fill",
               std::string port = "color", std::uint64_t every_n = 1,
-              bool enabled = true, std::string format = "raw") {
-    return {{"id", "sink"},
+              bool enabled = true, std::string format = "raw",
+              std::string when_full = {}) {
+    Json node{{"id", "sink"},
             {"op", "output.file"},
             {"parameters",
              {{"name", std::move(name)},
@@ -210,6 +211,8 @@ Json sinkNode(std::string name, std::string source = "fill",
             {"inputs",
              {{"source", {{"node", std::move(source)}, {"port", std::move(port)}}}}},
             {"outputs", Json::array()}};
+    if (!when_full.empty()) node["parameters"]["when_full"] = std::move(when_full);
+    return node;
 }
 
 void attachMainGraph(Json &root, Json target, Json fill, Json sink) {
@@ -442,6 +445,10 @@ class PlayerRpc {
     PlayerRpc(const TempProject &project, std::vector<std::string> extra,
               std::string_view name) {
         log_ = project.logPath(name);
+        if (std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr) {
+            extra.emplace_back("--vulkan-validation");
+            extra.emplace_back("on");
+        }
 #ifdef _WIN32
         SECURITY_ATTRIBUTES attributes{};
         attributes.nLength = sizeof(attributes);
@@ -533,6 +540,7 @@ class PlayerRpc {
                      {"method", std::string{method}},
                      {"params", params}};
         writeAll(request.dump() + "\n");
+        CAPTURE(method);
         const auto response = nextLine();
         INFO(response.dump());
         REQUIRE(response.contains("id"));
@@ -651,6 +659,10 @@ class PlayerRpc {
             output_ = -1;
         }
 #endif
+        if (!diagnostics_.empty()) {
+            std::ofstream log{log_, std::ios::binary | std::ios::app};
+            log << diagnostics_;
+        }
     }
 
     int exitCode() const { return exit_code_; }
@@ -724,6 +736,10 @@ class PlayerRpc {
                 pending.erase(0, newline + 1);
                 if (!line.empty() && line.back() == '\r') line.pop_back();
                 if (line.empty()) continue;
+                if (capture_diagnostics_ && line.front() != '{') {
+                    diagnostics_ += line + "\n";
+                    continue;
+                }
                 {
                     std::lock_guard lock{mutex_};
                     lines_.push_back(std::move(line));
@@ -743,6 +759,9 @@ class PlayerRpc {
     std::mutex mutex_;
     std::condition_variable arrived_;
     std::deque<std::string> lines_;
+    std::string diagnostics_;
+    bool capture_diagnostics_ =
+        std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr;
     bool closed_ = false;
     int next_id_ = 1;
     int exit_code_ = -1;
@@ -1580,4 +1599,412 @@ TEST_CASE("VO-1b the cross-platform driver quotes a project path with spaces and
 
     player.close();
     CHECK(player.exitCode() == 0);
+}
+
+
+TEST_CASE("VO-2 drop never waits for a paused worker and preserves file frame pixels",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_drop"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "drop"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir), "vo2_drop"};
+    (void)player.result("step_frame");
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+
+    for (int frame = 0; frame < 16; ++frame) {
+        const auto begin = std::chrono::steady_clock::now();
+        (void)player.result("step_frame");
+        const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - begin);
+        CHECK(elapsed < std::chrono::seconds{5});
+    }
+    const auto paused_sink = oneSink(player.outputStatus());
+    INFO(paused_sink.dump());
+    CHECK(paused_sink.at("queue_depth").get<std::uint64_t>() <= 4);
+    CHECK(paused_sink.at("frames_dropped").get<std::uint64_t>() > 0);
+
+    (void)player.result("test_output_worker_pause", {{"paused", false}});
+    const auto sink = oneSink(player.outputStatus());
+    CHECK(sink.at("queue_depth") == 0);
+    const auto files = frameFiles(output_dir, ".png");
+    REQUIRE(files.size() == sink.at("frames_written").get<std::uint64_t>());
+    REQUIRE(files.size() >= 2);
+    for (const auto &file : files) {
+        const auto png = decodePng(file.path);
+        requirePng(png);
+        CHECK(static_cast<std::uint64_t>(png.pixel(0, 0)[2]) == file.frame + 1);
+    }
+}
+
+TEST_CASE("VO-2 wait blocks the fifth capture briefly and writes every frame",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_wait"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "wait"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir), "vo2_wait"};
+    for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    (void)player.result("test_output_worker_pause",
+        {{"paused", true}, {"resume_after_ms", 300}});
+
+    for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
+    const auto begin = std::chrono::steady_clock::now();
+    (void)player.result("step_frame");
+    const auto blocked = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - begin);
+    CHECK(blocked >= std::chrono::milliseconds{250});
+    CHECK(blocked < std::chrono::seconds{5});
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("render_wait_ms").get<double>() > 0.0);
+    CHECK(sink.at("queue_depth").get<std::uint64_t>() <= 4);
+
+    const auto files = frameFiles(output_dir, ".png");
+    REQUIRE(files.size() == 7);
+    CHECK(sink.at("frames_written") == files.size());
+    CHECK(sink.at("frames_dropped") == 0);
+    for (const auto &file : files) {
+        const auto png = decodePng(file.path);
+        requirePng(png);
+        CHECK(static_cast<std::uint64_t>(png.pixel(0, 0)[2]) == file.frame + 1);
+    }
+}
+
+
+TEST_CASE("VO-2 resize reallocates only free slots and keeps file identities",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_resize"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "wait"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir), "vo2_resize"};
+    for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    const auto old_files = frameFiles(output_dir, ".png").size();
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+    for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
+
+    auto resized = project.readRoot();
+    for (auto &node : resized.at("nodes")) {
+        if (node.at("op") == "render.image") {
+            node["parameters"]["width"] = 8;
+            node["parameters"]["height"] = 8;
+        }
+        if (node.at("op") == "output.file") node["parameters"]["every_n"] = 1;
+    }
+    project.writeRoot(resized);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    (void)player.result("test_output_worker_pause", {{"paused", false}});
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("queue_depth") == 0);
+    CHECK(sink.at("frames_discarded").get<std::uint64_t>() > 0);
+
+    const auto files = frameFiles(output_dir, ".png");
+    CHECK(files.size() > old_files);
+    CHECK(files.size() == sink.at("frames_written").get<std::uint64_t>());
+    bool saw_new_size = false;
+    for (const auto &file : files) {
+        const auto png = decodePng(file.path);
+        const auto size = file.frame < old_files ? 4u : 8u;
+        requirePng(png, size, size);
+        CHECK(static_cast<std::uint64_t>(png.pixel(0, 0)[2]) == file.frame + 1);
+        saw_new_size = saw_new_size || size == 8;
+    }
+    CHECK(saw_new_size);
+}
+
+TEST_CASE("VO-2 removal discards queued generations and paused shutdown drains safely",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_removal"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "drop"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir), "vo2_removal"};
+    for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    const auto files_before = frameFiles(output_dir, ".png");
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+    for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
+
+    auto removed = project.readRoot();
+    auto &nodes = removed.at("nodes");
+    nodes.erase(std::remove_if(nodes.begin(), nodes.end(), [](const Json &node) {
+        return node.at("op") == "output.file";
+    }), nodes.end());
+    project.writeRoot(removed);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    CHECK(player.outputStatus().at("sinks").empty());
+    (void)player.result("test_output_worker_pause", {{"paused", false}});
+    (void)player.result("get_status");
+    const auto files_after = frameFiles(output_dir, ".png");
+    CHECK(files_after.size() == files_before.size());
+    for (const auto &file : files_after) CHECK(file.frame < files_before.size());
+
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+    player.close();
+    CHECK(player.exitCode() == 0);
+    const auto log = readFile(project.logPath("vo2_removal"));
+    CHECK(log.find("VUID-") == std::string::npos);
+    CHECK(log.find("Assertion") == std::string::npos);
+}
+
+
+TEST_CASE("VO-2 max_frames completes its reservations without accepting more",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_max_frames"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "drop"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir, 2), "vo2_max_frames"};
+    (void)player.result("step_frame");
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+    for (int frame = 0; frame < 8; ++frame) (void)player.result("step_frame");
+    const auto paused_sink = oneSink(player.outputStatus());
+    CHECK(paused_sink.at("queue_depth").get<std::uint64_t>() <= 2);
+    (void)player.result("test_output_worker_pause", {{"paused", false}});
+
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("state") == "finished");
+    CHECK(sink.at("stop_reason") == "max_frames");
+    CHECK(sink.at("stop_value") == 2);
+    CHECK(sink.at("frames_written") == 2);
+    CHECK(sink.at("frames_discarded") == 0);
+    const auto files = frameFiles(output_dir, ".png");
+    REQUIRE(files.size() == 2);
+    CHECK(files.at(0).frame == 0);
+    for (const auto &file : files) {
+        const auto png = decodePng(file.path);
+        requirePng(png);
+        CHECK(static_cast<std::uint64_t>(png.pixel(0, 0)[2]) == file.frame + 1);
+    }
+}
+
+
+TEST_CASE("VO-2 reload preserves a completed max_frames limit",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_max_frames_reload_done"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "wait"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir, 1),
+                     "vo2_max_frames_reload_done"};
+    (void)player.result("step_frame");
+    REQUIRE(oneSink(player.outputStatus()).at("state") == "finished");
+
+    root["nodes"].back()["parameters"]["every_n"] = 2;
+    project.writeRoot(root);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("state") == "finished");
+    CHECK(sink.at("stop_reason") == "max_frames");
+    CHECK(sink.at("frames_written") == 1);
+    (void)player.result("step_frame");
+    CHECK(frameFiles(output_dir, ".png").size() == 1);
+}
+
+TEST_CASE("VO-2 reload releases unfinished max_frames reservations",
+          "[vo2][vo2-gpu][gpu]") {
+    TempProject project{"vo2_max_frames_reload_pending"};
+    project.writeShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    sinkNode("shot", "fill", "color", 1, true, "png", "wait"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir, 2),
+                     "vo2_max_frames_reload_pending"};
+    (void)player.result("step_frame");
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+    (void)player.result("step_frame");
+
+    root["nodes"].back()["parameters"]["every_n"] = 2;
+    project.writeRoot(root);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    (void)player.result("test_output_worker_pause", {{"paused", false}});
+    auto sink = oneSink(player.outputStatus());
+    CHECK(sink.at("state") == "running");
+    CHECK(sink.at("frames_written") == 1);
+    CHECK(sink.at("frames_discarded") == 1);
+
+    (void)player.result("step_frame");
+    (void)player.result("step_frame");
+    sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("state") == "finished");
+    CHECK(sink.at("frames_written") == 2);
+    const auto files = frameFiles(output_dir, ".png");
+    REQUIRE(files.size() == 2);
+    CHECK(files.at(0).frame == 0);
+    CHECK(files.at(1).frame == 4);
+}
+
+
+namespace {
+Json durationStats(std::vector<double> values) {
+    if (values.empty()) return nullptr;
+    std::sort(values.begin(), values.end());
+    const auto percentile = [&](double fraction) {
+        const auto index = static_cast<std::size_t>(
+            fraction * static_cast<double>(values.size() - 1));
+        return values.at(index);
+    };
+    return {{"count", values.size()},
+            {"median_ms", percentile(0.50)},
+            {"p95_ms", percentile(0.95)},
+            {"p99_ms", percentile(0.99)}};
+}
+}
+
+TEST_CASE("VO-2 explicit asynchronous capture benchmark",
+          "[.][vo2-benchmark][gpu]") {
+    const char *result_path = std::getenv("PELICAN_VO2_BENCHMARK_JSON");
+    REQUIRE(result_path != nullptr);
+    constexpr int warmup_frames = 24;
+    constexpr int measured_frames = 300;
+    constexpr int history_batch = 60;
+
+    Json measurements = Json::array();
+    for (const std::string_view mode : {"none", "wait", "drop"}) {
+        TempProject project{"vo2_benchmark_" + std::string{mode}};
+        project.writeShader();
+        auto root = project.readRoot();
+        root["rendering"]["features"].push_back("engine://features/gpu_timing.json");
+        auto target = targetNode("fill_target", "R8G8B8A8_UNORM");
+        target["parameters"]["width"] = 1920;
+        target["parameters"]["height"] = 1080;
+        attachMainGraph(root, std::move(target),
+            fillNode("fill", "fill_target", "fill_target"),
+            sinkNode("shot", "fill", "color", 1, true, "png",
+                mode == "none" ? "wait" : std::string{mode}));
+        if (mode == "none") {
+            auto &nodes = root.at("nodes");
+            nodes.erase(std::remove_if(nodes.begin(), nodes.end(),
+                [](const Json &node) { return node.at("op") == "output.file"; }),
+                nodes.end());
+        }
+        project.writeRoot(root);
+        const auto output_dir = project.outputPath();
+        PlayerRpc player{project, outputFlags(output_dir, 2000,
+            32ULL * 1024 * 1024 * 1024), "vo2_benchmark"};
+        for (int frame = 0; frame < warmup_frames; ++frame)
+            (void)player.result("step_frame");
+        const auto initial_output = player.result("get_status").at("output").at("sinks");
+        (void)player.result("test_output_capture_timings");
+        (void)player.result("test_output_step_status", {{"enabled", false}});
+
+        std::vector<double> cpu_ms;
+        std::vector<double> gpu_ms;
+        std::vector<std::uint64_t> gpu_frames;
+        for (int frame = 0; frame < measured_frames; ++frame) {
+            const auto begin = std::chrono::steady_clock::now();
+            (void)player.result("step_frame");
+            cpu_ms.push_back(std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - begin).count());
+            if ((frame + 1) % history_batch != 0 &&
+                frame + 1 != measured_frames) continue;
+            const auto timing = player.result("test_render_gpu_timing");
+            for (const auto &row : timing.at("logical_frame_history")) {
+                const auto logical = row.at("logical_frame").get<std::uint64_t>();
+                if (logical < static_cast<std::uint64_t>(warmup_frames) ||
+                    logical >= static_cast<std::uint64_t>(
+                        warmup_frames + measured_frames) ||
+                    std::find(gpu_frames.begin(), gpu_frames.end(), logical) !=
+                        gpu_frames.end()) continue;
+                gpu_frames.push_back(logical);
+                gpu_ms.push_back(row.at("total_ms").get<double>());
+            }
+        }
+        const auto timings = player.result("test_output_capture_timings");
+        (void)player.result("test_output_step_status", {{"enabled", true}});
+        const auto final_output = player.result("get_status").at("output").at("sinks");
+        for (int frame = 0; frame < 3; ++frame)
+            (void)player.result("step_frame");
+        const auto tail_timing = player.result("test_render_gpu_timing");
+        for (const auto &row : tail_timing.at("logical_frame_history")) {
+            const auto logical = row.at("logical_frame").get<std::uint64_t>();
+            if (logical < static_cast<std::uint64_t>(warmup_frames) ||
+                logical >= static_cast<std::uint64_t>(
+                    warmup_frames + measured_frames) ||
+                std::find(gpu_frames.begin(), gpu_frames.end(), logical) !=
+                    gpu_frames.end()) continue;
+            gpu_frames.push_back(logical);
+            gpu_ms.push_back(row.at("total_ms").get<double>());
+        }
+        REQUIRE(gpu_ms.size() == measured_frames);
+
+        std::vector<double> selection_ms;
+        std::vector<double> record_submit_ms;
+        std::vector<double> capture_ms;
+        for (const auto &sample : timings.at("samples")) {
+            selection_ms.push_back(sample.at("selection_ms").get<double>());
+            record_submit_ms.push_back(sample.at("record_submit_ms").get<double>());
+            capture_ms.push_back(sample.at("total_ms").get<double>());
+        }
+        if (mode != "none") REQUIRE(capture_ms.size() == measured_frames);
+
+        const auto counter_delta = [&](std::string_view key) -> std::uint64_t {
+            if (mode == "none") return 0;
+            const auto &before = initial_output.at(0);
+            const auto &after = final_output.at(0);
+            return after.at(key).get<std::uint64_t>() -
+                before.at(key).get<std::uint64_t>();
+        };
+        const auto wait_delta = [&]() -> double {
+            if (mode == "none") return 0.0;
+            return final_output.at(0).at("render_wait_ms").get<double>() -
+                initial_output.at(0).at("render_wait_ms").get<double>();
+        };
+        if (mode != "none") {
+            const auto files = frameFiles(output_dir, ".png");
+            REQUIRE(!files.empty());
+            const auto png = decodePng(files.back().path);
+            requirePng(png, 1920, 1080);
+        }
+        measurements.push_back({
+            {"mode", mode},
+            {"capture_selection", durationStats(std::move(selection_ms))},
+            {"capture_record_submit", durationStats(std::move(record_submit_ms))},
+            {"capture_total", durationStats(std::move(capture_ms))},
+            {"whole_frame_cpu", durationStats(std::move(cpu_ms))},
+            {"whole_frame_gpu", durationStats(std::move(gpu_ms))},
+            {"frames_written", counter_delta("frames_written")},
+            {"frames_dropped", counter_delta("frames_dropped")},
+            {"frames_discarded", counter_delta("frames_discarded")},
+            {"render_wait_ms", wait_delta()},
+            {"maximum_queue_depth", timings.at("maximum_queue_depth")},
+        });
+    }
+    writeFile(result_path, measurements.dump(2) + "\n");
 }

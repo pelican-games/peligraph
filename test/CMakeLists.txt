@@ -4103,6 +4103,7 @@ if(PELICAN_WITH_VIDEO_OUTPUT)
     # VO-1a: output.file lowering and the plan-time last-writer rule.
     pelican_define_test(output_lowering_test pelican_project pelican_core)
     target_link_libraries(pelican_test_output_lowering_test PRIVATE stb)
+    pelican_define_test(output_slot_queue_test pelican_core)
 endif()
 
 if(PELICAN_WITH_CANVAS)

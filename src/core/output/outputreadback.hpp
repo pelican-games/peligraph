@@ -3,6 +3,7 @@
 #include "./outputfile.hpp"
 
 #include <cstdint>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -49,6 +50,16 @@ struct OutputReadResult {
     std::string error;
     // Tightly packed rows, row 0 first, unconverted.
     std::vector<std::uint8_t> bytes;
+};
+
+struct OutputCaptureResult {
+    OutputReadStatus status = OutputReadStatus::inactive;
+    vk::Extent2D extent{};
+    vk::Format format = vk::Format::eUndefined;
+    std::string error;
+    // Keeps the published plan and physical target images alive until the
+    // capture fence, not merely the frame fence, has completed.
+    std::shared_ptr<const void> source_lease;
 };
 
 } // namespace Pelican

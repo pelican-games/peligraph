@@ -20,7 +20,8 @@ void registerOutputGraphModule(GraphModuleRegistry &registry) {
     file.parameter_changes = {{"name", GraphParameterChange::rebuild},
                               {"every_n", GraphParameterChange::rebuild},
                               {"enabled", GraphParameterChange::rebuild},
-                              {"format", GraphParameterChange::rebuild}};
+                              {"format", GraphParameterChange::rebuild},
+                              {"when_full", GraphParameterChange::rebuild}};
     registry.registerModule(GraphModuleManifest{
         "pelican.output", 1,
         "Removable render-target sinks that write raw or PNG frames while the engine runs.",

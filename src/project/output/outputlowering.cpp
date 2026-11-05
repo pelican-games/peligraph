@@ -193,6 +193,7 @@ struct ParsedSink {
     std::uint64_t every_n = 1;
     bool enabled = true;
     std::string format = "raw";
+    std::string when_full = "wait";
     SourceTarget source;
     std::string source_node;
     std::string source_port;
@@ -233,7 +234,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         for (const auto &[key, value] : values.items()) {
             (void)value;
             if (key != "name" && key != "every_n" && key != "enabled" &&
-                key != "format")
+                key != "format" && key != "when_full")
                 invalid(key, "unknown_parameter");
         }
         sink.name = stringAt(values, "name");
@@ -278,6 +279,17 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
                     {{"node", sink.id}, {"format", *format}});
             }
             sink.format = format->get<std::string>();
+        }
+        if (const auto when_full = values.find("when_full");
+            when_full != values.end()) {
+            if (!when_full->is_string() ||
+                (when_full->get<std::string>() != "wait" &&
+                 when_full->get<std::string>() != "drop")) {
+                throw GraphRegistryError(
+                    "output.when_full_unknown@1",
+                    {{"node", sink.id}, {"when_full", *when_full}});
+            }
+            sink.when_full = when_full->get<std::string>();
         }
         parsed.push_back(std::move(sink));
     }
@@ -407,6 +419,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         spec.every_n = sink.every_n;
         spec.enabled = true;
         spec.format = sink.format;
+        spec.when_full = sink.when_full;
         spec.graph = sink.source.graph;
         spec.target = sink.source.target;
         spec.source_node = sink.source_node;

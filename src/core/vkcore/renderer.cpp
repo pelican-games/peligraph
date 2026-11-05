@@ -5451,6 +5451,95 @@ OutputReadResult Renderer::readOutputRenderTargetForSink(
         .bytes = std::move(readback->bytes),
     };
 }
+
+OutputCaptureResult Renderer::submitOutputCapture(
+    std::string_view name, std::string_view graph,
+    vk::Buffer staging_buffer, vk::CommandBuffer command_buffer,
+    vk::Fence fence) {
+    const auto generation = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
+    if (generation == nullptr) return {};
+    const CompiledRenderProgram *program =
+        generation->find(current_rendering_pass_id);
+    if (program == nullptr || program->frame_graph.target_plan == nullptr ||
+        !outputSinkGraphMatches(graph, program->frame_graph.target_plan->graph))
+        return {};
+    const auto &plan = *program->frame_graph.target_plan;
+    const auto resource = std::find_if(
+        plan.resources.begin(), plan.resources.end(),
+        [&](const auto &entry) { return entry.logical_resource == name; });
+    if (resource == plan.resources.end()) return {};
+    const auto target_id =
+        boundRenderTarget(program->frame_graph, std::string{name});
+    if (!isConcreteRenderTarget(target_id)) return {};
+
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto metadata = targets.getMetadata(target_id);
+    if (targets.getImage(target_id).samples != vk::SampleCountFlagBits::e1) {
+        return {.status = OutputReadStatus::refused,
+                .error = "output.layout_unsupported@1: target " +
+                         std::string{name} + " is multisampled"};
+    }
+    if (!outputFileFormat(toVulkanFormat(metadata.format))) {
+        return {.status = OutputReadStatus::refused,
+                .error = "output.format_unsupported@1: " +
+                         vk::to_string(toVulkanFormat(metadata.format))};
+    }
+    if (metadata.array_layers != 1 || metadata.mip_levels != 1) {
+        return {.status = OutputReadStatus::refused,
+                .error = "output.layout_unsupported@1: target " +
+                         std::string{name} + " is not one layer and one mip"};
+    }
+    validateTargetReadbackRetention(
+        &plan, name, plan.graph);
+    const auto previous_layout =
+        render_target_layout_tracker.currentLayout(target_id, false, &targets);
+    if (previous_layout == vk::ImageLayout::eUndefined)
+        return {.status = OutputReadStatus::no_contents};
+
+    const vk::Extent2D extent = toVulkanExtent(metadata.extent);
+    auto leases = std::make_shared<std::vector<std::shared_ptr<const void>>>();
+    leases->push_back(generation);
+    const auto target_leases = targets.resourceLeases();
+    leases->insert(leases->end(), target_leases.begin(), target_leases.end());
+    if (!staging_buffer) {
+        return {.status = OutputReadStatus::ready,
+                .extent = extent,
+                .format = toVulkanFormat(metadata.format),
+                .source_lease = std::move(leases)};
+    }
+    auto &vulkan = GET_MODULE(VulkanManageCore);
+    auto &utils = GET_MODULE(VulkanUtils);
+    command_buffer.reset();
+    command_buffer.begin(vk::CommandBufferBeginInfo{
+        vk::CommandBufferUsageFlagBits::eOneTimeSubmit});
+    render_target_layout_tracker.transition(
+        command_buffer, targets, utils, target_id,
+        vk::ImageLayout::eTransferSrcOptimal);
+    vk::BufferImageCopy copy;
+    copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
+    copy.imageExtent = vk::Extent3D{extent.width, extent.height, 1};
+    command_buffer.copyImageToBuffer(
+        targets.getImage(target_id).image.get(),
+        vk::ImageLayout::eTransferSrcOptimal, staging_buffer, copy);
+    const vk::BufferMemoryBarrier host_read{
+        vk::AccessFlagBits::eTransferWrite, vk::AccessFlagBits::eHostRead,
+        VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+        staging_buffer, 0, VK_WHOLE_SIZE};
+    command_buffer.pipelineBarrier(
+        vk::PipelineStageFlagBits::eTransfer, vk::PipelineStageFlagBits::eHost,
+        {}, {}, host_read, {});
+    render_target_layout_tracker.transition(
+        command_buffer, targets, utils, target_id, previous_layout);
+    command_buffer.end();
+    vulkan.getDevice().resetFences(fence);
+    const vk::SubmitInfo submit{{}, {}, command_buffer};
+    vulkan.getGraphicsQueue().submit(submit, fence);
+
+    return {.status = OutputReadStatus::ready,
+            .extent = extent,
+            .format = toVulkanFormat(metadata.format),
+            .source_lease = std::move(leases)};
+}
 #endif
 R8RenderTargetReadback Renderer::readR8RenderTargetForTesting(
     std::string_view name) {
