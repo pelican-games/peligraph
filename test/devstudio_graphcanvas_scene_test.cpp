@@ -31561,3 +31561,567 @@ TEST_CASE("GF-1c import is a reviewable draft edit and export reports write fail
     CHECK(state->text().contains(QStringLiteral("Could not import")));
     CHECK(tab.transport.calls.size() == before);
 }
+
+
+// ---- GS-FUZZ4 begin ----
+namespace {
+namespace fuzz4 {
+
+using namespace fuzz1;
+using namespace PelicanStudio;
+using fuzz2::ActionCount;
+using fuzz2::Failure;
+using fuzz2::Stats;
+using fuzz2::Step;
+using fuzz2::WarningScope;
+using fuzz2::recordFailure;
+using fuzz2::trailText;
+using fuzz2::warningCount;
+using fuzz2::warningsSince;
+
+Json document() {
+    Json result = zoneFuzzDocument();
+    result["nodes"].push_back({{"id", "curve4"}, {"op", "value.curve"},
+        {"parameters", {{"keys", Json::array({{{"time", 0.0}, {"value", 0.0}},
+                                               {{"time", 1.0}, {"value", 1.0}}})}}},
+        {"outputs", Json::array({"value"})}});
+    result["nodes"].push_back({{"id", "live4"}, {"op", "value.input"},
+                               {"parameters", {{"name", "live:phase"}}},
+                               {"outputs", Json::array({"value"})}});
+    return result;
+}
+
+Json filters() {
+    return {{"schema", "pelican.graph_filters"}, {"version", 1},
+            {"categories", Json::array()}, {"feature_categories", Json::object()},
+            {"filters", Json::array({
+                {{"id", "a4"}, {"label", "A"}, {"match", {{"node_ids", Json::array({"a"})}}}},
+                {{"id", "curve4"}, {"label", "Curve"},
+                 {"match", {{"node_ids", Json::array({"curve4", "live4"})}}}}})}};
+}
+
+struct Fixture {
+    ZoneHarness h{document()};
+    QGraphicsView view;
+    Gf1aProject project{filters()};
+
+    Fixture() {
+        h.open();
+        h.model.setConnected(false);
+        h.model.setConnected(true);
+        h.model.setGraphFilters(readGraphFilters(project.root()));
+        h.model.refresh();
+        for (const auto &request : h.model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                h.model.receiveRpcResult(request.request_id, h.snapshot().dump());
+            else if (request.method == "get_graph_catalog")
+                h.model.receiveRpcResult(request.request_id, h.catalog.dump());
+            else if (request.method == "get_live_inputs")
+                h.model.receiveRpcResult(request.request_id, osc3bInputs().dump());
+            else if (request.method == "get_frame_plan")
+                h.model.receiveRpcResult(request.request_id, h.plan.dump());
+        }
+        h.model.setLive(true);
+        h.model.poll();
+        for (const auto &request : h.model.takeRpcRequests())
+            if (request.method == "get_graph_node_values")
+                h.model.receiveRpcResult(request.request_id, osc3bValues(h.document, 2.0).dump());
+        h.scene.repopulate();
+        view.setScene(&h.scene);
+        view.resize(1400, 1000);
+        view.show();
+        QCoreApplication::processEvents();
+    }
+
+    void tieMouse(QEvent::Type type, const QPointF &at, Qt::MouseButton button,
+                  Qt::MouseButtons buttons,
+                  Qt::KeyboardModifiers modifiers = Qt::ShiftModifier) {
+        const QPoint local = view.mapFromScene(at);
+        QMouseEvent event{type, QPointF{local}, QPointF{view.viewport()->mapToGlobal(local)},
+                          button, buttons, modifiers};
+        QApplication::sendEvent(view.viewport(), &event);
+        QCoreApplication::processEvents();
+    }
+};
+
+class Driver {
+public:
+    Driver(int seed, std::size_t steps, Stats &stats, std::vector<Failure> &failures)
+        : rng_(static_cast<std::uint64_t>(seed)), seed_(seed), steps_(steps),
+          stats_(stats), failures_(failures) {}
+
+    void run() {
+        static const std::vector<std::pair<const char *, double>> weights{
+            {"filter_choose", 5}, {"filter_all", 4}, {"filter_vanished", 4},
+            {"filter_invalid", 4}, {"filter_reload", 4}, {"show_toggle", 5},
+            {"tie", 6}, {"tie_escape", 4}, {"tie_button", 4}, {"tie_click", 4},
+            {"lift_empty", 5}, {"lift_socket", 5}, {"lift_escape", 5},
+            {"refused_edit", 3}, {"live_escape", 4}, {"live_focus", 4},
+            {"live_reply", 4}, {"bezier", 5}, {"bezier_back", 4},
+            {"curve_split", 5}, {"curve_handles", 5}, {"enter_leave", 4},
+            {"undo", 4}, {"redo", 4}, {"read_again", 3}, {"value_edit", 2},
+        };
+        for (std::size_t index = 0; index < steps_ && !fatal_; ++index) {
+            double total = 0;
+            for (const auto &entry : weights) total += entry.second;
+            double roll = rng_.unit() * total;
+            std::string kind = weights.back().first;
+            for (const auto &entry : weights) {
+                roll -= entry.second;
+                if (roll <= 0) { kind = entry.first; break; }
+            }
+            action(kind);
+        }
+    }
+
+private:
+    Fixture f_;
+    Rng rng_;
+    int seed_ = 0;
+    std::size_t steps_ = 0;
+    Stats &stats_;
+    std::vector<Failure> &failures_;
+    std::vector<Step> trail_;
+    bool fatal_ = false;
+    std::string current_kind_;
+    std::vector<std::string> history_{f_.h.document.dump()};
+    std::size_t cursor_ = 0;
+
+    void fail(const std::string &invariant, const std::string &message) {
+        auto trail = trail_;
+        trail.push_back({current_kind_, "seed=" + std::to_string(seed_), "attempted"});
+        recordFailure(stats_, failures_, invariant, seed_, trail.size(), trail, message);
+        std::printf("GS-FUZZ4 FAIL %s seed=%d: %s\n  trail: %s\n", invariant.c_str(),
+                    seed_, message.c_str(), trailText(trail).c_str());
+    }
+
+    bool commit(bool record_history = true) {
+        std::vector<InspectorRpcRequest> edits;
+        for (int round = 0; round < 16 && edits.empty(); ++round) {
+            auto requests = f_.h.model.takeRpcRequests();
+            if (requests.empty()) break;
+            for (const auto &request : requests) {
+                if (request.method == "get_graph_instances")
+                    f_.h.model.receiveRpcResult(request.request_id, f_.h.snapshot().dump());
+                else if (request.method == "get_graph_catalog")
+                    f_.h.model.receiveRpcResult(request.request_id, f_.h.catalog.dump());
+                else if (request.method == "get_live_inputs")
+                    f_.h.model.receiveRpcResult(request.request_id, osc3bInputs().dump());
+                else if (request.method == "get_frame_plan")
+                    f_.h.model.receiveRpcResult(request.request_id, f_.h.plan.dump());
+                else if (request.method == "get_graph_node_values")
+                    f_.h.model.receiveRpcResult(request.request_id,
+                        osc3bValues(f_.h.document, 2.0).dump());
+                else if (request.method == "edit_graph_document") edits.push_back(request);
+                else continue;
+                f_.h.follow();
+            }
+        }
+        if (edits.empty()) return false;
+        if (edits.size() != 1) { fail("settle", "more than one edit followed an action"); fatal_ = true; return false; }
+        const auto &request = edits.front();
+        Json edited;
+        try { edited = Pelican::editGraphDocument(f_.h.document, request.params.at("ops")); }
+        catch (const std::exception &error) { fail("edit", error.what()); fatal_ = true; return false; }
+        f_.h.model.receiveRpcResult(request.request_id,
+            Json{{"status", "accepted"}, {"ticket", "gs-fuzz4"}}.dump());
+        for (const auto &poll : f_.h.model.takeRpcRequests()) {
+            if (poll.method != "get_edit_result") continue;
+            f_.h.document = edited;
+            ++f_.h.generation;
+            f_.h.model.receiveRpcResult(poll.request_id,
+                Json{{"status", "committed"}, {"committed", true},
+                     {"source_digest", {{"hex", f_.h.digest()}}}}.dump());
+        }
+        for (const auto &poll : f_.h.model.takeRpcRequests()) {
+            if (poll.method == "get_graph_instances")
+                f_.h.model.receiveRpcResult(poll.request_id, f_.h.snapshot().dump());
+            else if (poll.method == "get_live_inputs")
+                f_.h.model.receiveRpcResult(poll.request_id, osc3bInputs().dump());
+            else if (poll.method == "get_graph_node_values")
+                f_.h.model.receiveRpcResult(poll.request_id,
+                    osc3bValues(f_.h.document, 2.0).dump());
+        }
+        f_.h.scene.repopulate();
+        if (record_history) {
+            if (history_.size() > cursor_ + 1) history_.resize(cursor_ + 1);
+            history_.push_back(f_.h.document.dump());
+            cursor_ = history_.size() - 1;
+        }
+        return !fatal_;
+    }
+
+    void check() {
+        QCoreApplication::processEvents();
+        if (f_.h.scene.dragging()) fail("gesture", "dragging() stayed true after the action");
+        if (!itemsOfKind(f_.h.scene, GraphCanvasTiePreviewItem).empty() || pendingLine(f_.h.scene))
+            fail("preview", "a gesture preview survived the action");
+        for (QGraphicsItem *item : f_.h.scene.items()) {
+            if (item->isVisible()) continue;
+            if (f_.h.scene.items(item->sceneBoundingRect().center()).contains(item))
+                fail("hidden-pick", "a hidden item remains in the scene's hit result");
+        }
+        const auto selection = fuzz2::selectionMismatch(
+            {f_.h.scene.selectedScope(), f_.h.scene.selectedNode(), f_.h.scene.selectedEdges()},
+            f_.h.scene.items());
+        if (selection) fail("I3", *selection);
+        const std::string scope = f_.h.model.currentScope();
+        const Json layout = scope.empty() ? f_.h.document.value("layout", Json::object())
+            : f_.h.document["definitions"][scope].value("layout", Json::object());
+        const Json tied = layout.value("ties", Json::array());
+        const auto wires = fuzz2::connectedWires(f_.h.document);
+        for (const Json &tie : tied) {
+            for (const Json &edge : tie.value("edges", Json::array())) {
+                const auto key = std::tuple{edge.value("node", std::string{}), edge.value("port", std::string{})};
+                const bool present = std::ranges::any_of(wires, [&](const fuzz2::Wire &wire) {
+                    return wire.scope == scope && key == std::tuple{wire.node, wire.port};
+                });
+                if (!present) fail("tie-scope", "a tie names an edge absent from its scope document");
+            }
+        }
+        f_.h.scene.clearSelection();
+        ++stats_.i1_runs;
+        gs3aSameAsRebuilt(f_.h.scene);
+    }
+
+    void action(const std::string &kind) {
+        current_kind_ = kind;
+        ActionCount &count = stats_.by_kind[kind];
+        ++count.attempted;
+        const Json before = f_.h.document;
+        bool performed = true;
+        if (kind.starts_with("filter_")) performed = filterAction(kind);
+        else if (kind == "show_toggle") performed = showAction();
+        else if (kind.starts_with("tie")) tieAction(kind);
+        else if (kind.starts_with("lift")) liftAction(kind);
+        else if (kind == "refused_edit") {
+            performed = f_.h.model.setNodeParameters("", "missing4", Json{{"x", 1}});
+            if (performed) fail("refusal", "an edit of a missing node was accepted");
+            performed = true;
+        } else if (kind.starts_with("live_")) liveAction(kind);
+        else if (kind.starts_with("bezier") || kind.starts_with("curve_")) curveAction(kind);
+        else if (kind == "enter_leave") {
+            if (f_.h.model.currentScope().empty()) {
+                performed = f_.h.model.selectScope("first");
+            } else performed = f_.h.model.selectScope({});
+            f_.h.scene.repopulate();
+        } else if (kind == "undo" || kind == "redo") {
+            const bool redo = kind == "redo";
+            if (redo && !f_.h.model.canRedo()) {
+                f_.h.model.selectScope({});
+                f_.h.scene.repopulate();
+                performed = f_.h.model.setNodeParameter("m", "b", rng_.unit() * 20.0);
+                if (performed) commit();
+            }
+            if (redo && !f_.h.model.canRedo() && f_.h.model.canUndo()) {
+                f_.h.model.undo();
+                if (cursor_ == 0 || !commit(false)) {
+                    fail("I2", "could not establish a Redo state"); fatal_ = true;
+                } else {
+                    --cursor_;
+                    if (f_.h.document.dump() != history_[cursor_])
+                        fail("I2", "Undo before Redo changed the wrong state");
+                }
+            }
+            if (redo ? f_.h.model.canRedo() : f_.h.model.canUndo()) {
+                if (redo) f_.h.scene.redoEdit(); else f_.h.scene.undoEdit();
+                const std::size_t expected = redo ? cursor_ + 1 : cursor_ - 1;
+                if (expected >= history_.size()) { fail("I2", "history cursor is inconsistent"); fatal_ = true; }
+                else if (commit(false)) {
+                    cursor_ = expected;
+                    if (f_.h.document.dump() != history_[cursor_]) fail("I2", "Undo/Redo changed the wrong state");
+                }
+            } else performed = false;
+        } else if (kind == "read_again") {
+            refreshReads();
+        } else if (kind == "value_edit") {
+            performed = f_.h.model.setNodeParameter("m", "b", rng_.unit() * 20.0);
+            if (performed) commit();
+        }
+        if (kind.starts_with("filter_") && f_.h.document != before)
+            fail("filter-document", "choosing or reloading a filter changed the graph document");
+        if (performed) ++count.performed; else ++count.skipped;
+        trail_.push_back({kind, {}, performed ? "performed" : "skipped"});
+        current_kind_.clear();
+        if (!fatal_) check();
+    }
+
+    bool filterAction(const std::string &kind) {
+        if (kind == "filter_choose") {
+            const char *id = rng_.chance(0.5) ? "a4" : "curve4";
+            if (!f_.h.model.setActiveGraphFilter(id)) return false;
+        } else if (kind == "filter_all") {
+            if (!f_.h.model.activeGraphFilter())
+                f_.h.model.setActiveGraphFilter("a4");
+            if (!f_.h.model.setActiveGraphFilter(std::nullopt)) return false;
+        } else {
+            if (kind == "filter_vanished") {
+                Json changed = filters();
+                changed["filters"].erase(0);
+                f_.project.write(changed);
+            } else if (kind == "filter_invalid") {
+                f_.project.write(Json{{"schema", "pelican.graph_filters"}});
+            } else {
+                f_.project.write(filters());
+            }
+            f_.h.model.setGraphFilters(readGraphFilters(f_.project.root()));
+        }
+        f_.h.scene.repopulate();
+        return true;
+    }
+
+    bool showAction() {
+        if (!f_.h.model.activeGraphFilter())
+            f_.h.model.setActiveGraphFilter("a4");
+        const char *domain = rng_.chance(0.5) ? "value" : "render";
+        const bool shown = f_.h.model.domainShown(domain);
+        if (!f_.h.model.setDomainShown(domain, !shown)) return false;
+        f_.h.scene.repopulate();
+        return true;
+    }
+
+    std::vector<QGraphicsPathItem *> edges() {
+        std::vector<QGraphicsPathItem *> result;
+        for (QGraphicsItem *item : itemsOfKind(f_.h.scene, GraphCanvasEdgeItem))
+            if (auto *line = dynamic_cast<QGraphicsPathItem *>(item);
+                line && line->isVisible()) result.push_back(line);
+        return result;
+    }
+
+    void tieAction(const std::string &kind) {
+        QRectF box;
+        for (QGraphicsPathItem *line : edges())
+            box = box.isNull() ? line->sceneBoundingRect() : box.united(line->sceneBoundingRect());
+        if (box.isNull()) return;
+        const QPointF a{box.center().x(), box.top() - 50};
+        const QPointF b{a.x() + (rng_.unit() - 0.5) * 30.0, box.bottom() + 50};
+        f_.tieMouse(QEvent::MouseButtonPress, a, Qt::RightButton, Qt::RightButton);
+        if (kind != "tie_click") f_.tieMouse(QEvent::MouseMove, b, Qt::NoButton, Qt::RightButton);
+        if (kind == "tie_escape") {
+            QKeyEvent key{QEvent::KeyPress, Qt::Key_Escape, Qt::NoModifier};
+            QApplication::sendEvent(f_.view.viewport(), &key);
+        } else if (kind == "tie_button") {
+            f_.tieMouse(QEvent::MouseButtonPress, b, Qt::LeftButton,
+                        Qt::LeftButton | Qt::RightButton);
+            f_.tieMouse(QEvent::MouseButtonRelease, b, Qt::LeftButton, Qt::RightButton);
+        }
+        f_.tieMouse(QEvent::MouseButtonRelease, kind == "tie_click" ? a : b,
+                    Qt::RightButton, Qt::NoButton);
+        if (kind == "tie") commit();
+    }
+
+    void liftAction(const std::string &kind) {
+        const std::string scope = f_.h.model.currentScope();
+        const auto wires = fuzz2::connectedWires(f_.h.document);
+        std::vector<fuzz2::Wire> possible;
+        for (const auto &wire : wires) {
+            if (wire.scope != scope) continue;
+            QGraphicsItem *input = scopedItem(f_.h.scene, GraphCanvasSocketItem,
+                QString::fromStdString(scope), QString::fromStdString(wire.node),
+                QString::fromStdString(wire.port), "input");
+            if (input && input->isVisible()) possible.push_back(wire);
+        }
+        if (possible.empty()) return;
+        const auto wire = possible[rng_.below(possible.size())];
+        QGraphicsItem *input = scopedItem(f_.h.scene, GraphCanvasSocketItem,
+            QString::fromStdString(scope), QString::fromStdString(wire.node),
+            QString::fromStdString(wire.port), "input");
+        const QPointF at = centreOf(input);
+        const QPointF empty = gc1EmptyPoint(f_.h.scene, at, 60.0);
+        osc3bPress(f_.h.scene, at);
+        osc3bMove(f_.h.scene, empty);
+        QPointF target = empty;
+        if (kind == "lift_socket") {
+            auto inputs = itemsOfKind(f_.h.scene, GraphCanvasSocketItem);
+            std::erase_if(inputs, [](QGraphicsItem *item) {
+                return !item->isVisible() || item->data(GraphCanvasSocketDirectionRole).toString() != "input";
+            });
+            if (!inputs.empty()) target = centreOf(inputs[rng_.below(inputs.size())]);
+            osc3bMove(f_.h.scene, target);
+        }
+        if (kind == "lift_escape") pressKey(f_.h.scene, Qt::Key_Escape);
+        else osc3bRelease(f_.h.scene, target);
+        if (kind != "lift_escape") commit();
+    }
+
+    void answerLive(const std::vector<InspectorRpcRequest> &requests, bool edits_only = false) {
+        for (const auto &request : requests) {
+            if (request.method == "set_live_input")
+                f_.h.model.receiveRpcResult(request.request_id, Json{{"accepted", 1}}.dump());
+            else if (request.method == "get_live_inputs")
+                f_.h.model.receiveRpcResult(request.request_id, osc3bInputs().dump());
+            else if (!edits_only && request.method == "get_graph_node_values")
+                f_.h.model.receiveRpcResult(request.request_id,
+                    osc3bValues(f_.h.document, 2.0).dump());
+        }
+        QCoreApplication::processEvents();
+    }
+
+    void refreshReads() {
+        f_.h.model.setConnected(false);
+        f_.h.model.setConnected(true);
+        f_.h.model.refresh();
+        for (const auto &request : f_.h.model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                f_.h.model.receiveRpcResult(request.request_id, f_.h.snapshot().dump());
+            else if (request.method == "get_graph_catalog")
+                f_.h.model.receiveRpcResult(request.request_id, f_.h.catalog.dump());
+            else if (request.method == "get_live_inputs")
+                f_.h.model.receiveRpcResult(request.request_id, osc3bInputs().dump());
+            else if (request.method == "get_frame_plan")
+                f_.h.model.receiveRpcResult(request.request_id, f_.h.plan.dump());
+        }
+        f_.h.model.poll();
+        answerLive(f_.h.model.takeRpcRequests());
+        f_.h.scene.repopulate();
+    }
+
+    void liveAction(const std::string &kind) {
+        if (!f_.h.model.currentScope().empty()) return;
+        if (f_.h.model.activeGraphFilter()) f_.h.model.setActiveGraphFilter(std::nullopt);
+        if (!f_.h.model.domainShown("value")) f_.h.model.setDomainShown("value", true);
+        f_.h.model.poll();
+        answerLive(f_.h.model.takeRpcRequests());
+        f_.h.scene.repopulate();
+        QGraphicsItem *band = osc3bBandItem(f_.h.scene, "live4", "value");
+        f_.h.scene.selectNode("", "live4");
+        const QPointF from = centreOf(band);
+        osc3bPress(f_.h.scene, from);
+        osc3bMove(f_.h.scene, from + QPointF{5.0, 0.0});
+        auto writes = f_.h.model.takeRpcRequests();
+        if (kind == "live_reply") answerLive(writes, true);
+        if (kind == "live_focus") f_.h.scene.endLiveKnobFocusLost();
+        else if (kind == "live_escape") pressKey(f_.h.scene, Qt::Key_Escape);
+        osc3bMove(f_.h.scene, from + QPointF{8.0, 0.0});
+        osc3bRelease(f_.h.scene, from + QPointF{8.0, 0.0});
+        answerLive(writes, true);
+        for (int round = 0; round < 8; ++round) {
+            auto pending = f_.h.model.takeRpcRequests();
+            if (pending.empty()) break;
+            answerLive(pending, true);
+        }
+        refreshReads();
+        f_.h.scene.clearSelection();
+    }
+
+    std::optional<std::vector<GraphCanvasCurveKey>> keys() {
+        const std::string scope = f_.h.model.currentScope();
+        const auto nodes = f_.h.model.nodes(scope);
+        const auto found = std::ranges::find_if(nodes, [](const GraphCanvasNode &node) {
+            return node.op == "value.curve";
+        });
+        if (found == nodes.end()) return std::nullopt;
+        return f_.h.model.curveKeys(scope, found->id);
+    }
+
+    void curveAction(const std::string &kind) {
+        auto current = keys();
+        if (!current || current->empty()) return;
+        std::size_t index = rng_.below(current->size());
+        auto changed = *current;
+        if (kind == "bezier" || kind == "bezier_back") {
+            const std::string interpolation = kind == "bezier" ? "bezier" : "linear";
+            changed = GraphCanvasModel::curveKeysWithInterpolation(std::move(changed), index, interpolation);
+        } else if (kind == "curve_split") {
+            if (changed.size() < 2) return;
+            index = rng_.below(changed.size() - 1);
+            auto split = GraphCanvasModel::curveKeysWithAdded(std::move(changed), index);
+            if (!split) return;
+            changed = std::move(*split);
+        } else {
+            if (changed[index].interpolation != "bezier")
+                changed = GraphCanvasModel::curveKeysWithInterpolation(std::move(changed), index, "bezier");
+            if (index + 1 < changed.size()) {
+                changed[index].rest["out_handle"] = Json::array(
+                    {0.1 + rng_.unit() * 0.4, (rng_.unit() - 0.5) * 3.0});
+                changed[index + 1].rest["in_handle"] = Json::array(
+                    {-0.1 - rng_.unit() * 0.4, (rng_.unit() - 0.5) * 3.0});
+            }
+        }
+        const std::string scope = f_.h.model.currentScope();
+        const auto nodes = f_.h.model.nodes(scope);
+        const auto found = std::ranges::find_if(nodes, [](const GraphCanvasNode &node) {
+            return node.op == "value.curve";
+        });
+        if (found == nodes.end() || !f_.h.model.setCurveKeys(scope, found->id, changed)) return;
+        commit();
+    }
+};
+
+void printStats4(const Stats &stats, const char *label) {
+    std::printf("\nGS-FUZZ4 %s summary: replies=%zu partial-actions=%zu whole-actions=%zu refusals=%zu\n",
+                label, stats.replies, stats.partial_actions, stats.whole_actions, stats.refusals);
+    std::printf("GS-FUZZ4 invariants: I1 checks=%zu I3 checks=%zu I5 checks=%zu; failures I1=%zu I2=%zu I3=%zu I5=%zu settle=%zu scope=%zu\n",
+                stats.i1_runs, stats.i3_runs, stats.i5_runs, stats.i1_failures,
+                stats.i2_failures, stats.i3_failures, stats.i5_failures,
+                stats.settle_failures, stats.scope_failures);
+    std::printf("GS-FUZZ4 actions:\n");
+    for (const auto &[kind, count] : stats.by_kind)
+        std::printf("  %s attempted=%zu performed=%zu skipped=%zu no-op=%zu\n",
+                    kind.c_str(), count.attempted, count.performed, count.skipped, count.noop);
+}
+
+void checkCoverage(const Stats &stats, std::size_t seeds, Stats &mutable_stats,
+                   std::vector<Failure> &failures) {
+    if (seeds < 300) return;
+    static const std::array<const char *, 24> required{
+        "filter_choose", "filter_all", "filter_vanished", "filter_invalid", "filter_reload",
+        "show_toggle", "tie", "tie_escape", "tie_button", "tie_click", "lift_empty",
+        "lift_socket", "lift_escape", "refused_edit", "live_escape", "live_focus",
+        "live_reply", "bezier", "bezier_back", "curve_split", "curve_handles",
+        "enter_leave", "undo", "redo"};
+    for (const char *kind : required) {
+        const auto found = stats.by_kind.find(kind);
+        const std::size_t performed = found == stats.by_kind.end() ? 0 : found->second.performed;
+        if (performed < 200)
+            recordFailure(mutable_stats, failures, "coverage", 0, 0, {},
+                "only " + std::to_string(performed) + " of " + kind +
+                    " were performed; 200 are required");
+    }
+}
+
+void run(const char *label, std::size_t default_seeds, std::size_t default_steps,
+         bool coverage) {
+    (void)application();
+    const std::size_t seed0 = environmentCount("GS_FUZZ4_SEED0", 0);
+    const std::size_t seeds = environmentCount("GS_FUZZ4_SEEDS", default_seeds);
+    const std::size_t steps = environmentCount("GS_FUZZ4_STEPS", default_steps);
+    Stats stats;
+    std::vector<Failure> failures;
+    WarningScope warnings(static_cast<int>(seed0));
+    for (std::size_t index = 0; index < seeds; ++index) {
+        const int seed = static_cast<int>(seed0 + index);
+        const std::size_t first = warningCount();
+        {
+            Driver driver(seed, steps, stats, failures);
+            driver.run();
+        }
+        for (const std::string &hit : warningsSince(first))
+            recordFailure(stats, failures, "I5", seed, 0, {},
+                          "a Qt warning survived the fixture: " + hit);
+    }
+    printStats4(stats, label);
+    if (coverage) checkCoverage(stats, seeds, stats, failures);
+    std::printf("GS-FUZZ4 failures: %zu\n", failures.size());
+    for (std::size_t index = 0; index < failures.size() && index < 40; ++index) {
+        const Failure &failure = failures[index];
+        std::printf("  #%zu %s seed=%d action=%zu: %s\n    trail: %s\n", index + 1,
+                    failure.invariant.c_str(), failure.seed, failure.action,
+                    failure.message.c_str(), trailText(failure.trail).c_str());
+    }
+    INFO("GS-FUZZ4 recorded failures; see the log above");
+    CHECK(failures.empty());
+}
+
+} // namespace fuzz4
+} // namespace
+
+TEST_CASE("GS-FUZZ4: filters and destructive or live gestures keep scene invariants",
+          "[gs-fuzz4-short]") {
+    fuzz4::run("short", 20, 20, false);
+}
+
+TEST_CASE("GS-FUZZ4: long gesture mix keeps scene invariants", "[gs-fuzz4-long][.]") {
+    fuzz4::run("long", 300, 40, true);
+}
+// ---- GS-FUZZ4 end ----
