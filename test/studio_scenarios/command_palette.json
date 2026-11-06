@@ -1,0 +1,42 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "command_palette",
+  "description": "KM-3: open the command palette, dismiss it with Escape, run Duplicate and scene Undo, and verify that the Outliner regains focus.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "steps": [
+    {"label": "engine up", "cmd": "wait_engine", "timeout_ms": 180000},
+    {"label": "default layout", "cmd": "action", "name": "pelican.layout.resetDefault"},
+    {"label": "the Outliner is on screen", "cmd": "wait", "name": "pelican.outliner", "visible": true, "timeout_ms": 10000},
+    {"label": "two objects", "expect": "rpc_equals", "method": "scene_tree", "params": {"scene_id": "default_scene"}, "path": "objects.$len", "value": 2, "retry_ms": 60000},
+    {"label": "pick Anchor with a real click", "cmd": "select", "name": "pelican.outliner", "text": "Anchor"},
+    {"label": "the Inspector has it", "cmd": "wait", "name": "pelican.inspectorSelection", "contains": "Anchor\n", "timeout_ms": 30000},
+    {"label": "control: the Outliner holds the focus", "expect": "result", "command": {"cmd": "key", "sequence": "F12"}, "path": "target", "value": "pelican.outliner"},
+
+    {"label": "the key opens it", "cmd": "key", "sequence": "Ctrl+Shift+K", "route": "window"},
+    {"label": "it is drawn", "cmd": "wait", "name": "pelican.commandPalette", "visible": true, "timeout_ms": 5000},
+    {"label": "Esc", "cmd": "key", "name": "pelican.commandPalette.edit", "sequence": "Escape"},
+    {"label": "it has closed", "cmd": "wait", "name": "pelican.commandPalette", "visible": false, "timeout_ms": 5000},
+    {"label": "focus came back after Esc", "expect": "result", "command": {"cmd": "key", "sequence": "F12"}, "path": "target", "value": "pelican.outliner"},
+
+    {"label": "open again", "cmd": "key", "sequence": "Ctrl+Shift+K", "route": "window"},
+    {"label": "drawn", "cmd": "wait", "name": "pelican.commandPalette", "visible": true, "timeout_ms": 5000},
+    {"label": "type", "cmd": "type", "name": "pelican.commandPalette.edit", "text": "dup"},
+    {"label": "it reads what was typed", "expect": "text_equals", "name": "pelican.commandPalette.edit", "value": "dup"},
+    {"label": "Enter runs Duplicate", "cmd": "key", "name": "pelican.commandPalette.edit", "sequence": "Return"},
+    {"label": "closed", "cmd": "wait", "name": "pelican.commandPalette", "visible": false, "timeout_ms": 5000},
+    {"label": "one more object", "expect": "rpc_equals", "method": "scene_tree", "params": {"scene_id": "default_scene"}, "path": "objects.$len", "value": 3, "retry_ms": 60000},
+    {"label": "the copy is right after Anchor", "expect": "rpc_equals", "method": "scene_tree", "params": {"scene_id": "default_scene"}, "path": "objects[1].name", "value": "Anchor_copy1"},
+    {"label": "focus came back after the run", "expect": "result", "command": {"cmd": "key", "sequence": "F12"}, "path": "target", "value": "pelican.outliner"},
+
+    {"label": "the edit has settled, so Undo is on", "cmd": "wait", "name": "pelican.inspectorUndo", "enabled": true, "timeout_ms": 30000},
+    {"label": "open for Undo", "cmd": "key", "sequence": "Ctrl+Shift+K", "route": "window"},
+    {"label": "drawn", "cmd": "wait", "name": "pelican.commandPalette", "visible": true, "timeout_ms": 5000},
+    {"label": "type", "cmd": "type", "name": "pelican.commandPalette.edit", "text": "undo scene"},
+    {"label": "Enter runs the scene's Undo", "cmd": "key", "name": "pelican.commandPalette.edit", "sequence": "Return"},
+    {"label": "closed", "cmd": "wait", "name": "pelican.commandPalette", "visible": false, "timeout_ms": 5000},
+    {"label": "back to two objects", "expect": "rpc_equals", "method": "scene_tree", "params": {"scene_id": "default_scene"}, "path": "objects.$len", "value": 2, "retry_ms": 60000},
+    {"label": "focus came back after Undo", "expect": "result", "command": {"cmd": "key", "sequence": "F12"}, "path": "target", "value": "pelican.outliner"}
+  ]
+}

@@ -16,6 +16,7 @@
 #include "../src/devstudio/optrace.hpp"
 #include <QFile>
 #include <QFileInfo>
+#include <QFrame>
 #include <QDir>
 #include <QTemporaryDir>
 #include <QScopeGuard>
@@ -56,6 +57,7 @@
 #include <QScrollBar>
 #include <QShortcut>
 #include <QSignalSpy>
+#include <QStatusBar>
 #include <QString>
 #include <QStringList>
 #include <QTest>
@@ -97,6 +99,7 @@
 #include "mainwindow.hpp"
 #undef private
 #include "studiocommands.hpp"
+#include "inlineediteventfilter.hpp"
 
 namespace {
 
@@ -3004,6 +3007,8 @@ TEST_CASE("KM-1a the Help rows are exactly the command declarations",
     const QString T = QStringLiteral("Text fields / inline editors");
 
     const std::vector<ShortcutRow> expected = {
+        {W, shownKeys({QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_K}}),
+         QStringLiteral("Command Palette...")},
         {W, QString{}, QStringLiteral("Keyboard Shortcuts...")},
         {W, shownKeys({QKeySequence(QKeySequence::New)}), QStringLiteral("New Project")},
         {W, shownKeys({QKeySequence(QKeySequence::Open)}), QStringLiteral("Open Project")},
@@ -4543,4 +4548,631 @@ TEST_CASE("KM-2c the dialog keeps a command this build has no row for",
     const QJsonArray kept = bindings.value(QStringLiteral("later.command")).toArray();
     REQUIRE(kept.size() == 1);
     CHECK(kept.at(0).toString() == QStringLiteral("Ctrl+Alt+9"));
+}
+
+
+namespace {
+
+struct PaletteWidgets {
+    QFrame *frame = nullptr;
+    QLineEdit *edit = nullptr;
+    QTreeWidget *list = nullptr;
+};
+
+PaletteWidgets paletteWidgets(PelicanStudio::MainWindow &window) {
+    PaletteWidgets palette;
+    palette.frame = window.findChild<QFrame *>(QStringLiteral("pelican.commandPalette"));
+    REQUIRE(palette.frame != nullptr);
+    palette.edit = palette.frame->findChild<QLineEdit *>(
+        QStringLiteral("pelican.commandPalette.edit"));
+    palette.list = palette.frame->findChild<QTreeWidget *>(
+        QStringLiteral("pelican.commandPalette.list"));
+    REQUIRE(palette.edit != nullptr);
+    REQUIRE(palette.list != nullptr);
+    return palette;
+}
+
+PaletteWidgets openPalette(SceneShortcutRig &rig, const char *surface = "pelican.outliner") {
+    rig.key(surface, "Ctrl+Shift+K");
+    QApplication::processEvents();
+    const PaletteWidgets palette = paletteWidgets(rig.window);
+    REQUIRE(palette.frame->isVisible());
+    return palette;
+}
+
+QTreeWidgetItem *paletteItem(QTreeWidget *list, const QString &title) {
+    for (int index = 0; index < list->topLevelItemCount(); ++index) {
+        QTreeWidgetItem *item = list->topLevelItem(index);
+        if (item->text(0) == title) return item;
+    }
+    return nullptr;
+}
+
+QStringList paletteTitles(QTreeWidget *list) {
+    QStringList titles;
+    for (int index = 0; index < list->topLevelItemCount(); ++index)
+        titles.push_back(list->topLevelItem(index)->text(0));
+    return titles;
+}
+
+void escapePalette(const PaletteWidgets &palette) {
+    QTest::keyClick(palette.edit, Qt::Key_Escape);
+    QApplication::processEvents();
+    REQUIRE_FALSE(palette.frame->isVisible());
+}
+
+} // namespace
+
+TEST_CASE("KM-3 a real key opens a nonmodal popup and Pause keeps its key",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    const PaletteWidgets palette = openPalette(rig);
+    CHECK(QApplication::activePopupWidget() == palette.frame);
+    CHECK(palette.edit->hasFocus());
+    CHECK(QApplication::activeModalWidget() == nullptr);
+    QTest::keyClicks(palette.edit, QStringLiteral("dup"));
+    REQUIRE(palette.list->currentItem() != nullptr);
+    CHECK(palette.list->currentItem()->text(0) == QStringLiteral("Duplicate selected object"));
+    QTest::keyClick(palette.edit, Qt::Key_Down);
+    CHECK(palette.list->currentItem()->text(0) == QStringLiteral("Duplicate selected object"));
+    escapePalette(palette);
+
+    auto *pause = commandShortcut(rig.window, "pelican.play.pauseKey");
+    REQUIRE(pause != nullptr);
+    QSignalSpy activated(pause, &QShortcut::activated);
+    rig.key("pelican.outliner", "Ctrl+Shift+P");
+    CHECK(activated.count() == 1);
+    CHECK_FALSE(palette.frame->isVisible());
+}
+
+TEST_CASE("KM-3 rows contain registered commands once and instantiated menu leaves",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    const PaletteWidgets palette = openPalette(rig);
+    const QStringList titles = paletteTitles(palette.list);
+    const QStringList commands{
+        QStringLiteral("Keyboard Shortcuts..."), QStringLiteral("New Project"),
+        QStringLiteral("Open Project"), QStringLiteral("Pause (outside text fields)"),
+        QStringLiteral("Play / Stop (outside text fields)"),
+        QStringLiteral("Save Scene (stop Play first)"), QStringLiteral("Step (outside text fields)"),
+        QStringLiteral("Delete selected object"), QStringLiteral("Duplicate selected object"),
+        QStringLiteral("Redo scene edit"), QStringLiteral("Undo scene edit"),
+        QStringLiteral("Redo rendering edit"), QStringLiteral("Undo rendering edit"),
+        QStringLiteral("Undo material edit"), QStringLiteral("Undo asset edit")};
+    CHECK(titles.mid(0, commands.size()) == commands);
+    CHECK(titles.count(QStringLiteral("Keyboard Shortcuts...")) == 1);
+    CHECK(titles.contains(QStringLiteral("File › Import Sound…")));
+    CHECK(titles.contains(QStringLiteral("View › Panels › Outliner")));
+    CHECK(titles.contains(QStringLiteral("Help › Keyboard Shortcuts…")));
+    CHECK_FALSE(titles.contains(QStringLiteral("Command Palette...")));
+    CHECK_FALSE(titles.contains(QStringLiteral("Fit view")));
+    CHECK_FALSE(titles.contains(QStringLiteral("Commit inline edit")));
+
+    QTest::keyClicks(palette.edit, QStringLiteral("dup"));
+    const QStringList filtered = paletteTitles(palette.list);
+    CHECK(filtered.contains(QStringLiteral("Duplicate selected object")));
+    auto *duplicate = paletteItem(palette.list, QStringLiteral("Duplicate selected object"));
+    REQUIRE(duplicate != nullptr);
+    CHECK(duplicate->text(1) == shownKeys({QKeySequence(Qt::CTRL | Qt::Key_D)}));
+    escapePalette(palette);
+}
+
+TEST_CASE("KM-3 keymaps supply live keys and palette binding conflicts use Pause",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig{keymapJson(QStringLiteral(
+        "{\"file.save\":[\"Ctrl+Shift+S\"],\"scene.duplicate\":[]}"))};
+    PaletteWidgets palette = openPalette(rig);
+    auto *save = paletteItem(palette.list, QStringLiteral("Save Scene (stop Play first)"));
+    auto *duplicate = paletteItem(palette.list, QStringLiteral("Duplicate selected object"));
+    REQUIRE(save != nullptr);
+    REQUIRE(duplicate != nullptr);
+    CHECK(save->text(1) == shownKeys({QKeySequence(QStringLiteral("Ctrl+Shift+S"))}));
+    CHECK(duplicate->text(1).isEmpty());
+    escapePalette(palette);
+
+    const auto plan = PelicanStudio::planKeymap(
+        rig.window.keymap_defaults_, rig.window.keymap_fixed_keys_,
+        {{QStringLiteral("file.save"), {QKeySequence(QStringLiteral("Ctrl+Alt+S"))}, {}}});
+    PelicanStudio::applyKeymapPlan(rig.window.keymap_objects_, plan);
+    palette = openPalette(rig);
+    save = paletteItem(palette.list, QStringLiteral("Save Scene (stop Play first)"));
+    REQUIRE(save != nullptr);
+    CHECK(save->text(1) == shownKeys({QKeySequence(QStringLiteral("Ctrl+Alt+S"))}));
+    escapePalette(palette);
+}
+
+
+TEST_CASE("KM-3 palette key overrides work from Qt but keep the native allow-list limit",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig{keymapJson(
+        QStringLiteral("{\"edit.commandPalette\":[\"Ctrl+Alt+J\"]}"))};
+    rig.key("pelican.outliner", "Ctrl+Alt+J");
+    QApplication::processEvents();
+    PaletteWidgets palette = paletteWidgets(rig.window);
+    CHECK(palette.frame->isVisible());
+    escapePalette(palette);
+    rig.key("pelican.outliner", "Ctrl+Shift+K");
+    CHECK_FALSE(palette.frame->isVisible());
+
+    CHECK(std::find(PelicanStudio::StudioShortcutKeys.begin(),
+                    PelicanStudio::StudioShortcutKeys.end(), Qt::Key_J) ==
+          PelicanStudio::StudioShortcutKeys.end());
+}
+
+TEST_CASE("KM-3 palette binding conflict is rejected and a Pause swap is atomic",
+          "[devstudio][automation_input][km3]") {
+    {
+        KeymapWarnings warnings;
+        SceneShortcutRig rig{keymapJson(
+            QStringLiteral("{\"edit.commandPalette\":[\"Ctrl+Shift+P\"]}"))};
+        CHECK(warnings.countFor(QStringLiteral("edit.commandPalette")) == 1);
+        auto *action = commandAction(rig.window, "pelican.edit.commandPalette");
+        REQUIRE(action != nullptr);
+        CHECK(objectKeys(action) == QStringList{parsePortable("Ctrl+Shift+K")});
+        const PaletteWidgets palette = openPalette(rig);
+        escapePalette(palette);
+    }
+    SceneShortcutRig rig{keymapJson(QStringLiteral(
+        "{\"play.pause\":[\"Ctrl+Alt+K\"],\"edit.commandPalette\":[\"Ctrl+Shift+P\"]}"))};
+    rig.key("pelican.outliner", "Ctrl+Shift+P");
+    QApplication::processEvents();
+    const PaletteWidgets palette = paletteWidgets(rig.window);
+    CHECK(palette.frame->isVisible());
+    auto *pause = commandShortcut(rig.window, "pelican.play.pauseKey");
+    REQUIRE(pause != nullptr);
+    CHECK(objectKeys(pause) == QStringList{parsePortable("Ctrl+Alt+K")});
+    escapePalette(palette);
+}
+
+TEST_CASE("KM-3 keys skip disabled rows and Esc preserves a text edit",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    rig.move();
+    auto *dock = rig.window.findChild<QDockWidget *>(QStringLiteral("pelican.outlinerDock"));
+    REQUIRE(dock != nullptr);
+    auto *field = new QLineEdit(dock->widget());
+    field->setObjectName(QStringLiteral("test.field"));
+    field->setText(QStringLiteral("unfinished"));
+    field->setCursorPosition(4);
+    field->show();
+    int finished = 0;
+    PelicanStudio::InlineEditEventFilter filter([&finished](bool) { ++finished; });
+    field->installEventFilter(&filter);
+
+    PaletteWidgets palette = openPalette(rig, "test.field");
+    CHECK(field->text() == QStringLiteral("unfinished"));
+    CHECK(field->cursorPosition() == 4);
+    QTest::keyClicks(palette.edit, QStringLiteral("undo scene"));
+    QTest::keyClick(palette.edit, Qt::Key_Down);
+    QTest::keyClick(palette.edit, Qt::Key_Up);
+    CHECK(palette.list->currentItem() == nullptr);
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    CHECK(palette.frame->isVisible());
+    const int undo_before = rig.undo_calls;
+    escapePalette(palette);
+    CHECK(rig.undo_calls == undo_before);
+    CHECK(field->hasFocus());
+    CHECK(field->text() == QStringLiteral("unfinished"));
+    CHECK(field->cursorPosition() == 4);
+    CHECK(finished == 0);
+
+    palette = openPalette(rig);
+    QTest::keyClicks(palette.edit, QStringLiteral("undo rendering"));
+    auto *redo = paletteItem(palette.list, QStringLiteral("Undo rendering edit"));
+    REQUIRE(redo != nullptr);
+    CHECK_FALSE(redo->flags() & Qt::ItemIsEnabled);
+    CHECK(palette.list->currentItem() == nullptr);
+    QTest::keyClick(palette.edit, Qt::Key_Down);
+    CHECK(palette.list->currentItem() == nullptr);
+    palette.frame->hide();
+    QApplication::processEvents();
+    CHECK(rig.undo_calls == undo_before);
+    delete field;
+}
+
+TEST_CASE("KM-3 scene undo and Save refusal use the ordinary command paths",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    rig.focus("pelican.outliner");
+    rig.move();
+    const int before = rig.undo_calls;
+    PaletteWidgets palette = openPalette(rig);
+    QTest::keyClicks(palette.edit, QStringLiteral("undo scene"));
+    auto *undo = paletteItem(palette.list, QStringLiteral("Undo scene edit"));
+    REQUIRE(undo != nullptr);
+    CHECK(undo->flags() & Qt::ItemIsEnabled);
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    rig.await([&] { return rig.undo_calls == before + 1; });
+    CHECK(rig.objects.front().at("x") == 1.0);
+    CHECK(rig.window.inspector_->redoAction()->text() == QStringLiteral("Redo Move Cube"));
+    auto *outliner = rig.window.findChild<QWidget *>(QStringLiteral("pelican.outliner"));
+    REQUIRE(outliner != nullptr);
+    CHECK(outliner->hasFocus());
+
+    const bool ready = rig.window.document_session_ready_;
+    rig.window.document_session_ready_ = false;
+    rig.key("pelican.outliner", "Ctrl+S");
+    const QString expected = rig.window.statusBar()->currentMessage();
+    CHECK(expected.contains(QStringLiteral("document baseline")));
+    rig.window.statusBar()->clearMessage();
+    palette = openPalette(rig);
+    QTest::keyClicks(palette.edit, QStringLiteral("save scene"));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(rig.window.statusBar()->currentMessage() == expected);
+    rig.window.document_session_ready_ = ready;
+}
+
+
+TEST_CASE("KM-3 availability follows the captured surface including text entry",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    rig.move();
+    PaletteWidgets palette = openPalette(rig, "pelican.graphCanvasView");
+    auto *undo = paletteItem(palette.list, QStringLiteral("Undo scene edit"));
+    REQUIRE(undo != nullptr);
+    CHECK_FALSE(undo->flags() & Qt::ItemIsEnabled);
+    const int before = rig.undo_calls;
+    QTest::keyClicks(palette.edit, QStringLiteral("undo scene"));
+    QTest::mouseClick(palette.list->viewport(), Qt::LeftButton, {},
+                      palette.list->visualItemRect(undo).center());
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(rig.undo_calls == before);
+    escapePalette(palette);
+
+    auto *materials = commandAction(rig.window, "pelican.materials.undo");
+    REQUIRE(materials != nullptr);
+    materials->setEnabled(true);
+    palette = openPalette(rig);
+    auto *material_row = paletteItem(palette.list, QStringLiteral("Undo material edit"));
+    REQUIRE(material_row != nullptr);
+    CHECK_FALSE(material_row->flags() & Qt::ItemIsEnabled);
+    escapePalette(palette);
+
+    QSignalSpy triggered(materials, &QAction::triggered);
+    palette = openPalette(rig, "pelican.materials.newMaterial");
+    material_row = paletteItem(palette.list, QStringLiteral("Undo material edit"));
+    REQUIRE(material_row != nullptr);
+    CHECK(material_row->flags() & Qt::ItemIsEnabled);
+    QTest::keyClicks(palette.edit, QStringLiteral("undo material"));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(triggered.count() == 1);
+    CHECK(rig.undo_calls == before);
+
+    auto *dock = rig.window.findChild<QDockWidget *>(QStringLiteral("pelican.outlinerDock"));
+    REQUIRE(dock != nullptr);
+    auto *field = new QLineEdit(dock->widget());
+    field->setObjectName(QStringLiteral("test.field"));
+    field->show();
+    auto *pause = commandAction(rig.window, "pelican.play.pause");
+    REQUIRE(pause != nullptr);
+    pause->setVisible(true);
+    pause->setEnabled(true);
+    palette = openPalette(rig, "test.field");
+    for (const QString &title : {QStringLiteral("Undo scene edit"), QStringLiteral("Redo scene edit"),
+                                 QStringLiteral("Delete selected object"),
+                                 QStringLiteral("Duplicate selected object"),
+                                 QStringLiteral("Undo rendering edit"), QStringLiteral("Redo rendering edit"),
+                                 QStringLiteral("Undo material edit"), QStringLiteral("Undo asset edit"),
+                                 QStringLiteral("Play / Stop (outside text fields)"),
+                                 QStringLiteral("Pause (outside text fields)"),
+                                 QStringLiteral("Step (outside text fields)")}) {
+        QTreeWidgetItem *item = paletteItem(palette.list, title);
+        REQUIRE(item != nullptr);
+        CHECK_FALSE(item->flags() & Qt::ItemIsEnabled);
+    }
+    escapePalette(palette);
+    delete field;
+}
+
+TEST_CASE("KM-3 a stale command is refused at dispatch", "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    auto *materials = commandAction(rig.window, "pelican.materials.undo");
+    REQUIRE(materials != nullptr);
+    materials->setEnabled(true);
+    QSignalSpy triggered(materials, &QAction::triggered);
+    PaletteWidgets palette = openPalette(rig, "pelican.materials.newMaterial");
+    QTest::keyClicks(palette.edit, QStringLiteral("undo material"));
+    materials->setEnabled(false);
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(triggered.count() == 0);
+    CHECK(rig.window.statusBar()->currentMessage().contains(QStringLiteral("not available here")));
+
+    materials->setEnabled(true);
+    rig.window.statusBar()->clearMessage();
+    palette = openPalette(rig, "pelican.materials.newMaterial");
+    QTest::keyClicks(palette.edit, QStringLiteral("undo material"));
+    bool removed = false;
+    for (QObject *object : materials->associatedObjects()) {
+        if (auto *widget = qobject_cast<QWidget *>(object)) {
+            widget->removeAction(materials);
+            removed = true;
+        }
+    }
+    REQUIRE(removed);
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(triggered.count() == 0);
+    CHECK(rig.window.statusBar()->currentMessage().contains(QStringLiteral("not available here")));
+}
+
+TEST_CASE("KM-3 play shortcuts use their action gate and activated signal",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    auto *pause_action = commandAction(rig.window, "pelican.play.pause");
+    auto *pause_key = commandShortcut(rig.window, "pelican.play.pauseKey");
+    REQUIRE(pause_action != nullptr);
+    REQUIRE(pause_key != nullptr);
+    pause_action->setVisible(true);
+    pause_action->setEnabled(false);
+    PaletteWidgets palette = openPalette(rig);
+    auto *pause_row = paletteItem(palette.list, QStringLiteral("Pause (outside text fields)"));
+    REQUIRE(pause_row != nullptr);
+    CHECK_FALSE(pause_row->flags() & Qt::ItemIsEnabled);
+    escapePalette(palette);
+
+    pause_action->setVisible(true);
+    pause_action->setEnabled(true);
+    QSignalSpy activated(pause_key, &QShortcut::activated);
+    palette = openPalette(rig);
+    QTest::keyClicks(palette.edit, QStringLiteral("pause"));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(activated.count() == 1);
+}
+
+
+TEST_CASE("KM-3 palette metadata and native forwarding key remain registered",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    auto *action = rig.window.findChild<QAction *>(QStringLiteral("pelican.edit.commandPalette"));
+    REQUIRE(action != nullptr);
+    CHECK(action->property("pelican.command.viewport").toInt() == 11);
+    CHECK(std::find(PelicanStudio::StudioShortcutKeys.begin(),
+                    PelicanStudio::StudioShortcutKeys.end(), Qt::Key_K) !=
+          PelicanStudio::StudioShortcutKeys.end());
+}
+
+TEST_CASE("KM-3 engine-origin dispatch runs before restoring native keyboard focus",
+          "[devstudio][automation_input][km3]") {
+    SceneShortcutRig rig;
+    rig.move();
+    int returned = 0;
+    rig.window.setCommandPaletteEngineFocus([&returned] { ++returned; });
+    rig.viewport.engine_input_active_ = true;
+    emit rig.viewport.engineInputActiveChanged(true);
+    emit rig.viewport.studioShortcutPressed(Qt::Key_K,
+                                            Qt::ControlModifier | Qt::ShiftModifier);
+    QApplication::processEvents();
+    PaletteWidgets palette = paletteWidgets(rig.window);
+    REQUIRE(palette.frame->isVisible());
+    const int before = rig.undo_calls;
+    QTest::keyClicks(palette.edit, QStringLiteral("undo scene"));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    rig.await([&] { return rig.undo_calls == before + 1; });
+    CHECK(returned == 1);
+
+    rig.viewport.engine_input_active_ = true;
+    emit rig.viewport.engineInputActiveChanged(true);
+    emit rig.viewport.studioShortcutPressed(Qt::Key_K,
+                                            Qt::ControlModifier | Qt::ShiftModifier);
+    QApplication::processEvents();
+    REQUIRE(palette.frame->isVisible());
+    escapePalette(palette);
+    CHECK(returned == 2);
+
+    rig.viewport.engine_input_active_ = false;
+    emit rig.viewport.engineInputActiveChanged(false);
+    palette = openPalette(rig);
+    escapePalette(palette);
+    CHECK(returned == 2);
+    palette = openPalette(rig);
+    rig.viewport.engine_input_active_ = true;
+    emit rig.viewport.engineInputActiveChanged(true);
+    QApplication::processEvents();
+    CHECK_FALSE(palette.frame->isVisible());
+    CHECK(returned == 2);
+    CHECK(rig.undo_calls == before + 1);
+    rig.viewport.engine_input_active_ = false;
+    emit rig.viewport.engineInputActiveChanged(false);
+}
+
+TEST_CASE("KM-3 without an engine the palette opens the Keyboard Shortcuts dialog",
+          "[devstudio][automation_input][km3]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    sendWindowKey(window, "Ctrl+Shift+K");
+    const PaletteWidgets palette = paletteWidgets(window);
+    REQUIRE(palette.frame->isVisible());
+    auto *keymap = paletteItem(palette.list, QStringLiteral("Keyboard Shortcuts..."));
+    REQUIRE(keymap != nullptr);
+    CHECK(keymap->flags() & Qt::ItemIsEnabled);
+    QTest::keyClicks(palette.edit, QStringLiteral("Keyboard Shortcuts..."));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    QDialog *dialog = nullptr;
+    for (QWidget *widget : QApplication::topLevelWidgets()) {
+        auto *candidate = qobject_cast<QDialog *>(widget);
+        if (candidate != nullptr && candidate->isVisible() &&
+            candidate->objectName() == QStringLiteral("pelican.keymap.dialog"))
+            dialog = candidate;
+    }
+    REQUIRE(dialog != nullptr);
+    CHECK_FALSE(palette.frame->isVisible());
+    CHECK(QApplication::activeWindow() == dialog);
+    closeKeymapDialog(dialog);
+}
+
+TEST_CASE("KM-3 opening and resizing the palette do not grow the main window minimum",
+          "[devstudio][automation_input][km3]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    const int before = window.minimumSizeHint().width();
+    sendWindowKey(window, "Ctrl+Shift+K");
+    PaletteWidgets palette = paletteWidgets(window);
+    CHECK(window.minimumSizeHint().width() == before);
+    palette.frame->hide();
+    window.resize(600, window.height());
+    QApplication::processEvents();
+    sendWindowKey(window, "Ctrl+Shift+K");
+    palette = paletteWidgets(window);
+    CHECK(palette.frame->width() <= window.width());
+    palette.frame->hide();
+}
+
+
+TEST_CASE("KM-3 menu expansion preserves identity paths visibility and check state",
+          "[devstudio][automation_input][km3]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QMenu *test_menu = window.menuBar()->addMenu(QStringLiteral("T&est"));
+    QMenu *nested = test_menu->addMenu(QStringLiteral("&Nested"));
+    auto *shared = new QAction(QStringLiteral("A && B &Run"), &window);
+    nested->addAction(shared);
+    QMenu *second = test_menu->addMenu(QStringLiteral("Second"));
+    second->addAction(shared);
+
+    auto *same_one = new QAction(QStringLiteral("Same title"), &window);
+    same_one->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+1")));
+    auto *same_two = new QAction(QStringLiteral("Same title"), &window);
+    same_two->setShortcut(QKeySequence(QStringLiteral("Ctrl+Alt+2")));
+    nested->addAction(same_one);
+    nested->addAction(same_two);
+
+    auto *disabled = new QAction(QStringLiteral("Disabled leaf"), &window);
+    disabled->setEnabled(false);
+    nested->addAction(disabled);
+    QSignalSpy disabled_spy(disabled, &QAction::triggered);
+    auto *invisible = new QAction(QStringLiteral("Invisible leaf"), &window);
+    invisible->setVisible(false);
+    nested->addAction(invisible);
+    QMenu *disabled_parent = test_menu->addMenu(QStringLiteral("Disabled parent"));
+    disabled_parent->setEnabled(false);
+    auto *child = new QAction(QStringLiteral("Enabled child"), &window);
+    disabled_parent->addAction(child);
+    QMenu *invisible_parent = test_menu->addMenu(QStringLiteral("Invisible parent"));
+    invisible_parent->menuAction()->setVisible(false);
+    invisible_parent->addAction(QStringLiteral("Hidden child"));
+    auto *checkable = new QAction(QStringLiteral("Checkable leaf"), &window);
+    checkable->setCheckable(true);
+    checkable->setChecked(true);
+    checkable->setShortcuts({QKeySequence(QStringLiteral("Ctrl+Alt+3")),
+                             QKeySequence(QStringLiteral("Ctrl+Alt+4"))});
+    nested->addAction(checkable);
+
+    sendWindowKey(window, "Ctrl+Shift+K");
+    PaletteWidgets palette = paletteWidgets(window);
+    const QString shared_title = QStringLiteral("Test › Nested › A & B Run");
+    CHECK(paletteTitles(palette.list).count(shared_title) == 1);
+    CHECK(paletteItem(palette.list, QStringLiteral("Test › Second › A & B Run")) == nullptr);
+    CHECK(paletteTitles(palette.list).count(QStringLiteral("Test › Nested › Same title")) == 2);
+    CHECK(paletteItem(palette.list, QStringLiteral("Test › Nested › Invisible leaf")) == nullptr);
+    CHECK(paletteItem(palette.list, QStringLiteral("Test › Invisible parent › Hidden child")) == nullptr);
+    auto *disabled_row = paletteItem(palette.list, QStringLiteral("Test › Nested › Disabled leaf"));
+    auto *child_row = paletteItem(palette.list, QStringLiteral("Test › Disabled parent › Enabled child"));
+    auto *checkable_row = paletteItem(palette.list, QStringLiteral("Test › Nested › Checkable leaf"));
+    REQUIRE(disabled_row != nullptr);
+    REQUIRE(child_row != nullptr);
+    REQUIRE(checkable_row != nullptr);
+    CHECK_FALSE(disabled_row->flags() & Qt::ItemIsEnabled);
+    CHECK_FALSE(child_row->flags() & Qt::ItemIsEnabled);
+    CHECK(checkable_row->checkState(0) == Qt::Checked);
+    CHECK(checkable_row->text(1) == shownKeys(checkable->shortcuts()));
+
+    QTest::mouseClick(palette.list->viewport(), Qt::LeftButton, {},
+                      palette.list->visualItemRect(disabled_row).center());
+    QApplication::processEvents();
+    CHECK(disabled_spy.count() == 0);
+    CHECK(palette.frame->isVisible());
+    QTest::keyClicks(palette.edit, QStringLiteral("Second"));
+    CHECK(paletteTitles(palette.list).contains(shared_title));
+    escapePalette(palette);
+
+    sendWindowKey(window, "Ctrl+Shift+K");
+    palette = paletteWidgets(window);
+    QTest::keyClicks(palette.edit, QStringLiteral("Checkable leaf"));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK_FALSE(checkable->isChecked());
+}
+
+TEST_CASE("KM-3 destroyed and newly disabled menu actions are refused",
+          "[devstudio][automation_input][km3]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QMenu *test_menu = window.menuBar()->addMenu(QStringLiteral("Lifetime"));
+    auto *destroyed = new QAction(QStringLiteral("Delete before dispatch"), &window);
+    test_menu->addAction(destroyed);
+    auto *disabled = new QAction(QStringLiteral("Disable before dispatch"), &window);
+    test_menu->addAction(disabled);
+    QSignalSpy destroyed_spy(destroyed, &QAction::triggered);
+    QSignalSpy disabled_spy(disabled, &QAction::triggered);
+
+    sendWindowKey(window, "Ctrl+Shift+K");
+    PaletteWidgets palette = paletteWidgets(window);
+    QTest::keyClicks(palette.edit, QStringLiteral("Delete before dispatch"));
+    delete destroyed;
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(destroyed_spy.count() == 0);
+    CHECK(window.statusBar()->currentMessage().contains(QStringLiteral("not available here")));
+
+    sendWindowKey(window, "Ctrl+Shift+K");
+    palette = paletteWidgets(window);
+    QTest::keyClicks(palette.edit, QStringLiteral("Disable before dispatch"));
+    disabled->setEnabled(false);
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    CHECK(disabled_spy.count() == 0);
+}
+
+TEST_CASE("KM-3 a fake menu dialog keeps focus after the palette closes",
+          "[devstudio][automation_input][km3]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    REQUIRE(QTest::qWaitForWindowActive(&window));
+    QMenu *test_menu = window.menuBar()->addMenu(QStringLiteral("Dialog"));
+    QAction *open_dialog = test_menu->addAction(QStringLiteral("Open fake dialog"));
+    QPointer<QDialog> dialog;
+    QObject::connect(open_dialog, &QAction::triggered, &window, [&window, &dialog] {
+        dialog = new QDialog(&window);
+        dialog->setObjectName(QStringLiteral("km3.fakeDialog"));
+        dialog->setModal(true);
+        dialog->setAttribute(Qt::WA_DeleteOnClose);
+        dialog->open();
+    });
+
+    sendWindowKey(window, "Ctrl+Shift+K");
+    const PaletteWidgets palette = paletteWidgets(window);
+    QTest::keyClicks(palette.edit, QStringLiteral("Open fake dialog"));
+    QTest::keyClick(palette.edit, Qt::Key_Return);
+    QApplication::processEvents();
+    REQUIRE(dialog != nullptr);
+    REQUIRE(dialog->isVisible());
+    CHECK_FALSE(palette.frame->isVisible());
+    CHECK(QApplication::activeWindow() == dialog);
+    dialog->close();
+    QApplication::processEvents();
 }

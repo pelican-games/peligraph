@@ -74,6 +74,7 @@ class RenderingSettingsWidget;
 class RayLayoutWidget;
 class RuntimeOutliner;
 class KeymapDialog;
+class CommandPalette;
 class LiveInputsDock;
 enum class AddObjectKind : std::uint8_t;
 struct SceneEditOutcome;
@@ -145,6 +146,15 @@ KeymapDefaults keymapFixedKeys();
 using KeymapFileWriter =
     std::function<bool(const QString &path, const QByteArray &bytes, QString *error)>;
 
+struct CommandPaletteOrigin {
+    enum class Source { QtWidget, NativeEngine };
+    Source source = Source::QtWidget;
+    QPointer<QWidget> focus;
+    QPointer<QWidget> window;
+    bool engine_input = false;
+    bool text_entry = false;
+};
+
 class MainWindow : public QMainWindow {
   public:
     MainWindow();
@@ -182,6 +192,7 @@ class MainWindow : public QMainWindow {
     // KM-2b: the atomic writer the keymap dialog uses.  A test replaces it to
     // make the final commit fail without depending on directory permissions.
     void setKeymapFileWriter(KeymapFileWriter writer);
+    void setCommandPaletteEngineFocus(std::function<void()> focus);
 
     // OSC-3c: restoring an older saved state must also keep the Live Inputs
     // tab in the bottom stack without making it current.
@@ -408,6 +419,18 @@ class MainWindow : public QMainWindow {
     bool clean_at_play_ = false;
     std::uint64_t shown_stop_serial_ = 0;
 
+    struct CommandPaletteTarget {
+        QString token;
+        QString id;
+        QString title;
+        QPointer<QAction> menu_action;
+        std::vector<std::vector<QPointer<QAction>>> menu_paths;
+    };
+    CommandPalette *command_palette_ = nullptr;
+    CommandPaletteOrigin palette_origin_;
+    std::function<void()> palette_engine_focus_;
+    std::vector<CommandPaletteTarget> palette_targets_;
+
     void createWorkspace();
     void createRenderHistory(QWidget *pass_editor);
     void renderHistoryChanged();
@@ -420,6 +443,9 @@ class MainWindow : public QMainWindow {
     void openPlanPassOnGraph(const QString &pass);
     void showProblems();
     void createMenus();
+    void openCommandPalette();
+    void runPaletteCommand(const QString &token);
+    void returnKeyboardToOrigin();
     bool sceneFocusGroup() const;
     // KM-2a: read `<application_config_directory>/keymap.json` once and apply
     // its per-command shortcuts over the ones the commands were made with.

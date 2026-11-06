@@ -5,6 +5,9 @@ add_library(pelican_studio_view STATIC
     docktitlebar.hpp
     keymapdialog.cpp
     keymapdialog.hpp
+    commandpalette.cpp
+    commandpalette.hpp
+    commandpalettematch.hpp
     frameplanwidget.cpp
     frameplanwidget.hpp
     frameplangraphics.cpp

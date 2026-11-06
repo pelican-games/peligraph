@@ -118,6 +118,7 @@ class EmbeddedViewport final : public QWidget {
     // can the engine begin a modal transform of its own, so only then does
     // Studio have to ask it whether one has begun.
     bool engineInputActive() const noexcept { return engine_input_active_; }
+    bool returnKeyboardToEngine();
     void setPickingNotice(const QString &message);
     void setGizmoNotice(const QString &message);
     // PM-3b. Asked before the footer's Stop Engine stops a running engine:

@@ -900,6 +900,10 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Core
   )
 
+  pelican_define_test(devstudio_command_palette_match_test QT QT_OFFSCREEN
+    Qt6::Core
+  )
+
   # Q-15: the Task Editor on real widgets over the real RPC transport, with
   # the test answering for the engine: it tells the other panels the digest
   # it read, and reads again (keeping its draft) when another panel commits.

@@ -74,6 +74,15 @@ inline void setCommandHelp(QObject &object, const char *id, CommandSurface surfa
     object.setProperty("pelican.command.viewport", viewport_order);
 }
 
+inline void setCommandGate(QObject &object, QAction &gate) {
+    object.setProperty("pelican.command.gate", QVariant::fromValue<QObject *>(&gate));
+}
+
+inline const QAction *commandGate(const QObject &object) {
+    return qobject_cast<const QAction *>(
+        object.property("pelican.command.gate").value<QObject *>());
+}
+
 enum class KeyMatch {
     StandardUndo,
     StandardRedo,

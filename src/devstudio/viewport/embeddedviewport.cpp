@@ -956,6 +956,12 @@ void EmbeddedViewport::focusEmbeddedWindow() {
     }
 }
 
+bool EmbeddedViewport::returnKeyboardToEngine() {
+    if (child_window_ == 0 || !NativeWindowHost::focus(child_window_)) return false;
+    setEngineInputActive(true);
+    return true;
+}
+
 void EmbeddedViewport::pollPointerFocus() {
     const GuiTraceSpan trace{"viewport_poll_5ms"};
     const bool pointer_button_down =

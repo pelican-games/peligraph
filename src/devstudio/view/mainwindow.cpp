@@ -1,5 +1,6 @@
 #include "graphattachmentwidget.hpp"
 #include "mainwindow.hpp"
+#include "commandpalette.hpp"
 #include "docktitlebar.hpp"
 #include "assetsdock.hpp"
 #include "materialsdock.hpp"
@@ -194,6 +195,72 @@ QList<QKeySequence> commandObjectKeys(const QObject *object) {
     if (const auto *shortcut = qobject_cast<const QShortcut *>(object))
         return shortcut->keys();
     return {};
+}
+
+bool paletteOriginValid(const CommandPaletteOrigin &origin) {
+    return origin.focus != nullptr && origin.window != nullptr &&
+           origin.focus->window() == origin.window;
+}
+
+bool shortcutSurfaceContains(const QList<QObject *> &objects, QWidget *focus) {
+    for (QObject *object : objects) {
+        const auto *widget = qobject_cast<QWidget *>(object);
+        if (widget != nullptr && (widget == focus || widget->isAncestorOf(focus))) return true;
+    }
+    return false;
+}
+
+bool commandAvailable(const QObject &object, const CommandPaletteOrigin &origin) {
+    if (!paletteOriginValid(origin)) return false;
+    if (const auto *action = qobject_cast<const QAction *>(&object)) {
+        if (!action->isEnabled()) return false;
+        if (action->shortcutContext() != Qt::WidgetWithChildrenShortcut) return true;
+        if (origin.text_entry || origin.engine_input || origin.focus == nullptr) return false;
+        return shortcutSurfaceContains(action->associatedObjects(), origin.focus);
+    }
+    if (const auto *shortcut = qobject_cast<const QShortcut *>(&object)) {
+        if (!shortcut->isEnabled() || origin.text_entry) return false;
+        if (shortcut->context() == Qt::WidgetWithChildrenShortcut) {
+            QWidget *surface = shortcut->parentWidget();
+            if (origin.engine_input || surface == nullptr ||
+                (surface != origin.focus && !surface->isAncestorOf(origin.focus)))
+                return false;
+        }
+        if (const QAction *gate = commandGate(object))
+            return gate->isEnabled() && gate->isVisible();
+        return true;
+    }
+    return false;
+}
+
+bool runCommandObject(QObject &object) {
+    if (auto *action = qobject_cast<QAction *>(&object)) {
+        if (!action->isEnabled()) return false;
+        action->trigger();
+        return true;
+    }
+    if (auto *shortcut = qobject_cast<QShortcut *>(&object)) {
+        if (!shortcut->isEnabled()) return false;
+        emit shortcut->activated();
+        return true;
+    }
+    return false;
+}
+
+QString paletteTextWithoutMnemonic(const QString &text) {
+    QString result;
+    result.reserve(text.size());
+    for (qsizetype index = 0; index < text.size(); ++index) {
+        if (text.at(index) != QLatin1Char('&')) {
+            result.push_back(text.at(index));
+            continue;
+        }
+        if (index + 1 < text.size() && text.at(index + 1) == QLatin1Char('&')) {
+            result.push_back(QLatin1Char('&'));
+            ++index;
+        }
+    }
+    return result;
 }
 
 QString keySequenceText(const QKeySequence &sequence) {
@@ -615,17 +682,8 @@ MainWindow::MainWindow(const QString &application_config_directory)
                    right->property("pelican.command.viewport").toInt();
         });
         for (QObject *object : forwarded) {
-            if (auto *action = qobject_cast<QAction *>(object)) {
-                if (action->isEnabled() && action->shortcuts().contains(sequence)) {
-                    action->trigger();
-                    return;
-                }
-            } else if (auto *shortcut = qobject_cast<QShortcut *>(object)) {
-                if (shortcut->isEnabled() && shortcut->keys().contains(sequence)) {
-                    emit shortcut->activated();
-                    return;
-                }
-            }
+            if (commandObjectKeys(object).contains(sequence) && runCommandObject(*object))
+                return;
         }
     });
     // Every command exists by now; remember the keys they were made with
@@ -645,6 +703,10 @@ void MainWindow::captureKeymapDefaults() {
 
 void MainWindow::setKeymapFileWriter(KeymapFileWriter writer) {
     keymap_file_writer_ = std::move(writer);
+}
+
+void MainWindow::setCommandPaletteEngineFocus(std::function<void()> focus) {
+    palette_engine_focus_ = std::move(focus);
 }
 
 bool MainWindow::writeKeymapFile(const QString &path, const QByteArray &bytes,
@@ -2502,6 +2564,16 @@ void MainWindow::createMenus() {
     connect(keymap_action, &QAction::triggered, this,
             [this] { showKeymapDialog(); });
 
+    QAction *palette_action = edit_menu->addAction(tr("Command &Palette..."));
+    palette_action->setObjectName(QStringLiteral("pelican.edit.commandPalette"));
+    palette_action->setShortcut(QKeySequence{Qt::CTRL | Qt::SHIFT | Qt::Key_K});
+    palette_action->setShortcutContext(Qt::WindowShortcut);
+    setCommandHelp(*palette_action, "edit.commandPalette", CommandSurface::Window,
+                   tr("Command Palette..."), 11);
+    connect(palette_action, &QAction::triggered, this, &MainWindow::openCommandPalette);
+    addAction(palette_action);
+    for (QDockWidget *dock : docks_) dock->addAction(palette_action);
+
     QMenu *view_menu = menuBar()->addMenu(tr("&View"));
     view_menu->setObjectName(QStringLiteral("pelican.viewMenu"));
     createThemeMenu(view_menu);
@@ -2673,6 +2745,230 @@ void MainWindow::createMenus() {
     auto *shortcuts = help_menu->addAction(tr("Keyboard Shortcuts…"));
     shortcuts->setObjectName(QStringLiteral("pelican.help.shortcuts"));
     connect(shortcuts, &QAction::triggered, this, &MainWindow::showKeyboardShortcuts);
+}
+
+void MainWindow::openCommandPalette() {
+    if (QApplication::activeModalWidget() ||
+        (command_palette_ != nullptr && command_palette_->isVisible()))
+        return;
+
+    palette_origin_ = {};
+    palette_origin_.engine_input = viewport_->engineInputActive();
+    palette_origin_.source = palette_origin_.engine_input
+                                 ? CommandPaletteOrigin::Source::NativeEngine
+                                 : CommandPaletteOrigin::Source::QtWidget;
+    palette_origin_.focus = palette_origin_.engine_input
+                                ? static_cast<QWidget *>(viewport_)
+                                : QApplication::focusWidget();
+    if (!palette_origin_.engine_input && palette_origin_.focus == nullptr)
+        palette_origin_.focus = focusWidget();
+    palette_origin_.window = palette_origin_.engine_input
+                                 ? static_cast<QWidget *>(this)
+                                 : (palette_origin_.focus != nullptr
+                                        ? palette_origin_.focus->window()
+                                        : static_cast<QWidget *>(this));
+    palette_origin_.text_entry = !palette_origin_.engine_input && textEntryHasFocus();
+    if (!paletteOriginValid(palette_origin_)) return;
+
+    std::vector<const KeymapObjectState *> commands;
+    for (const KeymapObjectState &state : keymap_objects_) {
+        if (state.id != QStringLiteral("edit.commandPalette")) commands.push_back(&state);
+    }
+    std::stable_sort(commands.begin(), commands.end(), [](const auto *left, const auto *right) {
+        const int left_surface = left->object->property("pelican.command.surface").toInt();
+        const int right_surface = right->object->property("pelican.command.surface").toInt();
+        if (left_surface != right_surface) return left_surface < right_surface;
+        return left->object->property("pelican.command.title").toString() <
+               right->object->property("pelican.command.title").toString();
+    });
+
+    palette_targets_.clear();
+    std::vector<CommandPaletteRow> rows;
+    QHash<QString, int> command_rows;
+    QHash<QAction *, int> menu_rows;
+    for (const KeymapObjectState *state : commands) {
+        CommandPaletteRow row;
+        row.title = state->object->property("pelican.command.title").toString();
+        row.matches = {row.title};
+        row.enabled = commandAvailable(*state->object, palette_origin_);
+        detail::CommandRow keys;
+        detail::appendUnique(keys.keys, commandObjectKeys(state->object));
+        row.keys = detail::shortcutText(keys);
+        const auto existing = command_rows.find(state->id);
+        if (existing != command_rows.end()) {
+            CommandPaletteRow &previous = rows[*existing];
+            previous.enabled = previous.enabled || row.enabled;
+            if (!row.keys.isEmpty() && !previous.keys.contains(row.keys)) {
+                if (!previous.keys.isEmpty()) previous.keys += QStringLiteral(" / ");
+                previous.keys += row.keys;
+            }
+            continue;
+        }
+        CommandPaletteTarget target;
+        target.token = QString::number(palette_targets_.size());
+        target.id = state->id;
+        target.title = row.title;
+        command_rows.insert(state->id, static_cast<int>(rows.size()));
+        palette_targets_.push_back(std::move(target));
+        row.token = palette_targets_.back().token;
+        rows.push_back(std::move(row));
+    }
+
+    const auto menuActionAvailable = [](const CommandPaletteTarget &target) {
+        QAction *action = target.menu_action;
+        if (action == nullptr || !action->isVisible() || !action->isEnabled()) return false;
+        for (const auto &path : target.menu_paths) {
+            bool available = true;
+            for (const QPointer<QAction> &ancestor : path) {
+                if (ancestor == nullptr || !ancestor->isVisible() || !ancestor->isEnabled()) {
+                    available = false;
+                    break;
+                }
+            }
+            if (available) return true;
+        }
+        return false;
+    };
+
+    std::function<void(QMenu *, QStringList, std::vector<QPointer<QAction>>)> walkMenu;
+    walkMenu = [&](QMenu *menu, QStringList parents,
+                   std::vector<QPointer<QAction>> ancestors) {
+        if (menu == nullptr || menu->menuAction() == nullptr ||
+            !menu->menuAction()->isVisible())
+            return;
+        QString title = paletteTextWithoutMnemonic(menu->title());
+        if (!title.isEmpty()) parents.push_back(title);
+        ancestors.push_back(menu->menuAction());
+        for (QAction *action : menu->actions()) {
+            if (action->isSeparator()) continue;
+            if (QMenu *submenu = action->menu()) {
+                walkMenu(submenu, parents, ancestors);
+                continue;
+            }
+            if (!action->isVisible() || action->text().isEmpty()) continue;
+            parents.push_back(paletteTextWithoutMnemonic(action->text()));
+            const QString path = parents.join(QStringLiteral(" › "));
+            parents.pop_back();
+            const QString id = action->property("pelican.command.id").toString();
+            if (id == QStringLiteral("edit.commandPalette")) continue;
+            const auto command = command_rows.find(id);
+            if (!id.isEmpty()) {
+                if (command == command_rows.end()) continue;
+                rows[*command].matches.push_back(path);
+                palette_targets_[static_cast<std::size_t>(*command)].menu_paths.push_back(ancestors);
+                continue;
+            }
+            const auto existing = menu_rows.find(action);
+            if (existing != menu_rows.end()) {
+                rows[*existing].matches.push_back(path);
+                auto &target = palette_targets_[static_cast<std::size_t>(*existing)];
+                target.menu_paths.push_back(ancestors);
+                rows[*existing].enabled = menuActionAvailable(target);
+                continue;
+            }
+            CommandPaletteTarget target;
+            target.token = QString::number(palette_targets_.size());
+            target.title = path;
+            target.menu_action = action;
+            target.menu_paths.push_back(ancestors);
+            palette_targets_.push_back(std::move(target));
+            menu_rows.insert(action, static_cast<int>(rows.size()));
+            CommandPaletteRow row;
+            row.token = palette_targets_.back().token;
+            row.title = path;
+            row.matches = {path};
+            row.enabled = menuActionAvailable(palette_targets_.back());
+            row.checkable = action->isCheckable();
+            row.checked = action->isChecked();
+            detail::CommandRow keys;
+            detail::appendUnique(keys.keys, action->shortcuts());
+            row.keys = detail::shortcutText(keys);
+            rows.push_back(std::move(row));
+        }
+    };
+    for (QAction *action : menuBar()->actions())
+        if (QMenu *menu = action->menu()) walkMenu(menu, {}, {});
+
+    if (palette_origin_.engine_input) activateWindow();
+    if (command_palette_ == nullptr) {
+        command_palette_ = new CommandPalette(*this);
+        command_palette_->chosen = [this](const QString &token) { runPaletteCommand(token); };
+        command_palette_->dismissed = [this] { returnKeyboardToOrigin(); };
+        connect(viewport_, &EmbeddedViewport::engineInputActiveChanged, command_palette_,
+                [this](bool active) {
+            if (active && command_palette_ != nullptr) command_palette_->hide();
+        });
+    }
+    command_palette_->present(std::move(rows), *palette_origin_.window);
+}
+
+void MainWindow::returnKeyboardToOrigin() {
+    if (!paletteOriginValid(palette_origin_)) return;
+    if (palette_origin_.engine_input) {
+        if (palette_engine_focus_) palette_engine_focus_();
+        else viewport_->returnKeyboardToEngine();
+        return;
+    }
+    palette_origin_.focus->setFocus(Qt::OtherFocusReason);
+}
+
+void MainWindow::runPaletteCommand(const QString &token) {
+    const auto found = std::find_if(palette_targets_.begin(), palette_targets_.end(),
+                                    [&token](const CommandPaletteTarget &target) {
+        return target.token == token;
+    });
+    if (found == palette_targets_.end()) return;
+    const CommandPaletteTarget target = *found;
+    QTimer::singleShot(0, this, [this, target] {
+        const QString unavailable = tr("%1 is not available here.").arg(target.title);
+        if (!paletteOriginValid(palette_origin_)) {
+            statusBar()->showMessage(unavailable, 5000);
+            return;
+        }
+        if (palette_origin_.source == CommandPaletteOrigin::Source::QtWidget)
+            palette_origin_.focus->setFocus(Qt::OtherFocusReason);
+        updateSceneShortcuts();
+
+        bool ran = false;
+        if (!target.id.isEmpty()) {
+            for (const KeymapObjectState &state : keymap_objects_) {
+                if (state.id != target.id || state.object == nullptr ||
+                    !commandAvailable(*state.object, palette_origin_))
+                    continue;
+                ran = runCommandObject(*state.object);
+                if (ran) break;
+            }
+        } else {
+            QAction *action = target.menu_action;
+            bool available = action != nullptr && action->isVisible() && action->isEnabled();
+            bool path_available = false;
+            for (const auto &path : target.menu_paths) {
+                bool available_path = true;
+                for (const QPointer<QAction> &ancestor : path) {
+                    if (ancestor == nullptr || !ancestor->isVisible() || !ancestor->isEnabled()) {
+                        available_path = false;
+                        break;
+                    }
+                }
+                if (available_path) {
+                    path_available = true;
+                    break;
+                }
+            }
+            available = available && path_available;
+            if (available) {
+                action->trigger();
+                ran = true;
+            }
+        }
+        if (!ran) {
+            statusBar()->showMessage(unavailable, 5000);
+            return;
+        }
+        if (QApplication::activeModalWidget() || QApplication::activePopupWidget()) return;
+        QWidget *active = QApplication::activeWindow();
+        if (active == nullptr || active == palette_origin_.window) returnKeyboardToOrigin();
+    });
 }
 
 bool MainWindow::sceneFocusGroup() const {

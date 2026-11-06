@@ -164,6 +164,7 @@ PlayControls::PlayControls(QToolBar &band, QWidget &window, QWidget &status_pare
         synchronize();
     });
     const auto keyed = [this](QShortcut *shortcut, QAction *action) {
+        setCommandGate(*shortcut, *action);
         connect(shortcut, &QShortcut::activated, this, [action] {
             if (textEntryHasFocus() || !action->isVisible() || !action->isEnabled()) return;
             action->trigger();

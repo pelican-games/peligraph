@@ -30,8 +30,8 @@ struct NativeViewportDiagnostics {
 // modifiers, so a multi-stroke sequence can never match here.  A command bound
 // to a key outside this set still works in Studio, just not while the engine
 // viewport holds the keyboard (KM-2a).
-inline constexpr std::array<int, 8> StudioShortcutKeys{
-    Qt::Key_Z, Qt::Key_Y, Qt::Key_D, Qt::Key_Delete,
+inline constexpr std::array<int, 9> StudioShortcutKeys{
+    Qt::Key_Z, Qt::Key_Y, Qt::Key_D, Qt::Key_Delete, Qt::Key_K,
     Qt::Key_N, Qt::Key_O, Qt::Key_S, Qt::Key_P};
 
 struct NativePrimaryPointerState {
