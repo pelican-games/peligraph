@@ -44,7 +44,8 @@ QString portSummary(const GraphCanvasPort &port);
 QString numberText(double value);
 // AB-1s, decision 4: a layer band that says a baked table is stale is
 // drawn orange; any other in the theme's dim text.
-QColor layerBandColor(const QString &text, const StudioTheme &theme);
+QColor layerBandColor(const QString &text, const StudioTheme &theme,
+                      bool refused = false);
 
 struct Value {
     QString text;
@@ -464,7 +465,8 @@ class Builder {
     // GL-2b, decision 2: one line under a root node's lower edge, what its
     // lower layers hold (`×3 copies · 2 barriers`). Read only; clicks go
     // through it.
-    void addLayerBand(QGraphicsItem &node, const QString &name, const QString &text);
+    void addLayerBand(QGraphicsItem &node, const QString &name, const QString &text,
+                      const QString &tooltip = {}, bool refused = false);
     [[nodiscard]] const QFontMetricsF &headingMetrics() const noexcept { return heading_metrics_; }
     [[nodiscard]] const QFontMetricsF &rowMetrics() const noexcept { return row_metrics_; }
 

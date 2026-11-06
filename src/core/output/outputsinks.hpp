@@ -26,7 +26,9 @@ DECLARE_MODULE(OutputSinks) {
     struct State {
         std::string name;
         std::string kind;
+        std::string node;
         std::string graph;
+        std::string source_graph;
         std::string target;
         std::string format = "raw";
         std::string when_full = "wait";
@@ -76,6 +78,8 @@ DECLARE_MODULE(OutputSinks) {
     // The true call returns after the worker acknowledges its paused loop.
     void pauseWorkerForTesting(bool paused);
     void resumeWorkerAfterForTesting(std::chrono::milliseconds delay);
+    void gateWorkerForTesting(bool hold, bool wait,
+                              std::chrono::milliseconds release_after);
     nlohmann::json takeCaptureTimingsForTesting();
 #endif
 };

@@ -108,6 +108,17 @@ nlohmann::json graphCanvasLayoutToJson(const GraphCanvasLayout &layout);
 [[nodiscard]] std::map<std::string, std::string, std::less<>> graphCanvasVoiceBands(
     const nlohmann::json &status);
 
+struct GraphCanvasOutputBand {
+    std::string text;
+    std::string tooltip;
+    bool refused = false;
+    bool operator==(const GraphCanvasOutputBand &) const = default;
+};
+using GraphCanvasOutputBands = std::map<std::string, GraphCanvasOutputBand, std::less<>>;
+
+[[nodiscard]] GraphCanvasOutputBands graphCanvasOutputBands(
+    const nlohmann::json &status, const std::string &displayed_root_graph);
+
 const NodeGraphKinds &graphCanvasKinds();
 
 // GS-1: every line on the scene -- edges with their arrows and element
@@ -165,6 +176,8 @@ class GraphCanvasScene final : public QGraphicsScene {
     // under it says it (`playing · 1.2 s`), by root node id
     // (graphCanvasVoiceBands); changed in place as the plan times are.
     void setVoiceBands(std::map<std::string, std::string, std::less<>> bands);
+    void setOutputBands(GraphCanvasOutputBands bands);
+    void clearRuntimeBands();
     // AB-1s, decision 4: a root node that reads a stale baked table (a
     // value.sample_table's asset, a render.image's initial.asset) says
     // `stale: <reason>` in its band, drawn orange; by root node id.
@@ -172,6 +185,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // GL-2b's band under a root node, with UX-6b's words after it: what the
     // plan says its passes do for nothing, then its GPU time; a voice's state.
     [[nodiscard]] QString layerBandText(const std::string &id) const;
+    [[nodiscard]] QString layerBandTooltip(const std::string &id, const QString &text) const;
 
     // The scene changed which scope is shown (a double-click descended into a
     // definition, or the breadcrumb came back out).
@@ -1199,6 +1213,7 @@ class GraphCanvasScene final : public QGraphicsScene {
     // UX-6b, decision 2.
     std::map<std::string, double, std::less<>> plan_node_times_;
     std::map<std::string, std::string, std::less<>> voice_bands_;
+    GraphCanvasOutputBands output_bands_;
     std::map<std::string, std::string, std::less<>> stale_bands_;
     // The bands on screen take their words again where they stand; a root
     // node that had none gets one.

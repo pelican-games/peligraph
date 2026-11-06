@@ -379,6 +379,8 @@ TEST_CASE("VO-1a output.file lowers to a report and a retained target", "[vo1a][
     CHECK(sink.enabled);
     CHECK(sink.graph == "main_render");
     CHECK(sink.target == "target");
+    CHECK(sink.node == "sink");
+    CHECK(sink.owner_graph == "root");
     CHECK(sink.source_node == "fill");
     CHECK(sink.source_port == "color");
     CHECK(sink.error_code.empty());
@@ -827,14 +829,18 @@ TEST_CASE("VO-1b one problem per refused or limit-stopped sink, keyed by graph a
     OutputSinks::State refused;
     refused.name = "shot";
     refused.kind = "file";
-    refused.graph = "main_render";
+    refused.node = "sink_a";
+    refused.graph = "root";
+    refused.source_graph = "main_render";
     refused.state = "refused";
     refused.last_error = "output.write_failed@1: /tmp/shot_000000.png.partial: file exists";
 
     OutputSinks::State limited;
     limited.name = "shot";
     limited.kind = "file";
-    limited.graph = "other_render";
+    limited.node = "sink_b";
+    limited.graph = "root";
+    limited.source_graph = "other_render";
     limited.state = "finished";
     limited.stop_reason = "max_frames";
     limited.stop_value = 7;
@@ -845,8 +851,8 @@ TEST_CASE("VO-1b one problem per refused or limit-stopped sink, keyed by graph a
     CHECK(problems.at(0).at("code") == "output.write_failed@1");
     CHECK(problems.at(0).at("severity") == "error");
     CHECK(problems.at(0).at("source") == "runtime");
-    CHECK(problems.at(0).at("scope") == "main_render");
-    CHECK(problems.at(0).at("node") == "shot");
+    CHECK(problems.at(0).at("scope") == "root");
+    CHECK(problems.at(0).at("node") == "sink_a");
     CHECK(problems.at(0).at("fields").at("graph") == "main_render");
     CHECK(problems.at(0).at("fields").at("sink") == "shot");
     CHECK(problems.at(1).at("code") == "output.limit_reached@1");
@@ -857,8 +863,7 @@ TEST_CASE("VO-1b one problem per refused or limit-stopped sink, keyed by graph a
     CHECK(problems.at(1).at("message").get<std::string>().find("max_frames") !=
           std::string::npos);
 
-    // The two same-named sinks are in different graphs, so they are two
-    // problems, and their ids differ.
+    // The two same-named sinks have different owner nodes, so their ids differ.
     Pelican::ProblemList list;
     list.replace("output", problems);
     const auto stored = list.problemsOf("output");

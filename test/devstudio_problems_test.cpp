@@ -779,3 +779,35 @@ TEST_CASE("RC-6b1 Freeze loop info appears in Problems without error or warning 
     rig.dock.engineUnavailable();
     CHECK(rig.dock.session().rows().empty());
 }
+
+TEST_CASE("VO-6 output problems open their owning graph node",
+          "[devstudio][problems][vo6]") {
+    application();
+    Rig rig;
+    rig.dock.engineAvailable();
+    rig.dock.observeStatus(statusAt(1, 2));
+    const auto outputProblem = [](const char *id, const char *code,
+                                  const char *message) {
+        return Json{{"id", id}, {"severity", "error"}, {"source", "runtime"},
+            {"code", code}, {"message", message}, {"scope", "root"},
+            {"node", "output_owner"},
+            {"fields", {{"graph", "root"}, {"sink", "authored filename"}}}};
+    };
+    rig.answer(1, Json::array({
+        outputProblem("0000000000000f01", "output.write_failed@1", "disk full"),
+        outputProblem("0000000000000f02", "output.limit_reached@1", "max_frames reached")}));
+    REQUIRE(rig.tree()->topLevelItemCount() == 2);
+    for (const char *id : {"0000000000000f01", "0000000000000f02"}) {
+        auto *item = rig.rowFor(id);
+        REQUIRE(item != nullptr);
+        CHECK(item->text(4) == QStringLiteral("Graph: output_owner"));
+        rig.click(item);
+        REQUIRE(rig.opened.size() == 1);
+        CHECK(rig.opened.back().place == ProblemRow::Place::GraphNode);
+        CHECK(rig.opened.back().node == "output_owner");
+        rig.opened.clear();
+    }
+    rig.dock.textFilter()->setText(QStringLiteral("limit_reached"));
+    CHECK(rig.rowFor("0000000000000f01")->isHidden());
+    CHECK_FALSE(rig.rowFor("0000000000000f02")->isHidden());
+}

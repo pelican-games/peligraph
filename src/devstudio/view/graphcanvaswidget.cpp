@@ -2087,6 +2087,111 @@ namespace {
 constexpr std::string_view kVoiceBandDot = " \xC2\xB7 ";
 } // namespace
 
+namespace {
+
+bool outputBandNumber(const nlohmann::json &row, const char *key,
+                      std::uint64_t &value) {
+    const auto found = row.find(key);
+    if (found == row.end() || !found->is_number_integer() ||
+        (found->is_number_unsigned() == false && found->get<std::int64_t>() < 0))
+        return false;
+    value = found->get<std::uint64_t>();
+    return true;
+}
+
+std::string outputBandCount(std::string_view label, std::uint64_t value) {
+    return std::string{label} + " " + std::to_string(value);
+}
+
+} // namespace
+
+GraphCanvasOutputBands graphCanvasOutputBands(
+    const nlohmann::json &status, const std::string &displayed_root_graph) {
+    GraphCanvasOutputBands bands;
+    if (!status.is_object() || displayed_root_graph.empty()) return bands;
+    const auto output = status.find("output");
+    if (output == status.end() || !output->is_object()) return bands;
+    const auto active = output->find("active");
+    const auto sinks = output->find("sinks");
+    if (active == output->end() || !active->is_boolean() ||
+        sinks == output->end() || !sinks->is_array())
+        return bands;
+    std::set<std::string, std::less<>> duplicates;
+    for (const auto &row : *sinks) {
+        if (!row.is_object()) continue;
+        const auto node = row.find("node");
+        const auto graph = row.find("graph");
+        if (node == row.end() || !node->is_string() || node->get<std::string>().empty() ||
+            graph == row.end() || !graph->is_string() ||
+            graph->get<std::string>() != displayed_root_graph)
+            continue;
+        const auto id = node->get<std::string>();
+        if (bands.contains(id) || duplicates.contains(id)) {
+            bands.erase(id);
+            duplicates.insert(id);
+            continue;
+        }
+        const auto state_value = row.find("state");
+        if (state_value == row.end() || !state_value->is_string()) continue;
+        std::string state = state_value->get<std::string>();
+        std::uint64_t written = 0, dropped = 0, discarded = 0, depth = 0, stop_value = 0;
+        if (!outputBandNumber(row, "frames_written", written) ||
+            !outputBandNumber(row, "frames_dropped", dropped) ||
+            !outputBandNumber(row, "frames_discarded", discarded) ||
+            !outputBandNumber(row, "queue_depth", depth) ||
+            !outputBandNumber(row, "stop_value", stop_value))
+            continue;
+        const auto wait = row.find("render_wait_ms");
+        if (wait == row.end() || !wait->is_number()) continue;
+        const double wait_ms = wait->get<double>();
+        if (!std::isfinite(wait_ms)) continue;
+        std::map<std::string, std::string, std::less<>> fields;
+        for (const char *key : {"name", "kind", "format", "when_full",
+                                "stop_reason", "last_error"}) {
+            const auto value = row.find(key);
+            if (value == row.end() || !value->is_string()) {
+                fields.clear();
+                break;
+            }
+            fields.emplace(key, value->get<std::string>());
+        }
+        if (fields.empty()) continue;
+        const bool enabled = active->get<bool>();
+        if (!enabled && state == "running") state = "inactive";
+        std::string text;
+        if (state == "running") {
+            text = "running" + outputBandCount(" ·", written) + " written";
+            if (dropped != 0) text += outputBandCount(" ·", dropped) + " dropped";
+            if (discarded != 0) text += outputBandCount(" ·", discarded) + " discarded";
+        } else if (state == "inactive") {
+            text = "idle";
+            if (written != 0) text += outputBandCount(" ·", written) + " written";
+        } else if (state == "finished") {
+            text = "finished" + outputBandCount(" ·", written) + " written";
+            if (fields["stop_reason"] != "none") text += " · " + fields["stop_reason"];
+        } else if (state == "refused") {
+            text = "refused";
+        } else {
+            continue;
+        }
+        const std::string tooltip =
+            "name: " + fields["name"] + "\nkind: " + fields["kind"] +
+            "\nformat: " + fields["format"] + "\nwhen_full: " + fields["when_full"] +
+            "\nstate: " + state_value->get<std::string>() +
+            "\nstop reason: " + fields["stop_reason"] +
+            "\nstop value: " + std::to_string(stop_value) +
+            "\nwritten (completed writes): " + std::to_string(written) +
+            "\ndropped: " + std::to_string(dropped) +
+            "\ndiscarded: " + std::to_string(discarded) +
+            "\nqueue depth: " + std::to_string(depth) +
+            "\nrender wait (ms): " + QString::number(wait_ms, 'g', 6).toStdString() +
+            "\nlast error: " + (fields["last_error"].empty() ? "none" : fields["last_error"]);
+        bands.emplace(id, GraphCanvasOutputBand{std::move(text), tooltip,
+                                               state == "refused"});
+    }
+    return bands;
+}
+
 std::map<std::string, std::string, std::less<>> graphCanvasVoiceBands(const nlohmann::json &status) {
     std::map<std::string, std::string, std::less<>> bands;
     if (!status.is_object()) return bands;
@@ -2144,10 +2249,18 @@ QString GraphCanvasScene::layerBandText(const std::string &id) const {
     // UX-9, decision 4: an audio.playback's voice.
     if (const auto voice = voice_bands_.find(id); voice != voice_bands_.end())
         parts.push_back(qtext(voice->second));
+    if (const auto output = output_bands_.find(id); output != output_bands_.end())
+        parts.push_back(qtext(output->second.text));
     // AB-1s, decision 4: the baked table it reads is stale.
     if (const auto stale = stale_bands_.find(id); stale != stale_bands_.end())
         parts.push_back(qtext(stale->second));
     return parts.join(QStringLiteral(" \u00b7 "));
+}
+
+QString GraphCanvasScene::layerBandTooltip(const std::string &id, const QString &text) const {
+    if (const auto output = output_bands_.find(id); output != output_bands_.end())
+        return qtext(output->second.tooltip);
+    return QObject::tr("%1 below the graph: select the node for its Layers").arg(text);
 }
 
 void GraphCanvasScene::setPlanNodeTimes(std::map<std::string, double, std::less<>> times) {
@@ -2159,6 +2272,19 @@ void GraphCanvasScene::setPlanNodeTimes(std::map<std::string, double, std::less<
 void GraphCanvasScene::setVoiceBands(std::map<std::string, std::string, std::less<>> bands) {
     if (bands == voice_bands_) return;
     voice_bands_ = std::move(bands);
+    refreshLayerBands();
+}
+
+void GraphCanvasScene::setOutputBands(GraphCanvasOutputBands bands) {
+    if (bands == output_bands_) return;
+    output_bands_ = std::move(bands);
+    refreshLayerBands();
+}
+
+void GraphCanvasScene::clearRuntimeBands() {
+    if (voice_bands_.empty() && output_bands_.empty()) return;
+    voice_bands_.clear();
+    output_bands_.clear();
     refreshLayerBands();
 }
 
@@ -2189,21 +2315,24 @@ void GraphCanvasScene::refreshLayerBands() {
     }
     for (QGraphicsItem *item : roots) {
         const QString name = item->data(NodeGraphNameRole).toString();
-        const QString text = layerBandText(name.toStdString());
+        const std::string id = name.toStdString();
+        const QString text = layerBandText(id);
+        const auto output = output_bands_.find(id);
+        const bool refused = output != output_bands_.end() && output->second.refused;
+        const QString tooltip = layerBandTooltip(id, text);
+        const QBrush brush = GraphCanvasDrawing::layerBandColor(text, currentStudioTheme(), refused);
         if (const auto found = bands.find(name); found != bands.end()) {
-            if (found->second->text() == text) continue;
             // A band whose text went empty goes, as a full redraw would leave none.
             if (text.isEmpty()) {
                 delete found->second;
                 continue;
             }
-            found->second->setText(text);
-            found->second->setBrush(GraphCanvasDrawing::layerBandColor(text, currentStudioTheme()));
-            found->second->setToolTip(
-                QObject::tr("%1 below the graph: select the node for its Layers").arg(text));
+            if (found->second->text() != text) found->second->setText(text);
+            if (found->second->brush() != brush) found->second->setBrush(brush);
+            if (found->second->toolTip() != tooltip) found->second->setToolTip(tooltip);
         } else if (!text.isEmpty()) {
             GraphCanvasDrawing::Builder drawing{*this, item->data(GraphCanvasScopeRole).toString()};
-            drawing.addLayerBand(*item, name, text);
+            drawing.addLayerBand(*item, name, text, tooltip, refused);
         }
     }
     // GS-3b1: the bands on screen are the model's now; what followDocument
@@ -3192,8 +3321,12 @@ void GraphCanvasScene::repopulate() {
         for (QGraphicsItem *item : roots) {
             const auto id = item->data(NodeGraphNameRole).toString().toStdString();
             if (model_->deactivatedNode(id) != nullptr) item->setOpacity(0.45);
-            if (const auto band = layerBandText(id); !band.isEmpty())
-                drawing.addLayerBand(*item, qtext(id), band);
+            if (const auto band = layerBandText(id); !band.isEmpty()) {
+                const auto output = output_bands_.find(id);
+                const bool refused = output != output_bands_.end() && output->second.refused;
+                const QString tooltip = layerBandTooltip(id, band);
+                drawing.addLayerBand(*item, qtext(id), band, tooltip, refused);
+            }
         }
     }
     // LC-1s, decision 2: inside a loop's body (descended into), a pass whose
@@ -9323,6 +9456,11 @@ struct GraphCanvasWidget::Impl {
     std::string graph_filter_preset_name;
     bool graph_filter_menu_dirty = false;
     bool graph_filter_engine_ready = false;
+    bool runtime_status_ready = true;
+    void resetRuntimeStatus(bool ready) {
+        runtime_status_ready = ready;
+        scene->clearRuntimeBands();
+    }
     struct GraphFilterTransport {
         std::filesystem::path root;
         GraphFiltersEdit::Request request;
@@ -10927,6 +11065,7 @@ struct GraphCanvasWidget::Impl {
                     document_reread = false;
                 }
                 if (!available) restart_asked = false;
+                resetRuntimeStatus(available);
                 graph_filter_engine_ready = available;
                 if (available) ++graph_filter_engine_generation;
                 const auto session = graph_filter_sessions.find(project_root);
@@ -15121,9 +15260,10 @@ void GraphCanvasWidget::setPlanNodeTimes(std::map<std::string, double, std::less
 }
 
 void GraphCanvasWidget::observeStatus(const nlohmann::json &status) {
-    // A reply that was not JSON (null) or carries no audio says nothing new.
-    if (!status.is_object() || !status.contains("audio")) return;
-    impl_->scene->setVoiceBands(graphCanvasVoiceBands(status));
+    if (!status.is_object() || !impl_->runtime_status_ready) return;
+    if (status.contains("audio")) impl_->scene->setVoiceBands(graphCanvasVoiceBands(status));
+    if (status.contains("output"))
+        impl_->scene->setOutputBands(graphCanvasOutputBands(status, "root"));
 }
 
 void GraphCanvasWidget::refresh() {
@@ -15485,6 +15625,7 @@ void GraphCanvasWidget::setConnected(bool connected) {
     if (impl_->pending_reveal_failed) impl_->pending_reveal.clear();
     impl_->pending_reveal_failed = {};
     impl_->document_reread = false;
+    impl_->resetRuntimeStatus(connected);
     impl_->model.setConnected(connected);
     impl_->dispatch();
 }
@@ -15509,11 +15650,13 @@ void GraphCanvasWidget::importSounds(const std::vector<std::filesystem::path> &f
 }
 
 void GraphCanvasWidget::projectEngineChanging() {
+    impl_->resetRuntimeStatus(false);
     impl_->graph_filter_engine_ready = false;
     impl_->clearPresetGraphFilters();
 }
 
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
+    if (impl_->project_root != project_root) impl_->resetRuntimeStatus(false);
     // REV-1: the old project's hand on a live band doesn't survive the switch,
     // or its next move would send a value to the new engine.
     impl_->scene->endLiveKnobFocusLost();

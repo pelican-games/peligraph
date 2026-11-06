@@ -143,7 +143,8 @@ QString numberText(double value) {
     return QString::number(value, 'g', 6);
 }
 
-QColor layerBandColor(const QString &text, const StudioTheme &theme) {
+QColor layerBandColor(const QString &text, const StudioTheme &theme, bool refused) {
+    if (refused) return QColor{QStringLiteral("#c0392b")};
     return text.contains(QStringLiteral("stale: ")) ? QColor{QStringLiteral("#e67e22")}
                                                     : theme.canvas.dim_text;
 }
@@ -1948,15 +1949,18 @@ void Builder::addFoldedButton(const QString &name, const QString &text, const QP
     label->setData(NodeGraphNameRole, name);
 }
 
-void Builder::addLayerBand(QGraphicsItem &node, const QString &name, const QString &text) {
+void Builder::addLayerBand(QGraphicsItem &node, const QString &name, const QString &text,
+                           const QString &tooltip, bool refused) {
     auto *line = new QGraphicsSimpleTextItem(text, &node);
     line->setFont(detail_font_);
-    line->setBrush(layerBandColor(text, theme_));
+    line->setBrush(layerBandColor(text, theme_, refused));
     const QRectF frame = node.boundingRect();
     line->setPos(frame.left() + 8.0, frame.bottom() + 3.0);
     line->setZValue(1.0);
     line->setAcceptedMouseButtons(Qt::NoButton);
-    line->setToolTip(QObject::tr("%1 below the graph: select the node for its Layers").arg(text));
+    line->setToolTip(tooltip.isEmpty()
+        ? QObject::tr("%1 below the graph: select the node for its Layers").arg(text)
+        : tooltip);
     line->setData(NodeGraphItemKindRole, QString::fromLatin1(GraphCanvasLayerBandItem));
     tag(line);
     line->setData(NodeGraphNameRole, name);

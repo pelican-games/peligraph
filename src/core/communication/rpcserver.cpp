@@ -1705,6 +1705,16 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         return submits;
     });
 #endif
+    server.setHandler("test_output_worker_gate", [](const nlohmann::json &params) {
+        const auto hold = params.at("hold").get<bool>();
+        const auto wait = params.value("wait", false);
+        auto *sinks = FastModuleContainer::tryGet<OutputSinks>();
+        if (sinks == nullptr) throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError,
+            "output sinks are unavailable");
+        sinks->gateWorkerForTesting(hold, wait, std::chrono::milliseconds{
+            params.value("release_after_ms", std::int64_t{0})});
+        return nlohmann::json{{"hold", hold}};
+    });
     server.setHandler("test_output_capture_timings", [](const nlohmann::json &params) {
         requireObjectParams(params, "test_output_capture_timings");
         auto *sinks = FastModuleContainer::tryGet<OutputSinks>();

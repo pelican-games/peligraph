@@ -33300,3 +33300,271 @@ TEST_CASE("GF-1e Reload re-reads a preset's filters with no active filter, open 
     CHECK(tree->currentItem()->text(0) == QStringLiteral("Label mine"));
     for (const char *name : {"addChild", "removeFilter"}) CHECK(gf1eField(dialog, name)->isEnabled());
 }
+
+// VO-6: output-file state joins the other runtime state without a redraw.
+TEST_CASE("VO-6 output bands format, update in place, and follow the engine lifetime",
+          "[devstudio][graph-canvas][scene][vo6]") {
+    (void)application();
+    using PelicanStudio::graphCanvasOutputBands;
+    const auto row = [](std::string state = "running") {
+        return Json{{"name", "frames/shot"}, {"kind", "file"},
+                    {"node", "clock"}, {"graph", "root"},
+                    {"format", "png"}, {"when_full", "drop"},
+                    {"state", std::move(state)}, {"stop_reason", "none"},
+                    {"stop_value", 0}, {"frames_written", 1204},
+                    {"frames_dropped", 3}, {"frames_discarded", 2},
+                    {"queue_depth", 1}, {"render_wait_ms", 0.25},
+                    {"last_error", "disk full"}};
+    };
+    const auto status = [](Json sinks, bool active = true) {
+        return Json{{"output", {{"active", active}, {"sinks", std::move(sinks)}}}};
+    };
+    const std::string dot = " \xC2\xB7 ";
+
+    SECTION("all states, counters and malformed rows") {
+        auto running = graphCanvasOutputBands(status(Json::array({row()})) , "root");
+        REQUIRE(running.contains("clock"));
+        CHECK(running.at("clock").text == "running" + dot + "1204 written" + dot +
+              "3 dropped" + dot + "2 discarded");
+        CHECK(running.at("clock").tooltip.find("disk full") != std::string::npos);
+        CHECK(running.at("clock").tooltip.find("completed writes") != std::string::npos);
+        CHECK_FALSE(running.at("clock").refused);
+        auto zero = row();
+        zero["frames_written"] = 0;
+        zero["frames_dropped"] = 0;
+        zero["frames_discarded"] = 0;
+        CHECK(graphCanvasOutputBands(status(Json::array({zero})), "root").at("clock").text ==
+              "running" + dot + "0 written");
+        CHECK(graphCanvasOutputBands(status(Json::array({zero}), false), "root").at("clock").text ==
+              "idle");
+        zero["frames_written"] = 1204;
+        CHECK(graphCanvasOutputBands(status(Json::array({zero}), false), "root").at("clock").text ==
+              "idle" + dot + "1204 written");
+        zero["state"] = "inactive";
+        CHECK(graphCanvasOutputBands(status(Json::array({zero})), "root").at("clock").text ==
+              "idle" + dot + "1204 written");
+        auto finished = row("finished");
+        CHECK(graphCanvasOutputBands(status(Json::array({finished})), "root").at("clock").text ==
+              "finished" + dot + "1204 written");
+        finished["stop_reason"] = "max_frames";
+        finished["stop_value"] = 1204;
+        CHECK(graphCanvasOutputBands(status(Json::array({finished})), "root").at("clock").text ==
+              "finished" + dot + "1204 written" + dot + "max_frames");
+        finished["stop_reason"] = "max_bytes";
+        CHECK(graphCanvasOutputBands(status(Json::array({finished})), "root").at("clock").text ==
+              "finished" + dot + "1204 written" + dot + "max_bytes");
+        finished["stop_reason"] = "none";
+        CHECK(graphCanvasOutputBands(status(Json::array({finished})), "root").at("clock").text ==
+              "finished" + dot + "1204 written");
+        const auto refused = graphCanvasOutputBands(status(Json::array({row("refused")})), "root");
+        CHECK(refused.at("clock").text == "refused");
+        CHECK(refused.at("clock").refused);
+        auto spout = row();
+        spout["kind"] = "spout";
+        spout["format"] = "bgra";
+        spout["frames_written"] = 7;
+        spout["frames_dropped"] = 0;
+        spout["frames_discarded"] = 0;
+        spout["registered"] = true;
+        spout["sender_name"] = "shot";
+        spout["width"] = 1920;
+        spout["height"] = 1080;
+        const auto spout_band = graphCanvasOutputBands(status(Json::array({spout})), "root");
+        REQUIRE(spout_band.contains("clock"));
+        CHECK(spout_band.at("clock").text == "running" + dot + "7 written");
+        CHECK(spout_band.at("clock").tooltip.find("kind: spout") != std::string::npos);
+
+        auto other = row();
+        other["graph"] = "definition";
+        CHECK(graphCanvasOutputBands(status(Json::array({other})), "root").empty());
+        CHECK(graphCanvasOutputBands(status(Json::array({other})), "definition").contains("clock"));
+        CHECK(graphCanvasOutputBands(status(Json::array({row(), row()})), "root").empty());
+        auto missing = row();
+        missing.erase("format");
+        CHECK(graphCanvasOutputBands(status(Json::array({missing})), "root").empty());
+        auto wrong_type = row();
+        wrong_type["frames_written"] = "1204";
+        CHECK(graphCanvasOutputBands(status(Json::array({wrong_type})), "root").empty());
+        CHECK(graphCanvasOutputBands(Json{}, "root").empty());
+        CHECK(graphCanvasOutputBands(Json::array(), "root").empty());
+        CHECK(graphCanvasOutputBands(Json{{"output", 4}}, "root").empty());
+        CHECK(graphCanvasOutputBands(Json{{"output", {{"active", true}, {"sinks", 4}}}}, "root").empty());
+        CHECK(graphCanvasOutputBands(status(Json::array({row()})), "").empty());
+    }
+
+    SECTION("one item survives text, tooltip and severity changes") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        answer(model, readFixture("graph_node_visuals"), visualCatalog());
+        scene.setModel(&model);
+        const auto band = [&] {
+            return dynamic_cast<QGraphicsSimpleTextItem *>(
+                kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem, QStringLiteral("clock")));
+        };
+        REQUIRE(band() == nullptr);
+        const auto *node = nodeItem(scene, QStringLiteral("clock"));
+        REQUIRE(node != nullptr);
+        scene.selectNode("clock");
+        const auto rebuilds = scene.routingIndexRebuilds();
+        click(scene, node->sceneBoundingRect().center());
+        scene.setOutputBands(graphCanvasOutputBands(status(Json::array({row()})), "root"));
+        auto *first = band();
+        REQUIRE(first != nullptr);
+        CHECK(first->text() == QString::fromUtf8(("running" + dot + "1204 written" + dot +
+                                                 "3 dropped" + dot + "2 discarded").c_str()));
+        CHECK(first->toolTip().contains(QStringLiteral("disk full")));
+        CHECK(scene.routingIndexRebuilds() == rebuilds);
+        CHECK(nodeItem(scene, QStringLiteral("clock")) == node);
+        CHECK(scene.selectedItems().contains(node));
+
+        auto changed = row();
+        changed["frames_written"] = 1205;
+        scene.setOutputBands(graphCanvasOutputBands(status(Json::array({changed})), "root"));
+        CHECK(band() == first);
+        CHECK(first->text().contains(QStringLiteral("1205 written")));
+        CHECK(scene.routingIndexRebuilds() == rebuilds);
+        auto tooltip_only = changed;
+        tooltip_only["last_error"] = "encoder delayed";
+        scene.setOutputBands(graphCanvasOutputBands(status(Json::array({tooltip_only})), "root"));
+        CHECK(band() == first);
+        CHECK(first->toolTip().contains(QStringLiteral("encoder delayed")));
+        const auto ordinary_brush = first->brush();
+        const auto original_position = node->pos();
+        const auto drag_to = node->sceneBoundingRect().center() + QPointF{32.0, 24.0};
+        QGraphicsSceneMouseEvent move{QEvent::GraphicsSceneMouseMove};
+        move.setScenePos(drag_to);
+        move.setButtons(Qt::LeftButton);
+        QApplication::sendEvent(&scene, &move);
+        CHECK(node->pos() != original_position);
+        scene.setOutputBands(graphCanvasOutputBands(status(Json::array({row("refused")})), "root"));
+        CHECK(band() == first);
+        CHECK(first->brush() != ordinary_brush);
+        CHECK(scene.selectedItems().contains(node));
+        scene.setVoiceBands({{"clock", "playing"}});
+        CHECK(first->text() == QString::fromUtf8(("playing" + dot + "refused").c_str()));
+        scene.setVoiceBands({});
+        scene.setOutputBands({});
+        CHECK(band() == nullptr);
+        CHECK(nodeItem(scene, QStringLiteral("clock")) == node);
+        CHECK(scene.routingIndexRebuilds() == rebuilds);
+        QGraphicsSceneMouseEvent release{QEvent::GraphicsSceneMouseRelease};
+        release.setScenePos(drag_to);
+        release.setButton(Qt::LeftButton);
+        QApplication::sendEvent(&scene, &release);
+        QCoreApplication::processEvents();
+        CHECK(nodeItem(scene, QStringLiteral("clock")) == node);
+        CHECK(scene.selectedItems().contains(node));
+        CHECK(scene.routingIndexRebuilds() == rebuilds);
+    }
+
+    SECTION("nested scopes and filters re-evaluate the retained status") {
+        GraphCanvasModel model;
+        GraphCanvasScene scene;
+        model.setConnected(true);
+        answer(model, readFixture("graph_node_visuals"), visualCatalog());
+        scene.setModel(&model);
+        scene.setOutputBands(graphCanvasOutputBands(status(Json::array({row()})), "root"));
+        REQUIRE(kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem,
+                         QStringLiteral("clock")) != nullptr);
+        REQUIRE(model.enterInstance("helmet_pulse"));
+        scene.repopulate();
+        CHECK(kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem,
+                       QStringLiteral("clock")) == nullptr);
+        model.selectScope({});
+        scene.repopulate();
+        CHECK(kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem,
+                       QStringLiteral("clock")) != nullptr);
+        REQUIRE(model.setDomainShown("value", false));
+        scene.repopulate();
+        CHECK(nodeItem(scene, QStringLiteral("clock")) == nullptr);
+        CHECK(kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem,
+                       QStringLiteral("clock")) == nullptr);
+        REQUIRE(model.setDomainShown("value", true));
+        scene.repopulate();
+        REQUIRE(nodeItem(scene, QStringLiteral("clock")) != nullptr);
+        CHECK(kindItem(scene, PelicanStudio::GraphCanvasLayerBandItem,
+                       QStringLiteral("clock")) != nullptr);
+    }
+
+    SECTION("observation keys are independent and engine changes reject late status") {
+        RecordedCapability transport;
+        PelicanStudio::GraphCanvasWidget widget{transport.capability()};
+        widget.resize(900, 600);
+        widget.show();
+        QCoreApplication::processEvents();
+        const auto deliver = [&](const QString &method, const Json &reply) {
+            const qint64 id = transport.idOf(method);
+            REQUIRE(id != 0);
+            REQUIRE(transport.deliver);
+            transport.deliver(id, QByteArray::fromStdString(reply.dump()));
+            QCoreApplication::processEvents();
+        };
+        deliver(QStringLiteral("get_graph_instances"), context(readFixture("graph_node_visuals")));
+        deliver(QStringLiteral("get_graph_catalog"), visualCatalog());
+        const auto band = [&] {
+            return dynamic_cast<QGraphicsSimpleTextItem *>(kindItem(
+                widget.scene(), PelicanStudio::GraphCanvasLayerBandItem, QStringLiteral("clock")));
+        };
+        auto *show_values = widget.findChild<QCheckBox *>(
+            QStringLiteral("pelican.graphCanvasShow.value"));
+        REQUIRE(show_values != nullptr);
+        show_values->setChecked(true);
+        QCoreApplication::processEvents();
+        auto without_audio = status(Json::array({row()}));
+        REQUIRE(widget.model().currentScope().empty());
+        REQUIRE_FALSE(widget.model().foldedView());
+        REQUIRE(nodeItem(widget.scene(), QStringLiteral("clock")) != nullptr);
+        widget.observeStatus(without_audio);
+        REQUIRE(band() != nullptr);
+        CHECK(band()->text().contains(QStringLiteral("1204 written")));
+        const auto rebuilds = widget.scene().routingIndexRebuilds();
+        widget.observeStatus(Json{{"audio", {{"voices", Json::array({
+            {{"node", "clock"}, {"state", "playing"}, {"position_seconds", 1.0}}})}}}});
+        CHECK(band()->text() == QString::fromUtf8(("playing" + dot + "1.0 s" + dot +
+            "running" + dot + "1204 written" + dot + "3 dropped" + dot + "2 discarded").c_str()));
+        CHECK(widget.scene().routingIndexRebuilds() == rebuilds);
+
+        auto removed = without_audio;
+        removed["output"]["sinks"] = Json::array();
+        widget.observeStatus(removed);
+        CHECK(band()->text() == QString::fromUtf8(("playing" + dot + "1.0 s").c_str()));
+        widget.observeStatus(status(Json::array({row()})));
+        REQUIRE(band() != nullptr);
+        CHECK(band()->text().contains(QStringLiteral("1204 written")));
+        widget.projectEngineChanging();
+        CHECK(band() == nullptr);
+        widget.observeStatus(without_audio);
+        CHECK(band() == nullptr);
+        widget.setConnected(true);
+        widget.observeStatus(without_audio);
+        REQUIRE(band() != nullptr);
+        widget.setConnected(false);
+        CHECK(band() == nullptr);
+        widget.observeStatus(without_audio);
+        CHECK(band() == nullptr);
+        widget.setConnected(true);
+        deliver(QStringLiteral("get_graph_instances"), context(readFixture("graph_node_visuals")));
+        deliver(QStringLiteral("get_graph_catalog"), visualCatalog());
+        widget.observeStatus(without_audio);
+        REQUIRE(band() != nullptr);
+        auto replacement_root = std::filesystem::temp_directory_path() / "pelican_vo6_other";
+        widget.setProjectRoot(replacement_root);
+        CHECK(band() == nullptr);
+        widget.observeStatus(without_audio);
+        CHECK(band() == nullptr);
+    }
+
+    SECTION("lowering-style field names reach the same Studio parse") {
+        const Json lowered_row{{"name", "different from id"}, {"kind", "file"},
+            {"format", "raw"}, {"when_full", "drop"}, {"state", "running"},
+            {"stop_reason", "none"}, {"stop_value", 0}, {"frames_written", 1},
+            {"last_error", ""}, {"queue_depth", 0}, {"frames_dropped", 0},
+            {"frames_discarded", 0}, {"render_wait_ms", 0},
+            {"node", "output_node_id"}, {"graph", "root"}};
+        const auto parsed = graphCanvasOutputBands(status(Json::array({lowered_row})), "root");
+        REQUIRE(parsed.contains("output_node_id"));
+        CHECK_FALSE(parsed.contains("different from id"));
+        CHECK(parsed.at("output_node_id").text == "running" + dot + "1 written");
+    }
+}

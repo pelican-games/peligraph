@@ -61,6 +61,10 @@ if(DEFINED GAME_LOGIC AND NOT "${GAME_LOGIC}" STREQUAL "")
     list(APPEND scenario_extra_env
         "PELICAN_STUDIO_PLAYER_ARGUMENTS=--game-logic \"${game_logic_native}\"")
 endif()
+if(scenario_name STREQUAL "output_status_band")
+    list(APPEND scenario_extra_env
+        "PELICAN_STUDIO_PLAYER_ARGUMENTS=--output-dir \"${run_dir}\"")
+endif()
 
 # SG-2: the repository's test fixtures, which a scenario may read (a picture
 # to import, a PSD's conversion) but never writes: `{fixtures}`.

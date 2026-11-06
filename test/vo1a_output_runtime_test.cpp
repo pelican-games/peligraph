@@ -24,8 +24,10 @@
 #include <deque>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <iterator>
 #include <limits>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <set>
@@ -618,6 +620,7 @@ class PlayerRpc {
 
     Json result(std::string_view method,
                 const Json &params = Json::object()) {
+        std::lock_guard request_lock{request_mutex_};
         const int id = next_id_++;
         Json request{{"jsonrpc", "2.0"},
                      {"id", id},
@@ -634,6 +637,8 @@ class PlayerRpc {
                              << " failed: " << response.at("error").dump());
         }
         REQUIRE(response.contains("result"));
+        if (method == "test_output_worker_pause")
+            output_worker_paused_ = params.at("paused").get<bool>();
         return response.at("result");
     }
 
@@ -649,10 +654,39 @@ class PlayerRpc {
     }
 #endif
 
-    Json outputStatus() {
+    Json outputStatusOnce() {
         const auto status = result("get_status");
         REQUIRE(status.contains("output"));
         return status.at("output");
+    }
+
+    Json outputStatus() { return outputStatusIf({}); }
+
+    Json outputStatus(std::uint64_t expected_frames_written) {
+        return outputStatusIf([expected_frames_written](const Json &output) {
+            return output.at("sinks").size() == 1 &&
+                output.at("sinks").front().value(
+                    "frames_written", std::uint64_t{0}) >= expected_frames_written;
+        });
+    }
+
+    Json outputStatusIf(std::function<bool(const Json &)> condition) {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{10};
+        while (true) {
+            auto output = outputStatusOnce();
+            const auto drained = output.at("sinks").empty() ||
+                std::ranges::all_of(output.at("sinks"), [](const Json &sink) {
+                    return sink.value("kind", std::string{}) == "spout" ||
+                        sink.value("queue_depth", std::uint64_t{0}) == 0;
+                });
+            if ((output_worker_paused_ && !condition) ||
+                (drained && (!condition || condition(output)))) return output;
+            if (std::chrono::steady_clock::now() >= deadline) {
+                INFO(output.dump());
+                FAIL("the output writer did not settle before the deadline");
+            }
+            std::this_thread::sleep_for(std::chrono::milliseconds{10});
+        }
     }
 
     // A render edit or reload is a ticket; the editor settles it at a frame
@@ -854,6 +888,7 @@ class PlayerRpc {
     fs::path log_;
     std::thread reader_;
     std::mutex mutex_;
+    std::mutex request_mutex_;
     std::condition_variable arrived_;
     std::deque<std::string> lines_;
     std::string diagnostics_;
@@ -861,6 +896,7 @@ class PlayerRpc {
         std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr;
     std::atomic<bool> closed_ = false;
     bool close_started_ = false;
+    bool output_worker_paused_ = false;
     int next_id_ = 1;
     int exit_code_ = -1;
 #ifdef _WIN32
@@ -932,7 +968,7 @@ TEST_CASE("VO-1a every_n writes numbered PVO1 files with the target's pixels and
         CHECK(found);
     }
 
-    const auto status = player.outputStatus();
+    const auto status = player.outputStatus(3);
     INFO(status.dump());
     CHECK(status.at("active") == true);
     const auto sink = oneSink(status);
@@ -1196,7 +1232,9 @@ TEST_CASE("VO-1a a later writer of the target refuses the sink before any pixel 
 
     (void)player.result("step_frame");
 
-    const auto status = player.outputStatus();
+    const auto status = player.outputStatusIf([](const Json &output) {
+        return oneSink(output).at("state") == "refused";
+    });
     INFO(status.dump());
     const auto sink = oneSink(status);
     CHECK(sink.at("state") == "refused");
@@ -1212,8 +1250,8 @@ TEST_CASE("VO-1a a later writer of the target refuses the sink before any pixel 
     const auto problems = outputProblems(player);
     REQUIRE(problems.size() == 1);
     CHECK(problems.front().at("code") == "output.source_overwritten@1");
-    CHECK(problems.front().at("scope") == "main_render");
-    CHECK(problems.front().at("node") == "shot");
+    CHECK(problems.front().at("scope") == "root");
+    CHECK(problems.front().at("node") == "sink");
     CHECK(problems.front().at("message") == sink.at("last_error"));
 }
 
@@ -1230,9 +1268,9 @@ TEST_CASE("VO-1a reloading a changed every_n keeps the counters and writes every
     PlayerRpc player{project, outputFlags(output_dir), "reload"};
 
     for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
+    const auto before_status = player.outputStatus(2);
     const auto before = frameFiles(output_dir);
     REQUIRE(before.size() >= 2);
-    const auto before_status = player.outputStatus();
     const auto before_written =
         oneSink(before_status).at("frames_written").get<std::uint64_t>();
     CHECK(before_written == before.size());
@@ -1248,6 +1286,9 @@ TEST_CASE("VO-1a reloading a changed every_n keeps the counters and writes every
     CHECK(settled.at("operation") == "reload_render_documents");
 
     for (int frame = 0; frame < 3; ++frame) (void)player.result("step_frame");
+    const auto after_status = player.outputStatusIf([&](const Json &output) {
+        return oneSink(output).at("frames_written").get<std::uint64_t>() > before_written;
+    });
     const auto after = frameFiles(output_dir);
     REQUIRE(after.size() > before.size());
     bool saw_odd = false;
@@ -1256,7 +1297,6 @@ TEST_CASE("VO-1a reloading a changed every_n keeps the counters and writes every
         if (file.frame % 2 == 1) saw_odd = true;
     }
     CHECK(saw_odd);
-    const auto after_status = player.outputStatus();
     INFO(after_status.dump());
     const auto after_written =
         oneSink(after_status).at("frames_written").get<std::uint64_t>();
@@ -1277,6 +1317,7 @@ TEST_CASE("VO-1a a BGRA8 target writes its memory order and format code",
     PlayerRpc player{project, outputFlags(output_dir), "bgra"};
 
     for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    (void)player.outputStatus(2);
     const auto files = frameFiles(output_dir);
     REQUIRE(files.size() >= 1);
     const auto &file = files.front();
@@ -1352,6 +1393,7 @@ TEST_CASE("VO-1b a BGRA8 target is swapped to RGBA in the PNG",
 
     (void)player.result("step_frame");
 
+    (void)player.outputStatus(1);
     const auto files = frameFiles(output_dir, ".png");
     REQUIRE(files.size() == 1);
     const auto png = decodePng(files.front().path);
@@ -1385,7 +1427,7 @@ TEST_CASE("VO-1b a max_frames stop is one limit problem, not one per frame",
     for (int frame = 0; frame < 3; ++frame)
         (void)player.result("step_frame");
 
-    const auto status = player.outputStatus();
+    const auto status = player.outputStatus(1);
     INFO(status.dump());
     const auto sink = oneSink(status);
     CHECK(sink.at("state") == "finished");
@@ -1401,8 +1443,8 @@ TEST_CASE("VO-1b a max_frames stop is one limit problem, not one per frame",
     CHECK(problem.at("code") == "output.limit_reached@1");
     CHECK(problem.at("severity") == "error");
     CHECK(problem.at("source") == "runtime");
-    CHECK(problem.at("scope") == "main_render");
-    CHECK(problem.at("node") == "shot");
+    CHECK(problem.at("scope") == "root");
+    CHECK(problem.at("node") == "sink");
     CHECK(problem.at("fields").at("graph") == "main_render");
     CHECK(problem.at("fields").at("sink") == "shot");
     CHECK(problem.at("fields").at("limit") == "max_frames");
@@ -1492,7 +1534,9 @@ TEST_CASE("VO-1b a refused sink has one problem and keeps it across frames",
     for (int frame = 0; frame < 3; ++frame)
         (void)player.result("step_frame");
 
-    const auto status = player.outputStatus();
+    const auto status = player.outputStatusIf([](const Json &output) {
+        return oneSink(output).at("state") == "refused";
+    });
     INFO(status.dump());
     const auto sink = oneSink(status);
     CHECK(sink.at("state") == "refused");
@@ -1510,8 +1554,8 @@ TEST_CASE("VO-1b a refused sink has one problem and keeps it across frames",
     INFO(problems.dump(2));
     const auto &problem = problems.front();
     CHECK(problem.at("code") == "output.write_failed@1");
-    CHECK(problem.at("scope") == "main_render");
-    CHECK(problem.at("node") == "shot");
+    CHECK(problem.at("scope") == "root");
+    CHECK(problem.at("node") == "sink");
     CHECK(problem.at("fields").at("graph") == "main_render");
     CHECK(problem.at("fields").at("sink") == "shot");
     CHECK(problem.at("message") == sink.at("last_error"));
@@ -1541,8 +1585,10 @@ TEST_CASE("VO-1b a reload withdraws the problem when the sink writes again",
     PlayerRpc player{project, outputFlags(output_dir), "problem_recovery"};
 
     (void)player.result("step_frame");
+    CHECK(oneSink(player.outputStatusIf([](const Json &output) {
+        return oneSink(output).at("state") == "refused";
+    })).at("state") == "refused");
     REQUIRE(outputProblems(player).size() == 1);
-    CHECK(oneSink(player.outputStatus()).at("state") == "refused");
 
     fs::remove(blocker);
     auto changed = project.readRoot();
@@ -1563,6 +1609,7 @@ TEST_CASE("VO-1b a reload withdraws the problem when the sink writes again",
 
     const auto before = frameFiles(output_dir, ".png").size();
     (void)player.result("step_frame");
+    (void)player.outputStatus(oneSink(recovered).at("frames_written").get<std::uint64_t>() + 1);
     CHECK(frameFiles(output_dir, ".png").size() > before);
     CHECK(outputProblems(player).empty());
 }
@@ -1581,6 +1628,9 @@ TEST_CASE("VO-1b removing the sink withdraws its problem",
     PlayerRpc player{project, outputFlags(output_dir), "problem_removal"};
 
     (void)player.result("step_frame");
+    (void)player.outputStatusIf([](const Json &output) {
+        return oneSink(output).at("state") == "refused";
+    });
     REQUIRE(outputProblems(player).size() == 1);
 
     auto changed = project.readRoot();
@@ -1662,6 +1712,7 @@ TEST_CASE("VO-1b thinned PNG file n holds frame_index n+1 in the headless fixtur
     PlayerRpc player{project, outputFlags(output_dir), "file_number"};
 
     for (int frame = 0; frame < 6; ++frame) (void)player.result("step_frame");
+    (void)player.outputStatus(3);
     const auto files = frameFiles(output_dir, ".png");
     REQUIRE(files.size() == 3);
     for (std::size_t index = 0; index < files.size(); ++index) {
@@ -1751,8 +1802,9 @@ TEST_CASE("VO-2 wait blocks the fifth capture briefly and writes every frame",
     const auto output_dir = project.outputPath();
     PlayerRpc player{project, outputFlags(output_dir), "vo2_wait"};
     for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    (void)player.outputStatus(2);
     (void)player.result("test_output_worker_pause",
-        {{"paused", true}, {"resume_after_ms", 300}});
+        {{"paused", true}, {"resume_after_ms", 500}});
 
     for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
     const auto begin = std::chrono::steady_clock::now();
@@ -1761,7 +1813,7 @@ TEST_CASE("VO-2 wait blocks the fifth capture briefly and writes every frame",
         std::chrono::steady_clock::now() - begin);
     CHECK(blocked >= std::chrono::milliseconds{250});
     CHECK(blocked < std::chrono::seconds{5});
-    const auto sink = oneSink(player.outputStatus());
+    const auto sink = oneSink(player.outputStatus(7));
     INFO(sink.dump());
     CHECK(sink.at("render_wait_ms").get<double>() > 0.0);
     CHECK(sink.at("queue_depth").get<std::uint64_t>() <= 4);
@@ -1790,6 +1842,7 @@ TEST_CASE("VO-2 resize reallocates only free slots and keeps file identities",
     const auto output_dir = project.outputPath();
     PlayerRpc player{project, outputFlags(output_dir), "vo2_resize"};
     for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    (void)player.outputStatus(2);
     const auto old_files = frameFiles(output_dir, ".png").size();
     (void)player.result("test_output_worker_pause", {{"paused", true}});
     for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
@@ -1807,7 +1860,11 @@ TEST_CASE("VO-2 resize reallocates only free slots and keeps file identities",
     REQUIRE(settled.at("status") == "committed");
     for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
     (void)player.result("test_output_worker_pause", {{"paused", false}});
-    const auto sink = oneSink(player.outputStatus());
+    const auto sink = oneSink(player.outputStatusIf([&](const Json &output) {
+        const auto row = oneSink(output);
+        return row.at("frames_written").get<std::uint64_t>() >= old_files + 2 &&
+            row.at("frames_discarded").get<std::uint64_t>() > 0;
+    }));
     INFO(sink.dump());
     CHECK(sink.at("queue_depth") == 0);
     CHECK(sink.at("frames_discarded").get<std::uint64_t>() > 0);
@@ -1838,6 +1895,7 @@ TEST_CASE("VO-2 removal discards queued generations and paused shutdown drains s
     const auto output_dir = project.outputPath();
     PlayerRpc player{project, outputFlags(output_dir), "vo2_removal"};
     for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    (void)player.outputStatus(2);
     const auto files_before = frameFiles(output_dir, ".png");
     (void)player.result("test_output_worker_pause", {{"paused", true}});
     for (int frame = 0; frame < 4; ++frame) (void)player.result("step_frame");
@@ -1943,6 +2001,8 @@ TEST_CASE("VO-2 reload releases unfinished max_frames reservations",
     PlayerRpc player{project, outputFlags(output_dir, 2),
                      "vo2_max_frames_reload_pending"};
     (void)player.result("step_frame");
+    // status() no longer waits for the writer: the first frame must be written before the pause.
+    (void)player.outputStatusIf([](const Json &output) { return oneSink(output).at("frames_written") == 1; });
     (void)player.result("test_output_worker_pause", {{"paused", true}});
     (void)player.result("step_frame");
 
@@ -1951,14 +2011,17 @@ TEST_CASE("VO-2 reload releases unfinished max_frames reservations",
     const auto settled = player.settle(player.result("reload_render_documents"));
     REQUIRE(settled.at("status") == "committed");
     (void)player.result("test_output_worker_pause", {{"paused", false}});
-    auto sink = oneSink(player.outputStatus());
+    auto sink = oneSink(player.outputStatusIf([](const Json &output) {
+        const auto row = oneSink(output);
+        return row.at("frames_written") == 1 && row.at("frames_discarded") == 1;
+    }));
     CHECK(sink.at("state") == "running");
     CHECK(sink.at("frames_written") == 1);
     CHECK(sink.at("frames_discarded") == 1);
 
     (void)player.result("step_frame");
     (void)player.result("step_frame");
-    sink = oneSink(player.outputStatus());
+    sink = oneSink(player.outputStatus(2));
     INFO(sink.dump());
     CHECK(sink.at("state") == "finished");
     CHECK(sink.at("frames_written") == 2);
@@ -2330,8 +2393,8 @@ TEST_CASE("VO-4 a blocked send holds no staging slot and stops neither the rende
     auto flags = outputFlags(output_dir);
     flags.emplace_back("--output-spout");
     PlayerRpc player{project, flags, "vo4_blocked"};
-    // A step's answer normally includes a status, which waits for file work: a
-    // worker stuck behind the send would then show up as a hung step.
+    // Publish only frame answers from the step hook; progress is read
+    // explicitly below through non-blocking status and completed files.
     (void)player.result("test_output_step_status", {{"enabled", false}});
     (void)player.result("test_output_spout_backend", {{"block_send", true}});
     const auto send_is_stuck = waitFor([&] {
@@ -2496,7 +2559,8 @@ TEST_CASE("VO-4 an asynchronous refusal is a Problem with no further frame, and 
     INFO(problems.dump());
     REQUIRE(problems.size() == 1);
     CHECK(problems.at(0).at("code") == "output.spout_open_failed@1");
-    CHECK(problems.at(0).at("node") == "send");
+    CHECK(problems.at(0).at("node") == "spout");
+    CHECK(problems.at(0).at("scope") == "root");
     const auto sink = oneSink(player.outputStatus());
     CHECK(sink.at("state") == "refused");
     CHECK(sink.at("registered") == false);
@@ -3700,3 +3764,65 @@ TEST_CASE("VO-5b measurement of the GPU route against the CPU route", "[.vo5b-me
     CHECK(results.size() == 18);
 }
 #endif
+
+TEST_CASE("VO-6 a held writer cannot hold status and owner identity survives lowering",
+          "[vo6][gpu]") {
+    TempProject project{"vo6_held_writer"};
+    project.writeShader();
+    auto root = project.readRoot();
+    auto sink = sinkNode("authored_filename", "fill", "color", 1, true,
+                         "raw", "drop");
+    REQUIRE(sink.at("id") == "sink");
+    REQUIRE(sink.at("parameters").at("name") == "authored_filename");
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+        fillNode("fill", "fill_target", "fill_target"), std::move(sink));
+    const auto &fill = *std::ranges::find_if(root.at("nodes"), [](const Json &node) {
+        return node.at("id") == "fill";
+    });
+    REQUIRE(fill.at("parameters").at("pass_set") == "main_render");
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, outputFlags(output_dir), "vo6_held_writer"};
+    (void)player.result("step_frame");
+    const auto initial = oneSink(player.outputStatus(1));
+    REQUIRE(initial.at("frames_written").get<std::uint64_t>() == 1);
+    CHECK(initial.at("name") == "authored_filename");
+    CHECK(initial.at("node") == "sink");
+    CHECK(initial.at("graph") == "root");
+    const double initial_render_wait = initial.at("render_wait_ms").get<double>();
+    INFO("VO-6 drop-mode render_wait_ms before held write: " << initial_render_wait);
+
+    auto release = [&] {
+        (void)player.result("test_output_worker_gate",
+                            {{"hold", false}, {"wait", false}});
+    };
+    try {
+        (void)player.result("test_output_worker_gate",
+                            {{"hold", true}, {"wait", false},
+                             {"release_after_ms", 2000}});
+        (void)player.result("step_frame");
+        (void)player.result("test_output_worker_gate",
+                            {{"hold", true}, {"wait", true},
+                             {"release_after_ms", 2000}});
+
+        auto pending_status = std::async(std::launch::async, [&] {
+            return player.outputStatusOnce();
+        });
+        const auto held = oneSink(pending_status.get());
+        INFO(held.dump());
+        CHECK(held.at("queue_depth").get<std::uint64_t>() > 0);
+        // With the old wait the guarded release finishes the second write first,
+        // so this assertion turns red without relying on a timing threshold.
+        CHECK(held.at("frames_written").get<std::uint64_t>() == 1);
+        const double held_render_wait = held.at("render_wait_ms").get<double>();
+        INFO("VO-6 drop-mode render_wait_ms during held write: " << held_render_wait);
+        CHECK(held_render_wait == initial_render_wait);
+    } catch (...) {
+        release();
+        throw;
+    }
+    release();
+    const auto drained = oneSink(player.outputStatus(2));
+    CHECK(drained.at("frames_written").get<std::uint64_t>() == 2);
+    CHECK(drained.at("queue_depth") == 0);
+}

@@ -3161,6 +3161,7 @@ void MainWindow::createPlayControls(QToolBar *band) {
     // UX-7, decision 10: read from the viewport's one parse of the reply.
     connect(viewport_, &EmbeddedViewport::engineStatusParsed, this,
             [this](qint64 request_id, const nlohmann::json &status) {
+                if (sender() != viewport_) return;
                 play_controls_->observeStatus(request_id, status);
                 // UX-9, decision 4: the voices on the Graph's bands.
                 if (graph_canvas_ != nullptr) graph_canvas_->observeStatus(status);

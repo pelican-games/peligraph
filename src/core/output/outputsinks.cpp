@@ -34,7 +34,8 @@ std::string sinkError(const OutputSinkSpec &sink) {
 }
 bool sameIdentity(const OutputSinks::State &state, const OutputSinkSpec &sink) {
     return state.name == sink.name && state.kind == sink.kind &&
-           state.graph == sink.graph && state.target == sink.target;
+           state.source_graph == sink.graph && state.target == sink.target &&
+           state.node == sink.node && state.graph == sink.owner_graph;
 }
 bool rateMatches(double rate, std::uint64_t num, std::uint64_t den) {
     if (rate <= 0.0 || !std::isfinite(rate)) return false;
@@ -125,7 +126,7 @@ std::vector<nlohmann::json> outputSinkProblems(
         } else {
             continue;
         }
-        nlohmann::json fields{{"graph", state.graph}, {"sink", state.name}};
+        nlohmann::json fields{{"graph", state.source_graph}, {"sink", state.name}};
         if (state.state == "finished" && state.stop_reason != "none") {
             fields["limit"] = state.stop_reason;
             fields["value"] = state.stop_value;
@@ -141,7 +142,7 @@ std::vector<nlohmann::json> outputSinkProblems(
         problems.push_back({{"severity", "error"},
                             {"source", "runtime"}, {"code", code},
                             {"message", message}, {"scope", state.graph},
-                            {"node", state.name}, {"fields", std::move(fields)}});
+                            {"node", state.node}, {"fields", std::move(fields)}});
     }
     return problems;
 }
@@ -207,6 +208,7 @@ struct OutputSinks::Impl {
     };
 
     mutable std::mutex mutex;
+    mutable std::mutex problem_publish_mutex;
     mutable std::condition_variable work_cv;
     std::condition_variable free_cv;
     std::condition_variable pause_cv;
@@ -226,6 +228,9 @@ struct OutputSinks::Impl {
     bool paused = false;
     bool pause_acknowledged = false;
     bool drain_expired = false;
+    bool test_worker_gate = false;
+    bool test_worker_gate_arrived = false;
+    std::optional<Clock::time_point> test_worker_gate_deadline;
     std::uint64_t generation = 0;
     std::uint64_t problems_revision = 0;
     std::uint64_t published_revision = 0;
@@ -326,6 +331,24 @@ struct OutputSinks::Impl {
     static void releaseResource(SlotResource &resource);
 };
 
+namespace {
+void publishOutputProblemsSnapshot(OutputSinks::Impl &impl, std::uint64_t generation,
+                                   std::uint64_t revision,
+                                   const std::vector<nlohmann::json> &problems) {
+    std::lock_guard publish_lock{impl.problem_publish_mutex};
+    {
+        std::lock_guard lock{impl.mutex};
+        if (impl.generation != generation || impl.problems_revision != revision ||
+            impl.published_revision == revision)
+            return;
+    }
+    const bool published = replaceOutputProblems(problems);
+    std::lock_guard lock{impl.mutex};
+    if (impl.generation != generation || impl.problems_revision != revision) return;
+    impl.published_revision = published ? revision : 0;
+}
+} // namespace
+
 OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
     // Reverse-order module teardown must join the worker and release slot
     // resources before the device and allocator are destroyed.
@@ -398,6 +421,8 @@ OutputSinks::~OutputSinks() {
         impl_->pause_acknowledged = false;
         impl_->resume_at.reset();
         impl_->drain_expired = false;
+        impl_->test_worker_gate = false;
+        impl_->test_worker_gate_deadline.reset();
     }
     impl_->work_cv.notify_all();
     impl_->free_cv.notify_all();
@@ -485,6 +510,7 @@ void OutputSinks::Impl::spoutRefused(const OutputSpoutSender &sender) {
 void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
     std::vector<nlohmann::json> problems;
     std::uint64_t installed_generation = 0;
+    std::uint64_t installed_revision = 0;
     // Finished senders are joined after the lock is gone.
     std::vector<std::shared_ptr<OutputSpoutSender>> released_spouts;
     std::lock_guard publishing{impl_->problems_mutex};
@@ -514,7 +540,9 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
                 auto state = std::make_shared<State>();
                 state->name = sink.name;
                 state->kind = sink.kind;
-                state->graph = sink.graph;
+                state->node = sink.node;
+                state->graph = sink.owner_graph;
+                state->source_graph = sink.graph;
                 state->target = sink.target;
                 state->format = sink.format;
                 state->when_full = sink.when_full;
@@ -625,19 +653,15 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
             states.push_back(runtime->state);
         }
         problems = outputSinkProblems(statesToValues(states));
-        impl_->published_revision = impl_->problems_revision;
+        installed_revision = ++impl_->problems_revision;
         const auto finished = std::stable_partition(
             impl_->retired_spouts.begin(), impl_->retired_spouts.end(),
             [](const auto &sender) { return !sender->finished(); });
         released_spouts.assign(finished, impl_->retired_spouts.end());
         impl_->retired_spouts.erase(finished, impl_->retired_spouts.end());
     }
-    const bool published = replaceOutputProblems(problems);
-    std::lock_guard lock{impl_->mutex};
-    if (!published && impl_->generation == installed_generation) {
-        impl_->published_revision = 0;
-        impl_->problems_revision = impl_->generation;
-    }
+    publishOutputProblemsSnapshot(*impl_, installed_generation,
+                                  installed_revision, problems);
 }
 
 namespace {
@@ -845,6 +869,23 @@ void OutputSinks::Impl::process(Work &entry) {
     }
     if ((!entry.discard && !device_error) && (ready || !error.empty())) {
         if (ready) {
+#if PELICAN_OUTPUT_TEST_SEAMS
+            {
+                std::unique_lock lock{mutex};
+                if (test_worker_gate && !test_worker_gate_arrived) {
+                    test_worker_gate_arrived = true;
+                    lock.unlock();
+                    pause_cv.notify_all();
+                    lock.lock();
+                    const auto released = [&] { return !test_worker_gate || stopping; };
+                    if (test_worker_gate_deadline)
+                        work_cv.wait_until(lock, *test_worker_gate_deadline, released);
+                    else
+                        work_cv.wait(lock, released);
+                    test_worker_gate_deadline.reset();
+                }
+            }
+#endif
             auto directory_copy = directory;
             const auto format = outputFileFormat(entry.format);
             const auto written = writeOutputFrameFile(directory_copy,
@@ -1329,99 +1370,83 @@ void OutputSinks::captureFrame(Renderer &renderer) {
         for (const auto &runtime : impl_->current) states.push_back(runtime->state);
         problems = outputSinkProblems(statesToValues(states));
     }
-    if (replaceOutputProblems(problems)) {
-        std::lock_guard lock{impl_->mutex};
-        if (impl_->generation == capture_generation &&
-            impl_->problems_revision == revision)
-            impl_->published_revision = revision;
-    }
+    publishOutputProblemsSnapshot(*impl_, capture_generation, revision, problems);
 }
 
 nlohmann::json OutputSinks::status() const {
     std::lock_guard publishing{impl_->problems_mutex};
-    std::unique_lock lock{impl_->mutex};
-    if (impl_->worker_started && !impl_->paused) {
-        // Spout's status is a snapshot: it doesn't wait for a readback or a send.
-        impl_->work_cv.wait(lock, [&] {
-            const auto file_work = std::any_of(impl_->work.begin(), impl_->work.end(),
-                [](const Impl::Work &entry) {
-                    return entry.runtime->spec.kind != "spout";
-                });
-            return (!file_work &&
-                    (!impl_->worker_busy || impl_->worker_busy_spout)) ||
-                   impl_->paused || impl_->stopping;
-        });
-    }
-    for (const auto &runtime : impl_->current) {
-        const auto previous = runtime->state->state + runtime->state->last_error +
-                              runtime->state->stop_reason;
-        impl_->syncCounters(runtime);
-        const auto now = runtime->state->state + runtime->state->last_error +
-                         runtime->state->stop_reason;
-        if (previous != now) impl_->noteProblem(*runtime);
-    }
     std::vector<nlohmann::json> problems;
-    std::uint64_t generation = impl_->generation;
-    std::uint64_t revision = impl_->problems_revision;
-    const bool publish = impl_->published_revision != revision;
-    if (publish) {
-        std::vector<std::shared_ptr<State>> states;
-        for (const auto &runtime : impl_->current) states.push_back(runtime->state);
-        problems = outputSinkProblems(statesToValues(states));
-    }
-    lock.unlock();
-    if (publish && replaceOutputProblems(problems)) {
-        lock.lock();
-        if (impl_->generation == generation && impl_->problems_revision == revision)
-            impl_->published_revision = revision;
-    } else {
-        lock.lock();
-    }
-    nlohmann::json sinks = nlohmann::json::array();
-    for (const auto &runtime : impl_->current) {
-        const auto &state = *runtime->state;
-        auto item = nlohmann::json{{"name", state.name}, {"kind", state.kind},
-            {"format", state.format}, {"when_full", state.when_full},
-            {"state", state.state}, {"stop_reason", state.stop_reason},
-            {"stop_value", state.stop_value},
-            {"frames_written", state.frames_written},
-            {"last_error", state.last_error},
-            {"queue_depth", runtime->video || runtime->spout
-                                ? state.queue_depth
-                                : runtime->pool->queue.queueDepth()},
-            {"frames_dropped", state.frames_dropped},
-            {"frames_discarded", state.frames_discarded},
-            {"render_wait_ms", state.render_wait_ms}};
-        if (runtime->video) {
-            item["mode"] = state.mode;
-            item["frames_repeated"] = state.frames_repeated;
-            item["encoder_pid"] = state.encoder_pid;
-            item["encoder_state"] = state.encoder_state;
-            item["final_bytes"] = state.final_bytes;
+    nlohmann::json reply;
+    std::uint64_t generation = 0;
+    std::uint64_t revision = 0;
+    bool publish = false;
+    {
+        std::lock_guard lock{impl_->mutex};
+        for (const auto &runtime : impl_->current) {
+            const auto previous = runtime->state->state + runtime->state->last_error +
+                                  runtime->state->stop_reason;
+            impl_->syncCounters(runtime);
+            const auto now = runtime->state->state + runtime->state->last_error +
+                             runtime->state->stop_reason;
+            if (previous != now) impl_->noteProblem(*runtime);
         }
-        if (runtime->spec.kind == "spout") {
-            item["registered"] = state.registered;
-            item["sender_name"] = state.sender_name;
-            item["width"] = state.width;
-            item["height"] = state.height;
-            if (state.spout_transport.is_object()) item.update(state.spout_transport);
+        generation = impl_->generation;
+        revision = impl_->problems_revision;
+        publish = impl_->published_revision != revision;
+        if (publish) {
+            std::vector<std::shared_ptr<State>> states;
+            for (const auto &runtime : impl_->current) states.push_back(runtime->state);
+            problems = outputSinkProblems(statesToValues(states));
         }
-        sinks.push_back(std::move(item));
+        nlohmann::json sinks = nlohmann::json::array();
+        for (const auto &runtime : impl_->current) {
+            const auto &state = *runtime->state;
+            auto item = nlohmann::json{{"name", state.name}, {"kind", state.kind},
+                {"node", state.node}, {"graph", state.graph},
+                {"format", state.format}, {"when_full", state.when_full},
+                {"state", state.state}, {"stop_reason", state.stop_reason},
+                {"stop_value", state.stop_value},
+                {"frames_written", state.frames_written},
+                {"last_error", state.last_error},
+                {"queue_depth", state.queue_depth},
+                {"frames_dropped", state.frames_dropped},
+                {"frames_discarded", state.frames_discarded},
+                {"render_wait_ms", state.render_wait_ms}};
+            if (runtime->video) {
+                item["mode"] = state.mode;
+                item["frames_repeated"] = state.frames_repeated;
+                item["encoder_pid"] = state.encoder_pid;
+                item["encoder_state"] = state.encoder_state;
+                item["final_bytes"] = state.final_bytes;
+            }
+            if (runtime->spec.kind == "spout") {
+                item["registered"] = state.registered;
+                item["sender_name"] = state.sender_name;
+                item["width"] = state.width;
+                item["height"] = state.height;
+                if (state.spout_transport.is_object()) item.update(state.spout_transport);
+            }
+            sinks.push_back(std::move(item));
+        }
+        reply = {{"active", impl_->active || impl_->spout_armed},
+            {"sinks", std::move(sinks)},
+            {"frames_skipped_inactive", impl_->frames_skipped_inactive},
+            {"frames_skipped_no_contents", impl_->frames_skipped_no_contents},
+            {"staging_allocations", impl_->staging_allocations},
+            {"staging_bytes", [&] {
+                 std::uint64_t bytes = 0;
+                 for (const auto &runtime : impl_->current) {
+                     for (const auto &slot : runtime->pool->resources)
+                         if (slot) bytes += slot->bytes;
+                 }
+                 return bytes;
+             }()},
+            {"readbacks", impl_->readbacks},
+            {"spout_gpu_path", impl_->spout_gpu_path}};
     }
-    return {{"active", impl_->active || impl_->spout_armed}, {"sinks", std::move(sinks)},
-        {"frames_skipped_inactive", impl_->frames_skipped_inactive},
-        {"frames_skipped_no_contents", impl_->frames_skipped_no_contents},
-        {"staging_allocations", impl_->staging_allocations},
-        {"staging_bytes", [&] {
-             std::uint64_t bytes = 0;
-             for (const auto &runtime : impl_->current) {
-                 for (const auto &slot : runtime->pool->resources)
-                     if (slot) bytes += slot->bytes;
-             }
-             return bytes;
-         }()},
-        {"readbacks", impl_->readbacks},
-        {"spout_gpu_path", impl_->spout_gpu_path}};
+    if (publish)
+        publishOutputProblemsSnapshot(*impl_, generation, revision, problems);
+    return reply;
 }
 
 #if PELICAN_OUTPUT_TEST_SEAMS
@@ -1450,6 +1475,29 @@ void OutputSinks::resumeWorkerAfterForTesting(std::chrono::milliseconds delay) {
     std::lock_guard lock{impl_->mutex};
     impl_->resume_at = Clock::now() + delay;
     impl_->work_cv.notify_all();
+}
+
+void OutputSinks::gateWorkerForTesting(bool hold, bool wait,
+                                       std::chrono::milliseconds release_after) {
+    std::unique_lock lock{impl_->mutex};
+    const bool was_held = impl_->test_worker_gate;
+    impl_->test_worker_gate = hold;
+    if (hold) {
+        if (!was_held) impl_->test_worker_gate_arrived = false;
+        impl_->test_worker_gate_deadline = release_after.count() > 0
+            ? std::optional<Clock::time_point>{Clock::now() + release_after}
+            : std::nullopt;
+    } else {
+        impl_->test_worker_gate_deadline.reset();
+    }
+    lock.unlock();
+    impl_->work_cv.notify_all();
+    if (hold && wait) {
+        lock.lock();
+        impl_->pause_cv.wait(lock, [&] {
+            return impl_->test_worker_gate_arrived || !impl_->test_worker_gate;
+        });
+    }
 }
 
 nlohmann::json OutputSinks::takeCaptureTimingsForTesting() {

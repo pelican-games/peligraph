@@ -490,6 +490,8 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         spec.fps_den = sink.fps_den;
         spec.graph = sink.source.graph;
         spec.target = sink.source.target;
+        spec.node = sink.id;
+        spec.owner_graph = "root";
         spec.source_node = sink.source_node;
         spec.source_port = sink.source_port;
         result.sinks.sinks.push_back(std::move(spec));

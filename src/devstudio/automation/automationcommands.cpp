@@ -341,6 +341,11 @@ QString sceneItemName(const QGraphicsView &view, const QGraphicsItem &item,
 // to -- so a scenario that waits for a read keeps working. `list` does not
 // publish it; only resolving a name falls back to it.
 QString sceneItemAlias(const QGraphicsView &view, const QGraphicsItem &item) {
+    if (itemKind(item) == QLatin1String{GraphCanvasLayerBandItem}) {
+        return view.objectName() + QString::fromLatin1(SceneSeparator) +
+               QStringLiteral("graph_node_band#") +
+               item.data(NodeGraphNameRole).toString();
+    }
     // LP-4d2: a graph node can have an input and an output of one name (a
     // fullscreen pass's `color`), which `graph_socket#<id>/<port>` cannot tell
     // apart; `.../in:<port>` and `.../out:<port>` can. Resolving only.

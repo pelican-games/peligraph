@@ -1,0 +1,115 @@
+{
+  "invariants": {
+    "undo": false,
+    "reopen": false,
+    "health": false,
+    "reason": "The scenario deliberately stops its engine to verify that output bands are removed, so the Undo, Reopen, and Health epilogues cannot query or restart it."
+  },
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "output_status_band",
+  "description": "VO-6: a real output.file render reaches the Graph band, completed writes grow, Play Stop leaves the active sink running because output is not tied to game play, and Engine Stop removes the band.",
+  "tab": "graph",
+  "viewport": [320, 240],
+  "steps": [
+    {
+      "label": "the fixture's real renderer and output sink are running",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000,
+      "frames": 30
+    },
+    {
+      "label": "raw frames have completed writing before the band is judged",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.output.sinks[0].frames_written",
+      "op": "gt",
+      "value": 0,
+      "remember": "written_before",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the one-second Studio read puts the count on the owning node id, not its filename",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.graphCanvasView::graph_node_band#capture_output"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "running ·",
+      "remember": "band_before",
+      "retry_ms": 15000
+    },
+    {
+      "label": "another completed write increases the engine counter",
+      "expect": "result",
+      "command": {
+        "cmd": "rpc",
+        "method": "get_status",
+        "params": {}
+      },
+      "path": "result.output.sinks[0].frames_written",
+      "op": "gt",
+      "value_of": "written_before",
+      "retry_ms": 30000
+    },
+    {
+      "label": "the same band displays a later Studio count",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.graphCanvasView::graph_node_band#capture_output"
+      },
+      "path": "text",
+      "op": "ne",
+      "value_of": "band_before",
+      "retry_ms": 15000
+    },
+    {
+      "label": "start Play",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "then stop Play while the same engine still answers RPC",
+      "cmd": "click",
+      "name": "pelican.play.play"
+    },
+    {
+      "label": "Play Stop returns to Edit but does not deactivate output sinks",
+      "cmd": "wait",
+      "name": "pelican.playStatus",
+      "text": "Edit",
+      "timeout_ms": 30000
+    },
+    {
+      "label": "therefore the output band remains running rather than becoming idle",
+      "expect": "result",
+      "command": {
+        "cmd": "text",
+        "name": "pelican.graphCanvasView::graph_node_band#capture_output"
+      },
+      "path": "text",
+      "op": "contains",
+      "value": "running ·",
+      "retry_ms": 15000
+    },
+    {
+      "label": "stop the engine itself",
+      "cmd": "click",
+      "name": "pelican.viewportStop"
+    },
+    {
+      "label": "the stopped engine's old running band is removed",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node_band#capture_output",
+      "missing": true,
+      "timeout_ms": 30000
+    }
+  ]
+}

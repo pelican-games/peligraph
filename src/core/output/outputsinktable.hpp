@@ -33,6 +33,8 @@ struct OutputSinkSpec {
     std::uint64_t fps_den = 0;
     std::string graph;
     std::string target;
+    std::string node;
+    std::string owner_graph;
     std::string source_node;
     std::string source_port;
     // Compile-time refusal, carried to the runtime but never in the public
