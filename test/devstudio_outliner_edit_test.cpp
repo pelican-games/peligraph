@@ -881,7 +881,7 @@ void teardownOpenShortcuts(Rig &rig) {
     action->trigger();
     QApplication::processEvents();
     REQUIRE(rig.window.findChild<QDialog *>(
-                QStringLiteral("pelican.help.shortcutsDialog")) != nullptr);
+                QStringLiteral("pelican.keymap.dialog")) != nullptr);
 }
 
 void teardownSwitchProject(Rig &rig) {

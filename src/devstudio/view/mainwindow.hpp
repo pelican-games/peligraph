@@ -461,7 +461,6 @@ class MainWindow : public QMainWindow {
     bool writeKeymapFile(const QString &path, const QByteArray &bytes,
                          QString *error) const;
     void updateSceneShortcuts();
-    void showKeyboardShortcuts();
     void createPlayControls(QToolBar *band);
     void updatePlayPresentation();
     // PM-3b: a banner saying render edits stay after Stop, above `panel`.

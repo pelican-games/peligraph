@@ -33,6 +33,7 @@ class KeymapDialog : public QDialog {
         QString title;
         QList<QKeySequence> defaults;
         QList<QKeySequence> fixed_keys;
+        QString fixed_text;
         bool fixed = false;
         int table_row = -1;
     };

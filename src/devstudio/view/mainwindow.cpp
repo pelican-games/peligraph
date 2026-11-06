@@ -2614,7 +2614,7 @@ void MainWindow::createMenus() {
     edit_menu->addSeparator();
     // KM-2b: the dialog that edits keymap.json.  It has no shortcut of its
     // own: the dialog must stay reachable while a rebind is being tried.
-    QAction *keymap_action = edit_menu->addAction(tr("&Keyboard Shortcuts..."));
+    QAction *keymap_action = edit_menu->addAction(tr("Keyboard Shortcuts..."));
     keymap_action->setObjectName(QStringLiteral("pelican.edit.keymap"));
     setCommandHelp(*keymap_action, "edit.keymap", CommandSurface::Window,
                    tr("Keyboard Shortcuts..."));
@@ -2803,9 +2803,9 @@ void MainWindow::createMenus() {
     createAddObjectMenu();
     auto *help_menu = menuBar()->addMenu(tr("&Help"));
     help_menu->setObjectName(QStringLiteral("pelican.helpMenu"));
-    auto *shortcuts = help_menu->addAction(tr("Keyboard Shortcuts…"));
+    auto *shortcuts = help_menu->addAction(tr("Keyboard Shortcuts..."));
     shortcuts->setObjectName(QStringLiteral("pelican.help.shortcuts"));
-    connect(shortcuts, &QAction::triggered, this, &MainWindow::showKeyboardShortcuts);
+    connect(shortcuts, &QAction::triggered, this, &MainWindow::showKeymapDialog);
 }
 
 void MainWindow::openCommandPalette() {
@@ -3085,36 +3085,6 @@ void MainWindow::applyUserKeymap() {
 void MainWindow::updateSceneShortcuts() {
     inspector_->setSceneHistoryFocus(sceneFocusGroup() && !inspector_->graphHistoryHasFocus());
     updateOutlinerActions();
-}
-
-void MainWindow::showKeyboardShortcuts() {
-    auto *dialog = new QDialog(this);
-    dialog->setObjectName(QStringLiteral("pelican.help.shortcutsDialog"));
-    dialog->setWindowTitle(tr("Keyboard Shortcuts"));
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    auto *layout = new QVBoxLayout(dialog);
-    auto *table = new QTableWidget(dialog);
-    table->setObjectName(QStringLiteral("pelican.help.shortcutsTable"));
-    table->setColumnCount(3);
-    table->setHorizontalHeaderLabels({tr("Surface"), tr("Shortcut"), tr("Command")});
-    table->setEditTriggers(QAbstractItemView::NoEditTriggers);
-    table->verticalHeader()->hide();
-    const std::vector<std::array<QString, 3>> rows = studioShortcutRows(*this);
-    for (const auto &row : rows) {
-        const int index = table->rowCount();
-        table->insertRow(index);
-        for (int column = 0; column < 3; ++column)
-            table->setItem(index, column, new QTableWidgetItem(row[column]));
-    }
-    table->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    table->horizontalHeader()->setStretchLastSection(true);
-    table->resizeRowsToContents();
-    layout->addWidget(table);
-    auto *buttons = new QDialogButtonBox(QDialogButtonBox::Close, dialog);
-    connect(buttons, &QDialogButtonBox::rejected, dialog, &QDialog::reject);
-    layout->addWidget(buttons);
-    dialog->resize(1020, 560);
-    dialog->open();
 }
 
 void MainWindow::createPlayControls(QToolBar *band) {

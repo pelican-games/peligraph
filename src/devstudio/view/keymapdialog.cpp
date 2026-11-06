@@ -133,6 +133,17 @@ void KeymapDialog::buildRows() {
         rows_.push_back(std::move(row));
     }
 
+    int gesture_index = 0;
+    for (const StudioGesture &gesture : studioGestures()) {
+        Row row;
+        row.id = QStringLiteral("gesture.%1").arg(gesture_index++);
+        row.surface = static_cast<int>(gesture.surface);
+        row.title = QString::fromLatin1(gesture.title);
+        row.fixed = true;
+        row.fixed_text = QString::fromLatin1(gesture.input);
+        rows_.push_back(std::move(row));
+    }
+
     std::stable_sort(rows_.begin(), rows_.end(), [](const Row &left, const Row &right) {
         if (left.surface != right.surface) return left.surface < right.surface;
         if (left.title != right.title) return left.title < right.title;
@@ -145,7 +156,7 @@ void KeymapDialog::buildRows() {
 void KeymapDialog::buildTable() {
     auto *layout = new QVBoxLayout(this);
     auto *intro = new QLabel(
-        tr("Each row is a command. Change a binding, add another one, or clear "
+        tr("Each row is a command or gesture. Change a binding, add another one, or clear "
            "them all. Changes are checked before OK saves them; a rejected "
            "command is marked in red and OK stays disabled."),
         this);
@@ -181,8 +192,9 @@ void KeymapDialog::buildTable() {
         // The fixed rows show the keys they actually hold in Default too;
         // the "fixed" note beside the recorder slot is what says they cannot
         // be edited.
-        QString default_text =
-            keysText(row.fixed ? row.fixed_keys : row.defaults);
+        const QString default_text = row.fixed_text.isEmpty()
+                                         ? keysText(row.fixed ? row.fixed_keys : row.defaults)
+                                         : row.fixed_text;
         auto *defaults = new QTableWidgetItem(default_text);
         defaults->setFlags(Qt::ItemIsEnabled);
         table_->setItem(row.table_row, DefaultColumn, defaults);
@@ -248,7 +260,9 @@ void KeymapDialog::rebuildKeysCell(int table_row) {
     cell_layout->setSpacing(3);
 
     if (row.fixed) {
-        auto *keys = new QLabel(keysText(row.fixed_keys), cell);
+        auto *keys = new QLabel(row.fixed_text.isEmpty() ? keysText(row.fixed_keys)
+                                                         : row.fixed_text,
+                                cell);
         keys->setObjectName(QStringLiteral("pelican.keymap.fixedKeys.") + row.id);
         cell_layout->addWidget(keys);
         auto *note = new QLabel(tr("fixed"), cell);

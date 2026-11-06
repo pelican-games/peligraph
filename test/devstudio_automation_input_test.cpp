@@ -2757,7 +2757,7 @@ TEST_CASE("KB-1 T4 New and Open project window shortcuts open dismissible dialog
     CHECK(opened);
 }
 
-TEST_CASE("KB-1 T5 Help opens a read-only table of keyboard shortcuts", "[devstudio][automation_input][shortcut][kb1]") {
+TEST_CASE("KB-1 T5 Help opens the keyboard shortcut editor", "[devstudio][automation_input][shortcut][kb1][km4]") {
     application();
     QTemporaryDir config;
     PelicanStudio::MainWindow window{config.path()};
@@ -2765,15 +2765,51 @@ TEST_CASE("KB-1 T5 Help opens a read-only table of keyboard shortcuts", "[devstu
     AutomationHost host; host.window = &window;
     const auto reply = runAutomationCommand(host, request("action", {{"name", "pelican.help.shortcuts"}}));
     REQUIRE(reply.ok);
-    auto *dialog = window.findChild<QDialog *>("pelican.help.shortcutsDialog");
+    auto *dialog = window.findChild<QDialog *>("pelican.keymap.dialog");
     REQUIRE(dialog); REQUIRE(dialog->isVisible());
-    auto *table = dialog->findChild<QTableWidget *>("pelican.help.shortcutsTable");
+    auto *table = dialog->findChild<QTableWidget *>("pelican.keymap.table");
     REQUIRE(table); CHECK(table->editTriggers() == QAbstractItemView::NoEditTriggers);
-    for (const auto *key : {"Ctrl+Z", "Ctrl+S", "Ctrl+P", "Delete", "Ctrl+D", "F", "Escape"}) {
+    for (const auto *key : {"Ctrl+Z", "Ctrl+S", "Ctrl+P", "Del", "Ctrl+D", "F", "Esc"}) {
         bool found = false;
-        for (int row = 0; row < table->rowCount(); ++row) found |= table->item(row, 1)->text().contains(key);
+        for (int row = 0; row < table->rowCount(); ++row) found |= table->item(row, 3)->text().contains(key);
         INFO(key); CHECK(found);
     }
+    dialog->reject();
+}
+
+TEST_CASE("KM-4 Help and Edit raise one keyboard shortcut dialog",
+          "[devstudio][automation_input][shortcut][km4]") {
+    application();
+    QTemporaryDir config;
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    window.activateWindow();
+    auto *help = window.findChild<QAction *>(QStringLiteral("pelican.help.shortcuts"));
+    auto *edit = window.findChild<QAction *>(QStringLiteral("pelican.edit.keymap"));
+    REQUIRE(help != nullptr);
+    REQUIRE(edit != nullptr);
+    CHECK(help->text() == QStringLiteral("Keyboard Shortcuts..."));
+    CHECK(edit->text() == help->text());
+
+    help->trigger();
+    QApplication::processEvents();
+    auto *dialog = window.findChild<QDialog *>(QStringLiteral("pelican.keymap.dialog"));
+    REQUIRE(dialog != nullptr);
+    REQUIRE(dialog->isVisible());
+    int visible_dialogs = 0;
+    for (QDialog *candidate : window.findChildren<QDialog *>()) {
+        if (candidate->isVisible()) ++visible_dialogs;
+    }
+    CHECK(visible_dialogs == 1);
+    CHECK(window.findChild<QDialog *>(QStringLiteral("pelican.help.shortcutsDialog")) == nullptr);
+
+    help->trigger();
+    QApplication::processEvents();
+    CHECK(window.findChildren<QDialog *>(QStringLiteral("pelican.keymap.dialog")).size() == 1);
+    edit->trigger();
+    QApplication::processEvents();
+    CHECK(window.findChild<QDialog *>(QStringLiteral("pelican.keymap.dialog")) == dialog);
+    CHECK(dialog->isVisible());
     dialog->reject();
 }
 
@@ -2974,7 +3010,7 @@ QStringList objectKeys(const QObject *object) {
 } // namespace
 
 TEST_CASE("KM-1a the Help rows are exactly the command declarations",
-          "[devstudio][automation_input][shortcut][km1a]") {
+          "[devstudio][automation_input][shortcut][km1a][km4]") {
     application();
     QTemporaryDir config;
     PelicanStudio::MainWindow window{config.path()};
@@ -3109,27 +3145,35 @@ TEST_CASE("KM-1a the Help rows are exactly the command declarations",
         CHECK_FALSE(less(rows[index], rows[index - 1]));
     }
 
-    // The Help menu's action, as a user opens it (showKeyboardShortcuts is private).
     auto *help_action = window.findChild<QAction *>(QStringLiteral("pelican.help.shortcuts"));
     REQUIRE(help_action != nullptr);
     help_action->trigger();
     QApplication::processEvents();
-    auto *dialog =
-        window.findChild<QDialog *>(QStringLiteral("pelican.help.shortcutsDialog"));
+    auto *dialog = window.findChild<QDialog *>(QStringLiteral("pelican.keymap.dialog"));
     REQUIRE(dialog != nullptr);
-    auto *table =
-        dialog->findChild<QTableWidget *>(QStringLiteral("pelican.help.shortcutsTable"));
+    auto *table = dialog->findChild<QTableWidget *>(QStringLiteral("pelican.keymap.table"));
     REQUIRE(table != nullptr);
-    REQUIRE(table->columnCount() == 3);
-    REQUIRE(table->rowCount() == static_cast<int>(rows.size()));
-    for (int row = 0; row < table->rowCount(); ++row) {
-        for (int column = 0; column < 3; ++column) {
-            const auto *item = table->item(row, column);
-            REQUIRE(item != nullptr);
-            INFO("table row " << row << " column " << column);
-            CHECK(item->text() == rows[static_cast<std::size_t>(row)]
-                                         [static_cast<std::size_t>(column)]);
+    REQUIRE(table->columnCount() == 4);
+    for (const auto &expected_row : rows) {
+        QString expected_keys = expected_row[1];
+        expected_keys.replace(QStringLiteral("Delete"), QStringLiteral("Del"));
+        expected_keys.replace(QStringLiteral("Escape"), QStringLiteral("Esc"));
+        bool found = false;
+        for (int row = 0; row < table->rowCount(); ++row) {
+            REQUIRE(table->item(row, 0) != nullptr);
+            REQUIRE(table->item(row, 1) != nullptr);
+            REQUIRE(table->item(row, 3) != nullptr);
+            if (table->item(row, 0)->text() == expected_row[0] &&
+                table->item(row, 1)->text() == expected_row[2] &&
+                table->item(row, 3)->text() == expected_keys) {
+                found = true;
+                break;
+            }
         }
+        INFO("missing dialog row: " << expected_row[0].toStdString() << " / "
+                                   << expected_row[1].toStdString() << " / "
+                                   << expected_row[2].toStdString());
+        CHECK(found);
     }
     dialog->reject();
 }
@@ -3210,7 +3254,7 @@ TEST_CASE("KM-1a the drift the old table showed is gone",
 }
 
 TEST_CASE("KM-1a KB-1 T5's names are still in the generated table",
-          "[devstudio][automation_input][shortcut][km1a]") {
+          "[devstudio][automation_input][shortcut][km1a][km4]") {
     application();
     QTemporaryDir config;
     PelicanStudio::MainWindow window{config.path()};
@@ -3221,17 +3265,15 @@ TEST_CASE("KM-1a KB-1 T5's names are still in the generated table",
     const auto reply =
         runAutomationCommand(host, request("action", {{"name", "pelican.help.shortcuts"}}));
     REQUIRE(reply.ok);
-    auto *dialog =
-        window.findChild<QDialog *>(QStringLiteral("pelican.help.shortcutsDialog"));
+    auto *dialog = window.findChild<QDialog *>(QStringLiteral("pelican.keymap.dialog"));
     REQUIRE(dialog);
-    auto *table =
-        dialog->findChild<QTableWidget *>(QStringLiteral("pelican.help.shortcutsTable"));
+    auto *table = dialog->findChild<QTableWidget *>(QStringLiteral("pelican.keymap.table"));
     REQUIRE(table);
-    for (const auto *key : {"Ctrl+Z", "Ctrl+S", "Ctrl+P", "Delete", "Ctrl+D", "F",
-                            "Escape"}) {
+    for (const auto *key : {"Ctrl+Z", "Ctrl+S", "Ctrl+P", "Del", "Ctrl+D", "F",
+                            "Esc"}) {
         bool found = false;
         for (int row = 0; row < table->rowCount(); ++row)
-            found |= table->item(row, 1)->text().contains(QString::fromLatin1(key));
+            found |= table->item(row, 3)->text().contains(QString::fromLatin1(key));
         INFO(key);
         CHECK(found);
     }
@@ -4643,7 +4685,7 @@ TEST_CASE("KM-3 rows contain registered commands once and instantiated menu leav
     CHECK(titles.count(QStringLiteral("Keyboard Shortcuts...")) == 1);
     CHECK(titles.contains(QStringLiteral("File › Import Sound…")));
     CHECK(titles.contains(QStringLiteral("View › Panels › Outliner")));
-    CHECK(titles.contains(QStringLiteral("Help › Keyboard Shortcuts…")));
+    CHECK(titles.contains(QStringLiteral("Help › Keyboard Shortcuts...")));
     CHECK_FALSE(titles.contains(QStringLiteral("Command Palette...")));
     CHECK_FALSE(titles.contains(QStringLiteral("Fit view")));
     CHECK_FALSE(titles.contains(QStringLiteral("Commit inline edit")));

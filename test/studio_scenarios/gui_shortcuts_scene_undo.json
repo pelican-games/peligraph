@@ -289,13 +289,13 @@
     },
     {
       "cmd": "wait",
-      "name": "pelican.help.shortcutsTable",
+      "name": "pelican.keymap.table",
       "visible": true,
       "timeout_ms": 10000
     },
     {
       "cmd": "key",
-      "name": "pelican.help.shortcutsDialog",
+      "name": "pelican.keymap.dialog",
       "sequence": "Escape"
     },
     {
