@@ -301,3 +301,54 @@ TEST_CASE("a graph filter is ORed across its keys and ANDed with Show", "[studio
     facts.kind = GraphFilterFacts::Kind::folded_feature;
     CHECK_FALSE(graphFilterMatches(empty, document, facts));
 }
+
+
+TEST_CASE("GF-1d a parent is the union and a pass fold matches only its name", "[studio][gf1d]") {
+    GraphFilters document;
+    document.feature_categories = {{"bloom", {"project"}}, {"ssao", {"lighting"}}};
+    GraphFilter root;
+    root.id = "root";
+    root.label = "Root";
+    GraphFilter middle;
+    middle.id = "middle";
+    middle.label = "Middle";
+    GraphFilter leaf;
+    leaf.id = "leaf";
+    leaf.label = "Leaf";
+    leaf.match.node_ids = {"deferred_lighting"};
+    leaf.match.ops = {"render.union"};
+    middle.children = {leaf};
+    root.children = {middle};
+
+    GraphFilterFacts facts;
+    facts.kind = GraphFilterFacts::Kind::node;
+    facts.node_id = "deferred_lighting";
+    CHECK(graphFilterMatches(root, document, facts));
+    facts.node_id = "other";
+    CHECK_FALSE(graphFilterMatches(root, document, facts));
+    facts.op = "render.union";
+    CHECK(graphFilterMatches(root, document, facts));
+    root.match.node_ids = {"own"};
+    facts = {};
+    facts.node_id = "own";
+    CHECK(graphFilterMatches(root, document, facts));
+
+    GraphFilter pass;
+    pass.match.node_ids = {"deferred_lighting"};
+    pass.match.ops = {"render.pass"};
+    pass.match.features = {"bloom"};
+    pass.match.feature_categories = {"lighting"};
+    facts = {};
+    facts.kind = GraphFilterFacts::Kind::folded_other;
+    facts.node_id = "deferred_lighting";
+    facts.op = "render.pass";
+    facts.feature_name = "bloom";
+    CHECK(graphFilterMatches(pass, document, facts));
+    facts.node_id = "other";
+    CHECK_FALSE(graphFilterMatches(pass, document, facts));
+    facts.kind = GraphFilterFacts::Kind::folded_feature;
+    facts.feature_name = "ssao";
+    CHECK(graphFilterMatches(pass, document, facts));
+    facts.feature_name = "other";
+    CHECK_FALSE(graphFilterMatches(pass, document, facts));
+}

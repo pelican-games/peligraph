@@ -23,6 +23,40 @@
         "forward_transparent": "forward_transparent"
       }
     },
+    "graph_filters": {
+      "schema": "pelican.graph_filters",
+      "version": 1,
+      "categories": [],
+      "feature_categories": {},
+      "filters": [
+        {
+          "id": "render",
+          "label": "Render",
+          "match": {},
+          "children": [
+            {
+              "id": "scene",
+              "label": "Scene",
+              "match": {
+                "node_ids": ["deferred_geometry", "forward_opaque", "forward_transparent"]
+              }
+            },
+            {
+              "id": "lighting",
+              "label": "Lighting",
+              "match": {
+                "node_ids": ["ssao_pass", "ssao_blur_pass", "deferred_lighting"]
+              }
+            },
+            {
+              "id": "present",
+              "label": "Present",
+              "match": {"node_ids": ["scene_present"]}
+            }
+          ]
+        }
+      ]
+    },
     "base": [
       {
         "family": "main_render",

@@ -4259,6 +4259,7 @@ RenderFeatureComposeResult composeRenderFeatureConfig(
     result.material_routing = std::move(material_routing);
     result.draw_sort = std::move(draw_sort);
     result.pipeline_preset = preset_resolution.preset;
+    result.preset_graph_filters = std::move(preset_resolution.preset_graph_filters);
     result.pass_provenance =
         std::move(pass_provenance);
     result.resource_provenance =

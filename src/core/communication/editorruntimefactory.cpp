@@ -2314,6 +2314,7 @@ std::unique_ptr<EditorCommandService> makeEditorRuntimeService(
                                 .pass_provenance =
                                     std::move(composed.pass_provenance),
                                 .pipeline_preset_bytes = std::move(preset_bytes),
+                                .preset_graph_filters = std::move(composed.preset_graph_filters),
                                 .resource_provenance =
                                     std::move(composed.resource_provenance),
                                 // FG-1: edit_target_planning reads them.

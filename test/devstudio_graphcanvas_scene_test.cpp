@@ -29573,13 +29573,26 @@ TEST_CASE("GF-1a the Graph's filter button follows the project file, and Reload 
             tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.post"));
         REQUIRE(post != nullptr);
         CHECK(post->isCheckable());
-        CHECK(tab.widget->findChild<QAction *>(
-                  QStringLiteral("pelican.graphCanvasFilter.filter.only_bloomed")) != nullptr);
-        CHECK(tab.widget->findChild<QAction *>(
-                  QStringLiteral("pelican.graphCanvasFilter.filter.nested")) == nullptr);
+        auto *only_bloomed = tab.widget->findChild<QAction *>(
+            QStringLiteral("pelican.graphCanvasFilter.filter.only_bloomed"));
+        REQUIRE(only_bloomed != nullptr);
+        auto *nested = tab.widget->findChild<QAction *>(
+            QStringLiteral("pelican.graphCanvasFilter.filter.nested"));
+        REQUIRE(nested != nullptr);
+        auto *post_menu = tab.widget->findChild<QMenu *>(
+            QStringLiteral("pelican.graphCanvasFilter.submenu.only_bloomed"));
+        REQUIRE(post_menu != nullptr);
+        CHECK(only_bloomed->text() == QStringLiteral("All Only bloomed"));
+        CHECK(post_menu->actions().contains(only_bloomed));
+        CHECK(post_menu->actions().contains(nested));
+        nested->trigger();
+        QCoreApplication::processEvents();
+        CHECK(button->toolTip().contains(QStringLiteral("Only bloomed ▸ Nested")));
         auto *all =
             tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.all"));
         REQUIRE(all != nullptr);
+        all->trigger();
+        QCoreApplication::processEvents();
         CHECK(all->isChecked());
 
         post->trigger();
@@ -32161,3 +32174,231 @@ TEST_CASE("GS-FUZZ4: long gesture mix keeps scene invariants", "[gs-fuzz4-long][
     fuzz4::run("long", 300, 40, true);
 }
 // ---- GS-FUZZ4 end ----
+
+
+TEST_CASE("GF-1d preset passes use their own document without a project document",
+          "[devstudio][graph-canvas][scene][gf1d]") {
+    (void)application();
+    const Json encoded{
+        {"schema", "pelican.graph_filters"}, {"version", 1},
+        {"categories", Json::array()}, {"feature_categories", Json::object()},
+        {"filters", Json::array({{{"id", "render"}, {"label", "Render"},
+            {"match", Json::object()}, {"children", Json::array({
+                {{"id", "scene"}, {"label", "Scene"},
+                 {"match", {{"node_ids", Json::array({"deferred_geometry", "forward_opaque"})}}}},
+                {{"id", "lighting"}, {"label", "Lighting"},
+                 {"match", {{"node_ids", Json::array({"ssao_pass", "deferred_lighting"})}}}},
+                {{"id", "present"}, {"label", "Present"},
+                 {"match", {{"node_ids", Json::array({"scene_present"})}}}}})}}})}};
+    auto parsed = Pelican::parseGraphFilters(encoded);
+    REQUIRE(parsed.document.has_value());
+    Json plan = gf1aPlan();
+    plan["nodes"] = Json::array({
+        gl1bPass("deferred_geometry", 0, "engine", Json::array(), Json::array({"geometry"})),
+        gl1bPass("ssao_pass", 1, "engine", Json::array(), Json::array({"ao"})),
+        gl1bPass("deferred_lighting", 2, "engine", Json::array({"ao"}), Json::array({"lit"})),
+        gl1bPass("scene_present", 3, "engine", Json::array({"lit"}), Json::array({"display"}))});
+    plan["nodes"][0]["shader_resolution"] = {{"state", "material_owned"}};
+    GraphCanvasModel model;
+    model.setConnected(true);
+    for (int pass = 0; pass < 3; ++pass)
+        for (const auto &request : model.takeRpcRequests()) {
+            if (request.method == "get_graph_instances")
+                model.receiveRpcResult(request.request_id, gf1aRead().dump());
+            else if (request.method == "get_frame_plan")
+                model.receiveRpcResult(request.request_id, plan.dump());
+        }
+    REQUIRE_FALSE(model.graphFilters().document.has_value());
+    model.setPresetGraphFilters(parsed.document);
+    GraphCanvasScene scene;
+    scene.setModel(&model);
+    REQUIRE(nodeItem(scene, QStringLiteral("deferred_geometry")) != nullptr);
+    REQUIRE(nodeItem(scene, QStringLiteral("deferred_lighting")) != nullptr);
+    REQUIRE(model.setActiveGraphFilter("preset:render"));
+    scene.repopulate();
+    CHECK(nodeItem(scene, QStringLiteral("deferred_geometry")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("ssao_pass")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("deferred_lighting")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("scene_present")) != nullptr);
+    REQUIRE(model.setActiveGraphFilter("preset:scene"));
+    scene.repopulate();
+    CHECK(nodeItem(scene, QStringLiteral("deferred_geometry")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("deferred_lighting")) == nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("scene_present")) == nullptr);
+    REQUIRE(scene.enterFolded("deferred_geometry"));
+    CHECK(nodeItem(scene, QStringLiteral("deferred_geometry")) != nullptr);
+    model.leaveFolded();
+    scene.repopulate();
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"preset:scene"});
+    auto removed = *parsed.document;
+    removed.filters.front().children.erase(removed.filters.front().children.begin());
+    model.setPresetGraphFilters(std::move(removed));
+    scene.repopulate();
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(nodeItem(scene, QStringLiteral("deferred_lighting")) != nullptr);
+}
+
+
+TEST_CASE("GF-1d the filter menu nests documents and reloads preset data safely",
+          "[devstudio][graph-canvas][scene][gf1d]") {
+    (void)application();
+    auto project_filters = gf1aFilters();
+    project_filters["filters"].push_back({{"id", "scene"}, {"label", "Project scene"},
+        {"match", {{"node_ids", Json::array({"bloomed"})}}}});
+    Gf1aProject project{project_filters};
+    Ux2Tab tab{true, true};
+    tab.widget->setProjectRoot(project.root());
+    tab.read(gf1aRead(), "gf1d");
+    tab.answer("get_frame_plan", gf1aPlan());
+    Json preset{
+        {"schema", "pelican.graph_filters"}, {"version", 1},
+        {"categories", Json::array({{{"id", "preset_post"}, {"label", "Preset post"}}})},
+        {"feature_categories", {{"bloom", Json::array({"preset_post"})}}},
+        {"filters", Json::array({{{"id", "render"}, {"label", "Render"},
+            {"match", Json::object()}, {"children", Json::array({
+                {{"id", "scene"}, {"label", "Scene"},
+                 {"match", {{"node_ids", Json::array({"gbuffer"})}}}},
+                {{"id", "lighting"}, {"label", "Lighting"},
+                 {"match", {{"node_ids", Json::array({"lighting"})}}}}})}},
+            {{"id", "own_categories"}, {"label", "Preset categories"},
+             {"match", {{"feature_categories", Json::array({"preset_post"})}}}}})}};
+    auto context = ux2Authoring();
+    context["pipeline_preset"] = {{"reference", "engine://recipe"}, {"name", "Hybrid"}};
+    context["preset_graph_filters"] = preset;
+    tab.answer("get_render_authoring_context", context);
+    auto &model = tab.widget->model();
+    auto &scene = tab.widget->scene();
+    auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
+    auto *root_menu = tab.field<QMenu>("pelican.graphCanvasFilterMenu");
+    auto *project_scene = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.scene"));
+    auto *preset_scene = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.preset:scene"));
+    auto *render = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.preset:render"));
+    auto *preset_menu = tab.widget->findChild<QMenu *>(
+        QStringLiteral("pelican.graphCanvasFilter.submenu.preset:render"));
+    auto *header = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.presetHeader"));
+    REQUIRE(project_scene != nullptr);
+    REQUIRE(preset_scene != nullptr);
+    REQUIRE(render != nullptr);
+    REQUIRE(preset_menu != nullptr);
+    REQUIRE(header != nullptr);
+    CHECK(render->text() == QStringLiteral("All Render"));
+    CHECK_FALSE(preset_menu->menuAction()->isCheckable());
+    CHECK_FALSE(header->isEnabled());
+    CHECK(header->text() == QStringLiteral("From preset Hybrid"));
+    CHECK(project_scene != preset_scene);
+    QPointer<QMenu> old_menu = preset_menu;
+    const int menu_count = root_menu->findChildren<QMenu *>().size();
+
+    render->trigger();
+    QCoreApplication::processEvents();
+    CHECK(nodeItem(scene, QStringLiteral("gbuffer")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("lighting")) != nullptr);
+    preset_scene->trigger();
+    QCoreApplication::processEvents();
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"preset:scene"});
+    CHECK(nodeItem(scene, QStringLiteral("gbuffer")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("lighting")) == nullptr);
+    CHECK(button->text() == QStringLiteral("Filter: Scene"));
+    CHECK(button->toolTip().contains(QStringLiteral("Render ▸ Scene")));
+    project_scene->trigger();
+    QCoreApplication::processEvents();
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"scene"});
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("gbuffer")) == nullptr);
+    tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.preset:own_categories"))->trigger();
+    QCoreApplication::processEvents();
+    CHECK(nodeItem(scene, QStringLiteral("feature:bloom")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+
+    root_menu->popup(QPoint{20, 20});
+    preset_menu->popup(QPoint{40, 40});
+    QCoreApplication::processEvents();
+    REQUIRE(preset_menu->isVisible());
+    preset["filters"][0]["children"][0]["label"] = "Deferred scene";
+    context["preset_graph_filters"] = preset;
+    tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.reload"))->trigger();
+    QCoreApplication::processEvents();
+    tab.answer("get_render_authoring_context", context);
+    CHECK(preset_menu->isVisible());
+    CHECK_FALSE(old_menu.isNull());
+    preset_menu->hide();
+    root_menu->hide();
+    QCoreApplication::processEvents();
+    CHECK(old_menu.isNull());
+
+    for (int reload = 0; reload < 3; ++reload) {
+        tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.reload"))->trigger();
+        QCoreApplication::processEvents();
+        tab.answer("get_render_authoring_context", context);
+        QCoreApplication::processEvents();
+        CHECK(root_menu->findChildren<QMenu *>().size() == menu_count);
+    }
+    CHECK(old_menu.isNull());
+    const auto preset_reload = [&] {
+        tab.widget->documentsReloadedFromDisk();
+        QCoreApplication::processEvents();
+        tab.answer("get_render_authoring_context", context);
+    };
+    preset["filters"][0]["children"][0]["label"] = "Hot scene";
+    context["preset_graph_filters"] = preset;
+    preset_reload();
+    preset_scene = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.preset:scene"));
+    REQUIRE(preset_scene != nullptr);
+    preset_scene->trigger();
+    QCoreApplication::processEvents();
+    context["pipeline_preset"]["source_digest"] = {{"hex", "hot-reload"}};
+    preset_reload();
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"preset:scene"});
+    CHECK(button->text() == QStringLiteral("Filter: Hot scene"));
+    context["pipeline_preset"]["reference"] = "engine://other_recipe";
+    preset_reload();
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    tab.transport.availability(false);
+    QCoreApplication::processEvents();
+    CHECK(tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.presetHeader")) == nullptr);
+    CHECK(tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.scene")) != nullptr);
+}
+
+TEST_CASE("GF-1d a preset-only plan requests the filters shown in the Graph menu",
+          "[devstudio][graph-canvas][scene][gf1d]") {
+    (void)application();
+    Ux2Tab tab{true, true};
+    tab.read(gf1aRead(), "gf1d-preset-plan");
+    REQUIRE(tab.reads("get_render_authoring_context") == 0);
+
+    auto plan = gf1aPlan();
+    for (auto &node : plan["nodes"]) node["source"] = "engine";
+    plan["pipeline_preset"] = {
+        {"ref", "engine://render_pipelines/experimental/hybrid_recipe.json"},
+        {"name", "hybrid_recipe"}, {"version", 2}};
+    tab.answer("get_frame_plan", plan);
+    REQUIRE(tab.reads("get_render_authoring_context") == 1);
+
+    auto context = ux2Authoring();
+    context["pipeline_preset"] = {
+        {"reference", "engine://render_pipelines/experimental/hybrid_recipe.json"},
+        {"name", "hybrid_recipe"}};
+    context["preset_graph_filters"] = {
+        {"schema", "pelican.graph_filters"}, {"version", 1},
+        {"categories", Json::array()}, {"feature_categories", Json::object()},
+        {"filters", Json::array({{{"id", "lighting"}, {"label", "Lighting"},
+            {"match", {{"node_ids", Json::array({"lighting"})}}}}})}};
+    tab.answer("get_render_authoring_context", context);
+    auto *lighting = tab.widget->findChild<QAction *>(
+        QStringLiteral("pelican.graphCanvasFilter.filter.preset:lighting"));
+    REQUIRE(lighting != nullptr);
+    lighting->trigger();
+    QCoreApplication::processEvents();
+    CHECK(tab.widget->model().activeGraphFilter() ==
+          std::optional<std::string>{"preset:lighting"});
+    CHECK(nodeItem(tab.widget->scene(), QStringLiteral("lighting")) != nullptr);
+    CHECK(nodeItem(tab.widget->scene(), QStringLiteral("gbuffer")) == nullptr);
+}

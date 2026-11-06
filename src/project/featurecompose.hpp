@@ -63,6 +63,7 @@ struct RenderFeatureComposeResult {
     nlohmann::json material_routing;
     nlohmann::json draw_sort;
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
+    std::optional<GraphFilters> preset_graph_filters;
     std::vector<RenderPassProvenance> pass_provenance;
     std::vector<RenderResourceProvenance> resource_provenance;
     // LP-1a: every graph.loop of a pelican.graph root, as the resolution

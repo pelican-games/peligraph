@@ -1,0 +1,11 @@
+{
+  "schema": "pelican.graph",
+  "version": 1,
+  "nodes": [],
+  "outputs": {},
+  "rendering": {
+    "pipeline": {
+      "preset": "engine://render_pipelines/experimental/hybrid_recipe.json"
+    }
+  }
+}

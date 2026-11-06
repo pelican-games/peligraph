@@ -673,3 +673,21 @@ TEST_CASE("RC-7c C5 sixteen fixed snapshots retain every semantic field", "[.][r
     }
     std::ofstream{"<作業ディレクトリ>/rc7d_c5_details.json"}<<report.dump(2);
 }
+
+
+TEST_CASE("GF-1d preset graph filters do not affect the compiled plan", "[rendercompiler][rc5][gf1d]") {
+    const auto recipe = Rc5Json::parse(PathResolver{}.loadText(
+        "engine://render_pipelines/experimental/hybrid_recipe.json"));
+    auto without_filters = recipe;
+    without_filters["config"].erase("graph_filters");
+    const std::map<std::string, Rc5Json> documents{
+        {"render_pipelines/with_filters.json", recipe},
+        {"render_pipelines/without_filters.json", without_filters},
+    };
+    auto with_root = rc5Document(false, false, false);
+    auto without_root = with_root;
+    with_root["rendering"]["pipeline"]["preset"] = "project://render_pipelines/with_filters.json";
+    without_root["rendering"]["pipeline"]["preset"] = "project://render_pipelines/without_filters.json";
+    CHECK(rc5Comparable(rc5Snapshot(rc5Compile(with_root, false, nullptr, documents))) ==
+          rc5Comparable(rc5Snapshot(rc5Compile(without_root, false, nullptr, documents))));
+}

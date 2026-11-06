@@ -1214,6 +1214,9 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
         recipe.config.erase("target_planning");
         document["config"] = std::move(recipe.config);
         overlay.erase("fragment_overrides");
+    } else if (document.at("config").contains("graph_filters")) {
+        throw std::runtime_error("render pipeline preset config graph_filters requires version 2: " +
+                                 reference);
     } else if (authored_config.contains("fragment_overrides")) {
         throw GraphRegistryError("render_pipeline.fragment_overrides_need_recipe@1", nlohmann::json::object());
     }
@@ -1339,9 +1342,9 @@ RenderPipelinePresetResolution resolveRenderPipelinePreset(
             resolved["xr"] = settings.at("xr");
         }
     }
-    return {std::move(resolved), RenderPipelinePresetInfo{
-                                         reference, name, version},
-            std::move(recipe.fragment_passes), std::move(recipe.fragment_targets), std::move(recipe.planning_sources)};
+    return {std::move(resolved), RenderPipelinePresetInfo{reference, name, version},
+            std::move(recipe.preset_graph_filters), std::move(recipe.fragment_passes),
+            std::move(recipe.fragment_targets), std::move(recipe.planning_sources)};
 }
 
 namespace {

@@ -700,6 +700,8 @@ std::unique_ptr<RenderConfigEditorService> makeProjectService(
                         .pass_provenance =
                             std::move(composition.pass_provenance),
                         .pipeline_preset_bytes = std::move(preset_bytes),
+                        .preset_graph_filters =
+                            std::move(composition.preset_graph_filters),
                         .resource_provenance =
                             std::move(composition.resource_provenance),
                         .fold_planning = std::move(composition.fold_planning),
@@ -14671,3 +14673,50 @@ TEST_CASE("RC-6b2 removed planning RPCs are unknown methods", "[render-config-ed
     }
 }
 } // namespace Pelican
+
+using namespace Pelican;
+
+TEST_CASE("GF-1d authoring context exposes preset filters and preserves them through a fork",
+          "[render-config-editor][preset-fork][gf1d]") {
+    TemporaryAnimgraphProject project;
+    PathResolver resolver;
+    resolver.setup(project.root, false);
+    auto initial = Json::parse(readBytes(project.render_config));
+    renderingSectionOf(initial)["pipeline"]["preset"] =
+        "engine://render_pipelines/experimental/hybrid_recipe.json";
+    writeBytes(project.render_config, initial.dump());
+    ActualCpuRenderRuntime runtime;
+    auto service = makeProjectService(project, resolver, runtime);
+    const auto before = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(before.at("pipeline_preset").at("reference") ==
+            "engine://render_pipelines/experimental/hybrid_recipe.json");
+    const auto recipe = Json::parse(resolver.loadText(
+        "engine://render_pipelines/experimental/hybrid_recipe.json"));
+    CHECK(Json(before.at("preset_graph_filters")) ==
+          recipe.at("config").at("graph_filters"));
+
+    const Json request{
+        {"base_source_digest", before.at("source_digest").at("hex")},
+        {"base_preset_digest", before.at("pipeline_preset").at("source_digest").at("hex")},
+        {"destination_reference", "project://passes/local-pipeline.json"}};
+    const auto accepted = service->forkRenderPipeline(request);
+    REQUIRE(accepted.at("status") == "accepted");
+    service->commitPending();
+    REQUIRE(service->getResult({{"ticket", accepted.at("ticket")}}).at("committed") == true);
+    const auto forked = Json::parse(readBytes(project.root / "passes" / "local-pipeline.json"));
+    CHECK(forked.at("version") == 2);
+    CHECK(forked.at("config").at("graph_filters") == recipe.at("config").at("graph_filters"));
+    service.reset();
+    service = makeProjectService(project, resolver, runtime);
+    CHECK(Json(service->getRenderAuthoringContext(Json::object()).at("preset_graph_filters")) ==
+          recipe.at("config").at("graph_filters"));
+
+    auto root = Json::parse(readBytes(project.render_config));
+    renderingSectionOf(root)["pipeline"]["preset"] = "engine://render_pipelines/hybrid_v1.json";
+    writeBytes(project.render_config, root.dump());
+    service.reset();
+    service = makeProjectService(project, resolver, runtime);
+    const auto legacy = service->getRenderAuthoringContext(Json::object());
+    REQUIRE(legacy.contains("preset_graph_filters"));
+    CHECK(legacy.at("preset_graph_filters").is_null());
+}

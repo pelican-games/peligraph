@@ -9313,6 +9313,10 @@ struct GraphCanvasWidget::Impl {
     std::map<std::filesystem::path, GraphFiltersEdit> graph_filter_sessions;
     std::uint64_t graph_filter_project_generation = 0;
     std::uint64_t graph_filter_engine_generation = 0;
+    std::uint64_t graph_filter_context_revision = 0;
+    std::string graph_filter_preset_reference;
+    std::string graph_filter_preset_name;
+    bool graph_filter_menu_dirty = false;
     bool graph_filter_engine_ready = false;
     struct GraphFilterTransport {
         std::filesystem::path root;
@@ -9670,6 +9674,11 @@ struct GraphCanvasWidget::Impl {
         graph_filter_menu->setObjectName(QStringLiteral("pelican.graphCanvasFilterMenu"));
         graph_filter_menu->setToolTipsVisible(true);
         graph_filter_button->setMenu(graph_filter_menu);
+        QObject::connect(graph_filter_menu, &QMenu::aboutToHide, &guard, [this] {
+            if (graph_filter_menu_dirty)
+                QMetaObject::invokeMethod(&guard, [this] { rebuildGraphFilterMenu(); },
+                                          Qt::QueuedConnection);
+        });
         graph_filter_dialog = new GraphFiltersDialog(&view);
         graph_filter_dialog->requestReady = [this] { sendGraphFilterRequests(); };
         graph_filter_dialog->rootFacts = [this] {
@@ -10910,9 +10919,8 @@ struct GraphCanvasWidget::Impl {
                         session->second.engineGone();
                     }
                 }
-                rebuildGraphFilterMenu();
-                syncGraphFilterControls();
                 model.setConnected(available);
+                clearPresetGraphFilters();
                 dispatch();
             });
 
@@ -11987,6 +11995,7 @@ struct GraphCanvasWidget::Impl {
             model_id,
             std::string_view(result_json.constData(),
                              static_cast<std::size_t>(result_json.size())));
+        syncPresetGraphFilters();
         followDocument();
         dispatch();
         tellPlanCommit();
@@ -12433,7 +12442,17 @@ struct GraphCanvasWidget::Impl {
     // GF-1b: built-ins and user ids have separate action-name namespaces.
     void rebuildGraphFilterMenu() {
         if (graph_filter_menu == nullptr || graph_filter_button == nullptr) return;
+        const auto visible = graph_filter_menu->isVisible() ||
+            std::ranges::any_of(graph_filter_menu->findChildren<QMenu *>(),
+                                [](const QMenu *menu) { return menu->isVisible(); });
+        if (visible) {
+            graph_filter_menu_dirty = true;
+            return;
+        }
+        graph_filter_menu_dirty = false;
         graph_filter_menu->clear();
+        const auto old_menus = graph_filter_menu->findChildren<QMenu *>(Qt::FindDirectChildrenOnly);
+        for (QMenu *menu : old_menus) delete menu;
         delete graph_filter_group;
         graph_filter_group = new QActionGroup(graph_filter_menu);
         graph_filter_group->setExclusive(true);
@@ -12447,18 +12466,54 @@ struct GraphCanvasWidget::Impl {
         QObject::connect(all, &QAction::triggered, &guard, [this] {
             selectGraphFilter(std::nullopt);
         });
-        if (read.document)
-            for (const auto &filter : read.document->filters) {
-                auto *action = graph_filter_menu->addAction(qtext(filter.label));
-                action->setObjectName(QStringLiteral("pelican.graphCanvasFilter.filter.") + qtext(filter.id));
-                action->setData(qtext(filter.id));
-                action->setCheckable(true);
-                action->setChecked(model.activeGraphFilter() == filter.id);
-                action->setToolTip(qtext(filter.label));
-                graph_filter_group->addAction(action);
-                QObject::connect(action, &QAction::triggered, &guard,
-                                 [this, id = filter.id] { selectGraphFilter(id); });
+        const auto addFilters = [this](const auto &self, QMenu *menu,
+                                       const std::vector<GraphFilter> &filters,
+                                       const std::string &prefix, const QStringList &parents) -> void {
+            for (const auto &filter : filters) {
+                const auto id = prefix + filter.id;
+                const auto path = parents + QStringList{qtext(filter.label)};
+                QMenu *destination = menu;
+                if (!filter.children.empty()) {
+                    auto *submenu = menu->addMenu(qtext(filter.label));
+                    submenu->setObjectName(QStringLiteral("pelican.graphCanvasFilter.submenu.") +
+                                           qtext(id));
+                    submenu->menuAction()->setToolTip(path.join(QStringLiteral(" ▸ ")));
+                    auto *every = submenu->addAction(QObject::tr("All %1").arg(qtext(filter.label)));
+                    every->setObjectName(QStringLiteral("pelican.graphCanvasFilter.filter.") + qtext(id));
+                    every->setData(qtext(id));
+                    every->setCheckable(true);
+                    every->setChecked(model.activeGraphFilter() == id);
+                    every->setToolTip(path.join(QStringLiteral(" ▸ ")));
+                    graph_filter_group->addAction(every);
+                    QObject::connect(every, &QAction::triggered, &guard,
+                                     [this, id] { selectGraphFilter(id); });
+                    destination = submenu;
+                } else {
+                    auto *action = menu->addAction(qtext(filter.label));
+                    action->setObjectName(QStringLiteral("pelican.graphCanvasFilter.filter.") + qtext(id));
+                    action->setData(qtext(id));
+                    action->setCheckable(true);
+                    action->setChecked(model.activeGraphFilter() == id);
+                    action->setToolTip(path.join(QStringLiteral(" ▸ ")));
+                    graph_filter_group->addAction(action);
+                    QObject::connect(action, &QAction::triggered, &guard,
+                                     [this, id] { selectGraphFilter(id); });
+                }
+                if (!filter.children.empty())
+                    self(self, destination, filter.children, prefix, path);
             }
+        };
+        if (read.document)
+            addFilters(addFilters, graph_filter_menu, read.document->filters, {}, {});
+        if (model.presetGraphFilters()) {
+            graph_filter_menu->addSeparator();
+            auto *header = graph_filter_menu->addAction(
+                QObject::tr("From preset %1").arg(qtext(graph_filter_preset_name)));
+            header->setObjectName(QStringLiteral("pelican.graphCanvasFilter.presetHeader"));
+            header->setEnabled(false);
+            addFilters(addFilters, graph_filter_menu, model.presetGraphFilters()->filters,
+                       "preset:", {});
+        }
         graph_filter_menu->addSeparator();
         auto *edit = graph_filter_menu->addAction(QObject::tr("Edit filters..."));
         edit->setObjectName(QStringLiteral("pelican.graphCanvasFilter.edit"));
@@ -12485,16 +12540,19 @@ struct GraphCanvasWidget::Impl {
             const QFontMetrics metrics{graph_filter_button->font()};
             return metrics.elidedText(text, Qt::ElideRight, metrics.averageCharWidth() * 24);
         };
-        const auto *filter = read.document && model.activeGraphFilter()
-                                 ? findGraphFilter(*read.document, *model.activeGraphFilter())
-                                 : nullptr;
-        const auto label = !read.document && !read.error.empty()
+        const auto path = model.activeGraphFilterPath();
+        const auto label = !read.document && !read.error.empty() && !model.activeGraphFilter()
                                ? QObject::tr("invalid")
-                               : (filter != nullptr ? qtext(filter->label) : QObject::tr("All"));
+                               : (!path.empty() ? qtext(path.back()) : QObject::tr("All"));
         const auto text = QObject::tr("Filter: %1").arg(label);
         graph_filter_button->setVisible(!project_root.empty());
         graph_filter_button->setText(elide(text));
         auto tooltip = text;
+        if (path.size() > 1) {
+            QStringList labels;
+            for (const auto &entry : path) labels.push_back(qtext(entry));
+            tooltip += QStringLiteral("\n") + labels.join(QStringLiteral(" ▸ "));
+        }
         if (!read.error.empty()) tooltip += QStringLiteral("\n") + qtext(read.error);
         if (!graph_filter_engine_ready) tooltip += QStringLiteral("\n") + QObject::tr("No engine connected");
         graph_filter_button->setToolTip(tooltip);
@@ -12531,7 +12589,50 @@ struct GraphCanvasWidget::Impl {
         const bool had_active = model.activeGraphFilter().has_value();
         const bool had_document = model.graphFilters().document.has_value();
         refreshGraphFilters();
+        if (model.presetGraphFilters()) model.readRenderAuthoringAgain();
         if (had_active || had_document != model.graphFilters().document.has_value()) dispatch();
+    }
+
+    void clearPresetGraphFilters() {
+        graph_filter_preset_reference.clear();
+        graph_filter_preset_name.clear();
+        model.setPresetGraphFilters(std::nullopt);
+        rebuildGraphFilterMenu();
+        syncGraphFilterControls();
+    }
+
+    void syncPresetGraphFilters() {
+        const auto revision = model.authoringRevision();
+        if (revision == graph_filter_context_revision) return;
+        graph_filter_context_revision = revision;
+        const auto &context = model.renderAuthoringContext();
+        std::string reference;
+        std::string name;
+        if (const auto preset = context.find("pipeline_preset");
+            preset != context.end() && preset->is_object()) {
+            reference = preset->value("reference", std::string{});
+            name = preset->value("name", std::string{});
+        }
+        if (reference != graph_filter_preset_reference && model.activeGraphFilter() &&
+            model.activeGraphFilter()->starts_with("preset:"))
+            (void)model.setActiveGraphFilter(std::nullopt);
+        std::optional<GraphFilters> document;
+        if (const auto encoded = context.find("preset_graph_filters");
+            encoded != context.end() && encoded->is_object()) {
+            auto parsed = Pelican::parseGraphFilters(*encoded);
+            if (parsed.document) document = std::move(parsed.document);
+        }
+        const bool changed = name != graph_filter_preset_name ||
+                             document != model.presetGraphFilters();
+        graph_filter_preset_reference = std::move(reference);
+        graph_filter_preset_name = std::move(name);
+        if (!changed) {
+            syncGraphFilterControls();
+            return;
+        }
+        model.setPresetGraphFilters(std::move(document));
+        rebuildGraphFilterMenu();
+        syncGraphFilterControls();
     }
 
     GraphFiltersEdit &currentGraphFilterSession() {
@@ -15239,6 +15340,7 @@ void GraphCanvasWidget::importSounds(const std::vector<std::filesystem::path> &f
 
 void GraphCanvasWidget::projectEngineChanging() {
     impl_->graph_filter_engine_ready = false;
+    impl_->clearPresetGraphFilters();
 }
 
 void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root) {
@@ -15257,6 +15359,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
         // GF-1a: a chosen filter is that project's; it goes even when the
         // next project has a filter with the same id.
         (void)impl_->model.setActiveGraphFilter(std::nullopt);
+        impl_->clearPresetGraphFilters();
     }
     impl_->project_root = project_root;
     impl_->activateGraphFilterProject();
@@ -15337,6 +15440,7 @@ void GraphCanvasWidget::setInitialAssetsAction(
 void GraphCanvasWidget::shadersReloaded() {
     // As Refresh does: the document, then the plan with the declarations
     // the reload may have moved. An edit in the air reads them when it lands.
+    if (impl_->model.presetGraphFilters()) impl_->model.readRenderAuthoringAgain();
     if (!impl_->model.canRefresh()) return;
     impl_->model.refresh();
     impl_->dispatch();
@@ -15349,6 +15453,7 @@ void GraphCanvasWidget::renderHistoryRestored(const std::string &digest) {
 void GraphCanvasWidget::documentsReloadedFromDisk() {
     impl_->model.forgetHistory();
     impl_->edit_order.clear();
+    if (impl_->model.presetGraphFilters()) impl_->model.readRenderAuthoringAgain();
     if (impl_->model.canRefresh()) impl_->model.refresh();
     impl_->dispatch();
 }

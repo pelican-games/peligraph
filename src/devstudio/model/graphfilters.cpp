@@ -70,25 +70,28 @@ const Pelican::GraphFilter *findGraphFilter(const Pelican::GraphFilters &filters
 
 bool graphFilterMatches(const Pelican::GraphFilter &filter, const Pelican::GraphFilters &document,
                         const GraphFilterFacts &facts) {
-    const auto &match = filter.match;
-    if (facts.kind == GraphFilterFacts::Kind::node) {
-        for (const auto &op : match.ops) {
-            if (op.empty()) continue;
-            if (op.back() == '.') {
-                if (facts.op.starts_with(op)) return true;
-            } else if (facts.op == op) {
-                return true;
-            }
+    const auto matchesOwn = [&] {
+        const auto &match = filter.match;
+        if (facts.kind == GraphFilterFacts::Kind::node ||
+            facts.kind == GraphFilterFacts::Kind::folded_other) {
+            bool matches = facts.kind == GraphFilterFacts::Kind::node &&
+                           std::ranges::any_of(match.ops, [&](const std::string &op) {
+                               return !op.empty() && (op.back() == '.' ? facts.op.starts_with(op)
+                                                                       : facts.op == op);
+                           });
+            return matches || std::ranges::find(match.node_ids, facts.node_id) != match.node_ids.end();
         }
-        return std::ranges::find(match.node_ids, facts.node_id) != match.node_ids.end();
-    }
-    if (facts.kind != GraphFilterFacts::Kind::folded_feature) return false;
-    if (std::ranges::find(match.features, facts.feature_name) != match.features.end()) return true;
-    return std::ranges::any_of(match.feature_categories, [&](const std::string &category) {
-        return std::ranges::any_of(document.feature_categories, [&](const auto &entry) {
-            return entry.first == facts.feature_name &&
-                   std::ranges::find(entry.second, category) != entry.second.end();
+        if (facts.kind != GraphFilterFacts::Kind::folded_feature) return false;
+        if (std::ranges::find(match.features, facts.feature_name) != match.features.end()) return true;
+        return std::ranges::any_of(match.feature_categories, [&](const std::string &category) {
+            return std::ranges::any_of(document.feature_categories, [&](const auto &entry) {
+                return entry.first == facts.feature_name &&
+                       std::ranges::find(entry.second, category) != entry.second.end();
+            });
         });
+    };
+    return matchesOwn() || std::ranges::any_of(filter.children, [&](const Pelican::GraphFilter &child) {
+        return graphFilterMatches(child, document, facts);
     });
 }
 

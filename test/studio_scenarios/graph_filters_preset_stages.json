@@ -1,0 +1,106 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_filters_preset_stages",
+  "description": "GF-1d: hybrid_recipe supplies a read-only Render filter section. Both deferred pass folds are drawn before filtering; Lighting leaves deferred_lighting and removes deferred_geometry, and All brings both back.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "select the recipe that carries preset filters",
+      "file": "write",
+      "path": "{project}/passes/main.json",
+      "text": "{\n  \"schema\": \"pelican.graph\",\n  \"version\": 1,\n  \"nodes\": [],\n  \"outputs\": {},\n  \"rendering\": {\n    \"pipeline\": {\n      \"preset\": \"engine://render_pipelines/experimental/hybrid_recipe.json\"\n    }\n  }\n}\n"
+    },
+    {
+      "label": "open an untouched project first so this is a project switch",
+      "cmd": "open_project",
+      "dir": "{other_project}"
+    },
+    {
+      "label": "the switched-to engine answers",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "open the recipe project",
+      "cmd": "open_project",
+      "dir": "{project}"
+    },
+    {
+      "label": "the recipe engine answers",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the Graph tab is in front",
+      "cmd": "action",
+      "name": "pelican.view.renderTools.graph"
+    },
+    {
+      "label": "preset filters arrived, listed in the Filter menu",
+      "expect": "result",
+      "command": {"cmd": "menu_list", "pattern": "pelican.graphCanvasFilter.filter.preset:lighting"},
+      "path": "count",
+      "value": 1,
+      "retry_ms": 120000
+    },
+    {
+      "label": "precondition: deferred geometry is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#deferred_geometry",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "precondition: deferred lighting is drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#deferred_lighting",
+      "visible": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "choose the preset Lighting filter through its submenu path",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.filter.preset:lighting"
+    },
+    {
+      "label": "deferred lighting remains drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#deferred_lighting",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "deferred geometry is gone after a step that saw it drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#deferred_geometry",
+      "missing": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "return to All",
+      "cmd": "action",
+      "name": "pelican.graphCanvasFilter.all"
+    },
+    {
+      "label": "deferred geometry is back",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#deferred_geometry",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "deferred lighting is still drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#deferred_lighting",
+      "visible": true,
+      "timeout_ms": 30000
+    }
+  ]
+}

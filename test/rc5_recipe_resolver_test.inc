@@ -181,3 +181,46 @@ TEST_CASE("RC-6b2 removed planning keys are refused in preset recipe and structu
         }, "target_planning.legacy_package_removed@1", {{"key", key}});
     }
 }
+
+
+TEST_CASE("GF-1d recipe graph filters are read-only preset data", "[render-feature][pipeline-preset][rc5][gf1d]") {
+    const auto shipped = resolveRenderPipelinePreset(recipeRoot(), loadEngineFeature);
+    REQUIRE(shipped.preset_graph_filters.has_value());
+    REQUIRE(shipped.preset_graph_filters->filters.size() == 1);
+    CHECK(shipped.preset_graph_filters->filters.front().id == "render");
+    CHECK(shipped.preset_graph_filters->filters.front().children.size() == 3);
+    CHECK_FALSE(shipped.config.contains("graph_filters"));
+    const auto merged = composeRenderFeatureConfig(recipeRoot(),
+        RenderFeatureComposeDependencies{
+            .load_feature_json = loadEngineFeature,
+            .runtime_shader_compiler_enabled = true,
+            .load_pipeline_json = loadEngineFeature,
+        });
+    CHECK_FALSE(merged.config.contains("graph_filters"));
+
+    auto recipe = recipeDocument();
+    const auto load = [&](std::string_view ref) {
+        return ref == "test://recipe" ? recipe.dump() : loadEngineFeature(ref);
+    };
+    const auto resolve = [&] {
+        return resolveRenderPipelinePreset(recipeRoot("test://recipe"), load);
+    };
+    CHECK(resolve().config == shipped.config);
+    recipe["config"]["graph_filters"]["filters"][0]["match"] = RecipeJson{{"ops", RecipeJson::array({""})}};
+    TestSupport::requireNamedRefusal(resolve, "render_pipeline.recipe_invalid@1",
+        {{"field", "graph_filters"},
+         {"reason", "filter \"render\": match.ops holds an empty string"}});
+
+    auto v1 = RecipeJson{{"schema", "pelican.render_pipeline"}, {"version", 1},
+                         {"name", "legacy"}, {"config", recipeDocument().at("config")}};
+    v1["config"].erase("base");
+    v1["config"] = RecipeJson::parse(loadEngineFeature("engine://render_pipelines/hybrid_v1.json")).at("config");
+    v1["config"]["graph_filters"] = recipeDocument().at("config").at("graph_filters");
+    REQUIRE_THROWS_WITH(resolveRenderPipelinePreset(recipeRoot("test://v1"),
+        [&](std::string_view) { return v1.dump(); }), Catch::Matchers::ContainsSubstring("graph_filters"));
+
+    auto root = recipeRoot();
+    root["graph_filters"] = recipeDocument().at("config").at("graph_filters");
+    REQUIRE_THROWS_WITH(resolveRenderPipelinePreset(root, loadEngineFeature),
+                        Catch::Matchers::ContainsSubstring("graph_filters"));
+}

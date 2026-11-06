@@ -1427,13 +1427,14 @@ class GraphCanvasModel {
                                                  std::string_view port) const;
     // --- GL-1: what the frame plan holds besides the graph's own nodes.
     std::vector<GraphCanvasPlanPass> plan_passes_;
+    bool plan_has_pipeline_preset_ = false;
     std::string plan_graph_;
     std::string plan_author_graph_;
     std::optional<std::uint64_t> plan_runtime_generation_;
     std::optional<std::string> plan_graph_variant_;
     void readPlanPasses(const nlohmann::json &plan);
     // --- GL-1e: the plan's buffers (resources[].kind), and the authoring
-    // context read after a plan with a rendering-section pass.
+    // context read after a plan with a rendering-section pass or a preset.
     std::set<std::string, std::less<>> plan_buffers_;
     nlohmann::json render_authoring_ = nlohmann::json::object();
     std::uint64_t authoring_revision_ = 0;
@@ -1522,8 +1523,15 @@ class GraphCanvasModel {
     // GF-1a: the project's filters, and the one the session has chosen. Both
     // are session state: choosing one never edits the project.
     GraphFiltersRead graph_filters_read_;
+    std::optional<GraphFilters> preset_graph_filters_;
     std::optional<std::string> active_graph_filter_;
-    [[nodiscard]] const GraphFilter *activeGraphFilterDocument() const;
+    struct GraphFilterResolution {
+        const GraphFilters *document = nullptr;
+        const GraphFilter *filter = nullptr;
+    };
+    [[nodiscard]] GraphFilterResolution resolveGraphFilter(
+        const std::optional<std::string> &id) const;
+    [[nodiscard]] GraphFilterResolution activeGraphFilterDocument() const;
     [[nodiscard]] bool nodeShownByDomain(const GraphCanvasNode &node) const;
     // NB-1: the next document read decides whether Canvas is shown.
     bool canvas_domain_follows_document_ = false;
@@ -2945,6 +2953,11 @@ class GraphCanvasModel {
     // filter only while its id is still in the document; an invalid or missing
     // document clears it.
     void setGraphFilters(GraphFiltersRead read);
+    void setPresetGraphFilters(std::optional<GraphFilters> document);
+    [[nodiscard]] const std::optional<GraphFilters> &presetGraphFilters() const noexcept {
+        return preset_graph_filters_;
+    }
+    [[nodiscard]] std::vector<std::string> activeGraphFilterPath() const;
     [[nodiscard]] const GraphFiltersRead &graphFilters() const noexcept {
         return graph_filters_read_;
     }

@@ -2,6 +2,7 @@
 
 #include "graphcomposition.hpp"
 #include "graphfold.hpp"
+#include "graphfiltersdocument.hpp"
 #include "graphvariantpolicy.hpp"
 #include "lightingdata.hpp"
 #include "logicalrendergraph.hpp"
@@ -215,6 +216,7 @@ PlanningPolicySource collectPartPlanningPolicy(const nlohmann::json &document,
 struct RenderPipelinePresetResolution {
     nlohmann::json config;
     std::optional<RenderPipelinePresetInfo> preset;
+    std::optional<GraphFilters> preset_graph_filters;
     std::unordered_map<std::string, RenderPipelineFragmentOrigin> fragment_passes;
     std::unordered_map<std::string, RenderPipelineFragmentOrigin> fragment_targets;
     std::vector<PlanningPolicySource> planning_sources;

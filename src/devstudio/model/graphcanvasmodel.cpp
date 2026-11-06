@@ -6110,6 +6110,8 @@ std::string GraphCanvasDomainStub::text() const {
 }
 
 void GraphCanvasModel::readPlanPasses(const Json &plan) {
+    const auto preset = plan.find("pipeline_preset");
+    plan_has_pipeline_preset_ = preset != plan.end() && preset->is_object();
     plan_graph_ = text(plan, "graph");
     plan_runtime_generation_.reset();
     if (const auto generation = plan.find("runtime_generation");
@@ -6390,17 +6392,18 @@ std::vector<GraphCanvasFoldedNode> GraphCanvasModel::foldedNodes() const {
     }
     if (!domainShown("render")) return {};
     auto folded = rootFoldedNodes();
-    const auto *filter = activeGraphFilterDocument();
-    if (filter == nullptr) return folded;
-    // GF-1a, decision 2: a filter is ANDed with Render, never ORed. A feature
-    // fold is named by its project-local feature name; a pass fold is not a
-    // feature and no filter names it.
+    const auto resolved = activeGraphFilterDocument();
+    if (resolved.filter == nullptr) return folded;
+    // A filter is ANDed with Render but does not apply inside a revealed fold.
+    // Base pass folds match only their pass name; feature folds match only
+    // feature names and categories in the filter's owning document.
     std::erase_if(folded, [&](const GraphCanvasFoldedNode &node) {
         GraphFilterFacts facts;
         facts.kind = node.feature_group ? GraphFilterFacts::Kind::folded_feature
                                         : GraphFilterFacts::Kind::folded_other;
         if (node.feature_group) facts.feature_name = featureShortName(node.feature);
-        return !graphFilterMatches(*filter, *graph_filters_read_.document, facts);
+        else facts.node_id = node.id;
+        return !graphFilterMatches(*resolved.filter, *resolved.document, facts);
     });
     return folded;
 }
@@ -6498,13 +6501,15 @@ bool GraphCanvasModel::graphWritesResource(std::string_view resource) const {
 // --- GL-1e: a rendering-section pass's inputs.
 
 void GraphCanvasModel::requestRenderAuthoring() {
-    // Only a plan with a pass of the rendering section has one to edit: a
-    // project pass no graph node made and no feature brought.
+    // A rendering-section pass has one to edit: a project pass no graph node
+    // made and no feature brought. A preset can also carry graph filters even
+    // when every pass came from it.
     if (!connected_ ||
-        std::ranges::none_of(plan_passes_, [this](const GraphCanvasPlanPass &pass) {
-            return pass.source == "project" && pass.feature.empty() &&
-                   pass.kind != "anchor" && graphOwnerOf(pass).empty();
-        }))
+        (!plan_has_pipeline_preset_ &&
+         std::ranges::none_of(plan_passes_, [this](const GraphCanvasPlanPass &pass) {
+             return pass.source == "project" && pass.feature.empty() &&
+                    pass.kind != "anchor" && graphOwnerOf(pass).empty();
+         })))
         return;
     read(RequestKind::Authoring, "get_render_authoring_context", Json::object());
 }
@@ -7453,28 +7458,54 @@ bool GraphCanvasModel::nodeShownByDomain(const GraphCanvasNode &node) const {
     return domainShown(opDomain(node.op));
 }
 
-const GraphFilter *GraphCanvasModel::activeGraphFilterDocument() const {
-    if (!active_graph_filter_ || !graph_filters_read_.document) return nullptr;
-    return findGraphFilter(*graph_filters_read_.document, *active_graph_filter_);
+GraphCanvasModel::GraphFilterResolution GraphCanvasModel::resolveGraphFilter(
+    const std::optional<std::string> &id) const {
+    if (!id) return {};
+    const bool preset = id->starts_with("preset:");
+    const auto *document = preset ? (preset_graph_filters_ ? &*preset_graph_filters_ : nullptr)
+                                  : (graph_filters_read_.document ? &*graph_filters_read_.document
+                                                                  : nullptr);
+    if (document == nullptr) return {};
+    const auto *filter = findGraphFilter(*document, preset ? std::string_view{*id}.substr(7) : *id);
+    return filter != nullptr ? GraphFilterResolution{document, filter} : GraphFilterResolution{};
+}
+
+GraphCanvasModel::GraphFilterResolution GraphCanvasModel::activeGraphFilterDocument() const {
+    return resolveGraphFilter(active_graph_filter_);
 }
 
 void GraphCanvasModel::setGraphFilters(GraphFiltersRead read) {
     graph_filters_read_ = std::move(read);
     if (!active_graph_filter_) return;
-    // GF-1a, decision 3: a re-read keeps the chosen filter while its id is
-    // still in the file; a removed id, or a file that is now invalid or gone,
-    // falls back to All. The document may also have changed what the same id
-    // matches, so the canvas redraws on every re-read while one is chosen.
-    if (!graph_filters_read_.document ||
-        findGraphFilter(*graph_filters_read_.document, *active_graph_filter_) == nullptr)
-        active_graph_filter_.reset();
+    if (activeGraphFilterDocument().filter == nullptr) active_graph_filter_.reset();
     ++report_revision_;
 }
 
-bool GraphCanvasModel::setActiveGraphFilter(std::optional<std::string> id) {
-    if (id && (!graph_filters_read_.document ||
-               findGraphFilter(*graph_filters_read_.document, *id) == nullptr))
+void GraphCanvasModel::setPresetGraphFilters(std::optional<GraphFilters> document) {
+    preset_graph_filters_ = std::move(document);
+    if (!active_graph_filter_) return;
+    if (activeGraphFilterDocument().filter == nullptr) active_graph_filter_.reset();
+    ++report_revision_;
+}
+
+std::vector<std::string> GraphCanvasModel::activeGraphFilterPath() const {
+    const auto resolved = activeGraphFilterDocument();
+    if (resolved.filter == nullptr) return {};
+    std::vector<std::string> path;
+    const auto visit = [&](const auto &self, const std::vector<GraphFilter> &filters) -> bool {
+        for (const auto &filter : filters) {
+            path.push_back(filter.label);
+            if (&filter == resolved.filter || self(self, filter.children)) return true;
+            path.pop_back();
+        }
         return false;
+    };
+    visit(visit, resolved.document->filters);
+    return path;
+}
+
+bool GraphCanvasModel::setActiveGraphFilter(std::optional<std::string> id) {
+    if (id && resolveGraphFilter(id).filter == nullptr) return false;
     if (active_graph_filter_ == id) return false;
     active_graph_filter_ = std::move(id);
     ++report_revision_;
@@ -7486,8 +7517,8 @@ bool GraphCanvasModel::nodeShown(std::string_view scope, const GraphCanvasNode &
     // body is in, they stay (opDomain answers nothing for graph.*).
     if (!scope.empty() || folded_stash_) return true;
     if (!nodeShownByDomain(node)) return false;
-    const auto *filter = activeGraphFilterDocument();
-    if (filter == nullptr) return true;
+    const auto resolved = activeGraphFilterDocument();
+    if (resolved.filter == nullptr) return true;
     // GF-1a, decision 2: every other root node is named by the filter or is
     // not drawn. The structure stays; a canvas.output the Render box shows is
     // still the filter's to hide.
@@ -7496,7 +7527,7 @@ bool GraphCanvasModel::nodeShown(std::string_view scope, const GraphCanvasNode &
     facts.kind = GraphFilterFacts::Kind::node;
     facts.node_id = node.id;
     facts.op = node.op;
-    return graphFilterMatches(*filter, *graph_filters_read_.document, facts);
+    return graphFilterMatches(*resolved.filter, *resolved.document, facts);
 }
 
 std::vector<GraphCanvasDomainStub> GraphCanvasModel::domainStubs() const {

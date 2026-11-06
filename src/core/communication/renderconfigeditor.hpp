@@ -1,5 +1,7 @@
 #pragma once
 
+#include "../../project/graphfiltersdocument.hpp"
+
 #include "../../project/materialdrawloop.hpp"
 #include "../../project/projectpathresolver.hpp"
 #include "../../project/renderconfigdocument.hpp"
@@ -168,6 +170,7 @@ struct ResolvedRenderConfigAuthoringContext {
     std::optional<RenderPipelinePresetInfo> pipeline_preset;
     std::vector<RenderPassProvenance> pass_provenance;
     std::optional<std::string> pipeline_preset_bytes;
+    std::optional<GraphFilters> preset_graph_filters;
     // F-1: which document each composed render target / buffer came from.
     // A resolver that leaves it empty makes every target that is not in the
     // root, the preset or the managed fragment read as "composed".

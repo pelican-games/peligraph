@@ -1,6 +1,7 @@
 #include "renderpipelinerecipe.hpp"
 #include "canonicalanchorremoved.hpp"
 #include "graphcomposition.hpp"
+#include "graphfiltersdocument.hpp"
 #include "renderconfigdocument.hpp"
 
 #include <algorithm>
@@ -75,7 +76,7 @@ RenderPipelinePresetResolution expandRenderPipelineRecipe(
             throw GraphRegistryError("render_pipeline.recipe_has_structure@1", {{"key", key}});
         if (key != "base" && key != "features" && key != "graph_transforms" && key != "shader_defines" &&
             key != "draw_sort" && key != "material_routing" && key != "xr" && key != "render_strategy" &&
-            key != "target_planning")
+            key != "target_planning" && key != "graph_filters")
             throw GraphRegistryError("render_pipeline.recipe_unknown_key@1", {{"key", key}});
     }
     if (!config.contains("base") || !config.at("base").is_array() || config.at("base").empty())
@@ -85,8 +86,14 @@ RenderPipelinePresetResolution expandRenderPipelineRecipe(
     std::vector<std::string> names;
     std::set<std::string> families;
     RenderPipelinePresetResolution result;
+    if (const auto filters = config.find("graph_filters"); filters != config.end()) {
+        auto parsed = parseGraphFilters(*filters);
+        if (!parsed.document) invalid(code, "graph_filters", parsed.error);
+        result.preset_graph_filters = std::move(parsed.document);
+    }
     result.config = config;
     result.config.erase("base");
+    result.config.erase("graph_filters");
     result.config["render_targets"] = Json::array();
     result.config["rendering_passes"] = Json::array();
     for (const auto &base : config.at("base")) {

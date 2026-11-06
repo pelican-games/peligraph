@@ -3777,6 +3777,9 @@ OrderedJson RenderConfigEditorService::getRenderAuthoringContext(
         }
     }
     result["region_providers"] = std::move(region_providers);
+    result["preset_graph_filters"] = resolved.preset_graph_filters
+        ? OrderedJson::parse(renderGraphFilters(*resolved.preset_graph_filters))
+        : OrderedJson(nullptr);
     if (resolved.pipeline_preset) {
         result["preset_material_routing"] = resolved.pipeline_preset_bytes
             ? Json::parse(*resolved.pipeline_preset_bytes).at("config").value("material_routing", Json(nullptr))
