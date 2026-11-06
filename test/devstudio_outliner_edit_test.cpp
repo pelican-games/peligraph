@@ -31,6 +31,7 @@
 #include "../src/devstudio/viewport/viewportgeometry.hpp"
 #include "outlinertree.hpp"
 #include "graphcanvaswidget.hpp"
+#include "graphmodule.hpp"
 #include "inspectorwidget.hpp"
 #include <QDockWidget>
 
@@ -40,6 +41,7 @@
 #include <QCheckBox>
 #include <QCursor>
 #include <QDialog>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
 #include <QGraphicsProxyWidget>
 #include <QGraphicsScene>
@@ -49,6 +51,7 @@
 #include <QJsonValue>
 #include <QLabel>
 #include <QLineEdit>
+#include <QToolButton>
 #include <QMainWindow>
 #include <QMessageBox>
 #include <QMouseEvent>
@@ -137,12 +140,23 @@ class FakeEngine {
     // HUB-1a: whether the graph document still holds blur. A delete and its
     // Undo move it; no outside reload does.
     bool graph_node_exists = true;
+    Json blur_parameters = {{"value", 1.0}};
+    Json graph_document = {{"schema", "pelican.graph"}, {"version", 1},
+                           {"nodes", Json::array({
+                               Json{{"id", "blur"}, {"op", "value.add"},
+                                    {"parameters", Json{{"value", 1}}}},
+                               Json{{"id", "sharpen"}, {"op", "value.multiply"},
+                                    {"parameters", Json::object()}}})},
+                           {"outputs", Json::object()}, {"definitions", Json::object()},
+                           {"layout", Json::object()}};
     // HUB-1a: a definition body the Graph can descend into, for the scope
     // change that must not move the shared selection either.
     bool graph_body_scope = false;
     bool teardown_graph = false;
     QSet<QString> held_methods;
     QSet<QString> held_seen;
+    bool graph_editable = true;
+    bool defer_graph_replies = false;
     // Every request the window sent, in order, and the size in bytes of each
     // scene_outline / scene_tree answer.
     std::vector<std::pair<std::string, Json>> asked;
@@ -175,10 +189,25 @@ class FakeEngine {
                 const std::string reply = result->dump();
                 if (method == "scene_outline" || method == "scene_tree")
                     list_replies.emplace_back(method, reply.size());
-                emit viewport_.inspectorRpcSucceeded(id, QByteArray::fromStdString(reply));
+                if (defer_graph_replies &&
+                    (method == "get_edit_result" || method == "get_graph_instances")) {
+                    deferred_graph_replies_.push_back({id, reply});
+                } else {
+                    emit viewport_.inspectorRpcSucceeded(id, QByteArray::fromStdString(reply));
+                }
             } else {
                 emit viewport_.inspectorRpcFailed(id, QStringLiteral("not in this fake engine"));
             }
+            QApplication::processEvents();
+        }
+    }
+
+    void releaseGraphReplies(bool reverse = false) {
+        auto replies = std::move(deferred_graph_replies_);
+        deferred_graph_replies_.clear();
+        if (reverse) std::ranges::reverse(replies);
+        for (const auto &[id, body] : replies) {
+            emit viewport_.inspectorRpcSucceeded(id, QByteArray::fromStdString(body));
             QApplication::processEvents();
         }
     }
@@ -196,6 +225,7 @@ class FakeEngine {
     EmbeddedViewport &viewport_;
     QString buffer_;
     std::deque<Json> pending_;
+    std::vector<std::pair<qint64, std::string>> deferred_graph_replies_;
     std::map<std::string, Json> edits_;
     int next_ticket_ = 1;
     // HUB-1a: the graph document's own history, so a delete and its Undo are
@@ -206,18 +236,17 @@ class FakeEngine {
     int next_graph_ticket_ = 1;
 
     void applyGraphOps(const Json &ops) {
-        for (const auto &op : ops) {
-            if (!op.is_object()) continue;
-            const std::string kind = op.value("op", std::string{});
-            std::string id;
-            if (op.contains("node") && op.at("node").is_string())
-                id = op.at("node").get<std::string>();
-            else if (op.contains("node") && op.at("node").is_object())
-                id = op.at("node").value("id", std::string{});
-            if (id != "blur") continue;
-            if (kind == "remove_node") graph_node_exists = false;
-            else if (kind == "add_node" || kind == "insert_node") graph_node_exists = true;
-        }
+        auto edited = Pelican::editGraphDocument(graph_document, ops);
+        if (!edited.contains("layout")) edited["layout"] = graph_document.value("layout", Json::object());
+        if (!edited.contains("outputs")) edited["outputs"] = graph_document.value("outputs", Json::object());
+        if (!edited.contains("definitions")) edited["definitions"] = graph_document.value("definitions", Json::object());
+        graph_document = std::move(edited);
+        const auto &nodes = graph_document.at("nodes");
+        const auto blur = std::ranges::find(nodes, "blur", [](const Json &node) {
+            return node.value("id", std::string{});
+        });
+        graph_node_exists = blur != nodes.end();
+        blur_parameters = graph_node_exists ? blur->value("parameters", Json::object()) : Json::object();
         graph_digest_ = "hub1a-" + std::to_string(++graph_generation_);
     }
 
@@ -371,8 +400,8 @@ class FakeEngine {
         // Graph page only asks the model for the node a press named, so the
         // rest of the engine's graph surface is irrelevant here.
         if (method == "get_graph_instances") {
-            auto nodes = Json::array();
-            Json layout = Json::object();
+            auto nodes = graph_document.at("nodes");
+            auto layout = graph_document.at("layout");
             if (teardown_graph) {
                 nodes = Json::array({
                     {{"id", "live_phase"}, {"op", "value.input"},
@@ -397,17 +426,8 @@ class FakeEngine {
                                    {"blur", {{"x", 300.0}, {"y", 240.0}}},
                                    {"sharpen", {{"x", 600.0}, {"y", 240.0}}},
                                    {"curve", {{"x", 300.0}, {"y", 500.0}}}};
-            } else {
-                if (graph_node_exists) {
-                    nodes.push_back({{"id", "blur"}, {"op", "value.add"},
-                                     {"parameters", Json::object()}});
-                }
-                // HUB-1a: a second node the page must not follow. It is what the
-                // Graph tab has selected while the hub still names blur.
-                nodes.push_back({{"id", "sharpen"}, {"op", "value.multiply"},
-                                 {"parameters", Json::object()}});
             }
-            Json definitions = Json::object();
+            Json definitions = graph_document.at("definitions");
             if (graph_body_scope) {
                 definitions["gain_curve"] = {
                     {"nodes", Json::array({{{"id", "gain"},
@@ -415,16 +435,29 @@ class FakeEngine {
                                             {"parameters", Json::object()}}})},
                     {"outputs", Json::object()}};
             }
-            return Json{{"source_digest", {{"hex", graph_digest_}}},
+            return Json{{"source_digest", {{"hex", graph_editable ? graph_digest_ : ""}}},
                         {"instances", Json::array()},
                         {"nodes", std::move(nodes)},
                         {"definitions", std::move(definitions)},
                         {"layout", std::move(layout)}};
         }
         if (method == "get_graph_catalog") {
-            if (!teardown_graph)
+            if (!teardown_graph) {
+                const auto operation = [](const std::string &op) {
+                    return Json{{"op", op}, {"domain", "values"}, {"evaluation", "direct"},
+                                {"sink", false}, {"ports", "declared"},
+                                {"inputs", Json::array()}, {"outputs", Json::array()},
+                                {"parameters", Json::array({{{"name", "value"},
+                                                             {"kind", "number"},
+                                                             {"default", 0.0}}})}};
+                };
                 return Json{{"schema", "pelican.graph_catalog"}, {"version", 1},
-                            {"modules", Json::array()}};
+                            {"modules", Json::array({{{"namespace", "value"}, {"version", 1},
+                                                      {"description", ""}, {"types", Json::array()},
+                                                      {"sinks", Json::array()},
+                                                      {"operations", Json::array({operation("value.add"),
+                                                                                  operation("value.multiply")})}}})}};
+            }
             const auto input = [](const char *name) {
                 return Json{{"port", name}, {"required", true},
                             {"accepted_type", {{"semantic", "pelican.value.scalar@1"},
@@ -511,7 +544,9 @@ class FakeEngine {
         if (method == "get_edit_result") {
             const std::string ticket = params.at("ticket").get<std::string>();
             if (const auto graph = graph_edits_.find(ticket); graph != graph_edits_.end()) {
-                applyGraphOps(graph->second);
+                const Json ops = std::move(graph->second);
+                graph_edits_.erase(graph);
+                applyGraphOps(ops);
                 return Json{{"status", "committed"},
                             {"committed_revision", ++revision},
                             {"source_digest", {{"hex", graph_digest_}}}};
@@ -633,6 +668,21 @@ struct Rig {
         }
     }
 
+    void focus(QWidget &widget) {
+        if (auto *dock = window.docks_[MainWindow::InspectorDock]; dock->isAncestorOf(&widget)) {
+            dock->show();
+            dock->raise();
+        }
+        window.raise();
+        window.activateWindow();
+        REQUIRE(QTest::qWaitForWindowActive(&window));
+        REQUIRE(widget.isVisible());
+        REQUIRE(widget.isEnabled());
+        widget.setFocus(Qt::ActiveWindowFocusReason);
+        REQUIRE(pumpUntil([&] { return QApplication::focusWidget() == &widget; }));
+        QTest::qWait(20);
+    }
+
     bool pumpUntil(const std::function<bool()> &done, int milliseconds = 8000) {
         QElapsedTimer clock;
         clock.start();
@@ -691,12 +741,15 @@ struct Rig {
         return GraphNodeRef{.scope = "", .id = id};
     }
 
-    void showGraphNode(const std::string &id = "blur") {
+    void showGraphNode(const GraphNodeRef &ref) {
         loadGraphDocument();
-        const GraphNodeRef ref = graphNode(id);
-        REQUIRE(window.graph_canvas_->nodeView(ref).found);
+        REQUIRE(pumpUntil([&] { return window.graph_canvas_->nodeView(ref).found; }));
         window.selection_hub_.pickedGraphNode(ref);
         REQUIRE(pumpUntil([&] { return window.inspector_->showsGraphNode(); }));
+    }
+
+    void showGraphNode(const std::string &id = "blur") {
+        showGraphNode(graphNode(id));
     }
 
     // The tree's own drag, as the automation channel sends it: a press, moves
@@ -1134,7 +1187,8 @@ TEST_CASE("HUB-1a a node that goes away keeps the Graph page until it returns",
         return rig.window.inspector_->findChild<QLabel *>(
             QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
     };
-    CHECK(missing() == nullptr);
+    REQUIRE(missing() != nullptr);
+    CHECK_FALSE(missing()->isVisible());
 
     // The Graph's own delete, through the same model call its Delete action
     // makes. The front is not the Graph's to move: the page stays and says
@@ -1150,7 +1204,7 @@ TEST_CASE("HUB-1a a node that goes away keeps the Graph page until it returns",
     // And its Undo restores the node under the same graph page.
     REQUIRE(rig.pumpUntil([&] { return model.canUndo(); }));
     REQUIRE(model.undo());
-    REQUIRE(rig.pumpUntil([&] { return missing() == nullptr; }));
+    REQUIRE(rig.pumpUntil([&] { return !missing()->isVisible(); }));
     CHECK(rig.window.selection_hub_.front() == SelectionFront::graph_node);
     CHECK(rig.window.inspector_->showsGraphNode());
     CHECK(rig.window.graph_canvas_->nodeView(rig.graphNode()).found);
@@ -1586,6 +1640,755 @@ TEST_CASE("Studio owners die with Graph gestures and child UI still active",
             }
         }
     }
+}
+
+TEST_CASE("HUB-1b Inspector fields edit the hub ref through Graph history",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *host = rig.window.inspector_->findChild<QWidget *>(
+        QStringLiteral("pelican.inspectorGraph.fieldsHost"));
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    REQUIRE(host != nullptr);
+    REQUIRE(spin != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return host->isVisible() && spin->isEnabled(); }));
+    CHECK(std::abs(spin->value() - 1.0) < 1.0e-9);
+
+    spin->setFocus();
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("2.5"));
+    QTest::keyClick(spin, Qt::Key_Enter);
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.engine.blur_parameters.value("value", 0.0) == 2.5 &&
+               rig.window.graph_canvas_->model().nodeParameters("", "blur").at("value") == 2.5;
+    }));
+    CHECK(rig.asked("edit_graph_document") == 1);
+    CHECK(rig.window.inspector_->graphNodeRef() == rig.graphNode());
+
+    auto *undo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.undo"));
+    REQUIRE(undo != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return undo->isEnabled(); }));
+    undo->click();
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.engine.blur_parameters.value("value", 0.0) == 1.0;
+    }));
+    CHECK(rig.asked("edit_graph_document") == 2);
+    REQUIRE(rig.pumpUntil([&] { return std::abs(spin->value() - 1.0) < 1.0e-9; }));
+}
+
+TEST_CASE("HUB-1b both parameter editors share the ref values and the Graph history",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    rig.window.graph_canvas_->scene().selectNode("", "blur");
+    auto *inspector_spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *graph_spin = rig.window.graph_canvas_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.graphCanvasParameters.value"));
+    auto *redo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.redo"));
+    REQUIRE(inspector_spin != nullptr);
+    REQUIRE(graph_spin != nullptr);
+    REQUIRE(redo != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return graph_spin->isVisible() && graph_spin->isEnabled(); }));
+    CHECK(inspector_spin->objectName() != graph_spin->objectName());
+    CHECK(rig.window.inspector_->findChildren<QDoubleSpinBox *>(
+              QStringLiteral("pelican.inspectorGraph.fields.value")).size() == 1);
+    CHECK(rig.window.graph_canvas_->findChildren<QDoubleSpinBox *>(
+              QStringLiteral("pelican.graphCanvasParameters.value")).size() == 1);
+
+    graph_spin->setFocus();
+    graph_spin->selectAll();
+    QTest::keyClicks(graph_spin, QStringLiteral("3.5"));
+    QTest::keyClick(graph_spin, Qt::Key_Enter);
+    REQUIRE(rig.pumpUntil([&] {
+        return std::ranges::any_of(rig.engine.asked, [&](const auto &request) {
+            if (request.first != "edit_graph_document") return false;
+            const auto &ops = request.second.at("ops");
+            if (!ops.is_array() || ops.size() != 1) return false;
+            const auto &op = ops.front();
+            return op.at("op") == "set_node_parameters" && op.at("scope") == "root" &&
+                   op.at("node") == "blur" &&
+                   std::abs(op.at("parameters").value("value", 0.0) - 3.5) < 1.0e-9;
+        });
+    }));
+    INFO("Graph edit arrives in the Inspector after the document re-read");
+    REQUIRE(rig.pumpUntil([&] { return std::abs(inspector_spin->value() - 3.5) < 1.0e-9; }));
+    CHECK(std::abs(graph_spin->value() - 3.5) < 1.0e-9);
+    CHECK(rig.asked("edit_graph_document") == 1);
+
+    auto *undo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.undo"));
+    REQUIRE(undo != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return undo->isEnabled(); }));
+    undo->click();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 1.0; }));
+    CHECK(rig.asked("edit_graph_document") == 2);
+    INFO("one Inspector or Graph edit is one Graph Undo and one Redo");
+    REQUIRE(rig.pumpUntil([&] { return redo->isEnabled(); }));
+    redo->click();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 3.5; }));
+    CHECK(rig.asked("edit_graph_document") == 3);
+    REQUIRE(rig.pumpUntil([&] { return std::abs(inspector_spin->value() - 3.5) < 1.0e-9; }));
+
+    auto *scene_undo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorUndo"));
+    REQUIRE(scene_undo != nullptr);
+    rig.window.selection_hub_.pickedSceneObject();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.inspector_->showsGraphNode(); }));
+    CHECK(scene_undo->isVisible());
+    CHECK_FALSE(undo->isVisible());
+    rig.showGraphNode();
+    CHECK_FALSE(scene_undo->isVisible());
+    CHECK(undo->isVisible());
+}
+
+TEST_CASE("HUB-1b same-ref re-reads preserve the host a held edit and focus",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *host = rig.window.inspector_->findChild<QWidget *>(
+        QStringLiteral("pelican.inspectorGraph.fieldsHost"));
+    QPointer<QDoubleSpinBox> spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    REQUIRE(host != nullptr);
+    REQUIRE(spin != nullptr);
+    const bool initially_shown = rig.pumpUntil([&] {
+        return spin && spin->isVisible() && spin->isEnabled();
+    });
+    INFO("same-ref fields remain alive while their initial visibility settles");
+    REQUIRE(spin != nullptr);
+    REQUIRE(initially_shown);
+    spin->setFocus();
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("4.5"));
+    QPointer<QWidget> focus = QApplication::focusWidget();
+    REQUIRE((focus == spin || spin->isAncestorOf(focus)));
+    QPointer<QWidget> guarded_host = host;
+    QPointer<QDoubleSpinBox> guarded_spin = spin;
+
+    rig.window.inspector_->showGraphNode(rig.window.graph_canvas_->nodeView(rig.graphNode()));
+    INFO("same-ref showGraphNode preserves the original field pointers");
+    REQUIRE(guarded_host != nullptr);
+    REQUIRE(guarded_spin != nullptr);
+    INFO("same-ref showGraphNode neither rebuilds fields nor replaces held text");
+    CHECK(guarded_host == host);
+    CHECK(guarded_spin == spin);
+    CHECK(QApplication::focusWidget() == focus);
+    CHECK(spin->findChild<QLineEdit *>()->text().contains(QStringLiteral("4.5")));
+    rig.window.graph_canvas_->ensureInspectorRead(rig.graphNode());
+    rig.pumpFor(80);
+    INFO("same-ref document re-read preserves the original field pointers");
+    REQUIRE(guarded_host != nullptr);
+    REQUIRE(guarded_spin != nullptr);
+    CHECK(guarded_host == host);
+    CHECK(guarded_spin == spin);
+    CHECK(QApplication::focusWidget() == focus);
+    CHECK(spin->findChild<QLineEdit *>()->text().contains(QStringLiteral("4.5")));
+
+    QTest::keyClick(spin, Qt::Key_Enter);
+    QPointer<QLineEdit> old_line = spin->findChild<QLineEdit *>();
+    rig.window.graph_canvas_->ensureInspectorRead(rig.graphNode());
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 4.5; }));
+    CHECK(old_line == spin->findChild<QLineEdit *>());
+    CHECK(rig.asked("edit_graph_document") == 1);
+    rig.pumpFor(220);
+    CHECK(rig.asked("edit_graph_document") == 1);
+}
+
+TEST_CASE("HUB-1b same-ref Inspector show follows a model editability change",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *host = rig.window.inspector_->findChild<QWidget *>(
+        QStringLiteral("pelican.inspectorGraph.fieldsHost"));
+    auto *table = rig.window.inspector_->findChild<QTreeWidget *>(
+        QStringLiteral("pelican.inspectorGraph.parameters"));
+    auto *reason = rig.window.inspector_->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.readOnlyReason"));
+    REQUIRE(host != nullptr);
+    REQUIRE(table != nullptr);
+    REQUIRE(reason != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return host->isVisible(); }));
+
+    const auto shown = rig.window.graph_canvas_->nodeView(rig.graphNode());
+    rig.window.graph_canvas_->model().setConnected(false);
+    INFO("same-ref showGraphNode follows the model without Graph-owner synchronization");
+    rig.window.inspector_->showGraphNode(shown);
+    REQUIRE_FALSE(host->isVisible());
+    CHECK(table->isVisible());
+    CHECK(reason->isVisible());
+    CHECK_FALSE(reason->text().isEmpty());
+}
+
+TEST_CASE("HUB-1b a pinned ref survives picks and keeps updating from its own model",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    auto *heading = rig.window.inspector_->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.heading"));
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    REQUIRE(pin != nullptr);
+    REQUIRE(heading != nullptr);
+    REQUIRE(spin != nullptr);
+    pin->click();
+    CHECK(rig.window.inspector_->pinned());
+
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode("sharpen"));
+    rig.pumpFor(80);
+    INFO("pinned page does not move when the hub picks another Graph node");
+    CHECK(rig.window.inspector_->graphNodeRef() == rig.graphNode("blur"));
+    CHECK(heading->text().contains(QStringLiteral("blur")));
+    rig.select("Floor");
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::scene);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.inspector_->graphNodeRef() == rig.graphNode("blur"));
+
+    rig.window.graph_canvas_->scene().selectNode("", "blur");
+    auto *graph_spin = rig.window.graph_canvas_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.graphCanvasParameters.value"));
+    REQUIRE(graph_spin != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return graph_spin->isEnabled(); }));
+    graph_spin->setFocus();
+    graph_spin->selectAll();
+    QTest::keyClicks(graph_spin, QStringLiteral("6.5"));
+    QTest::keyClick(graph_spin, Qt::Key_Enter);
+    INFO("a pinned graph page updates while the hub front is the scene");
+    REQUIRE(rig.pumpUntil([&] { return std::abs(spin->value() - 6.5) < 1.0e-9; }));
+    CHECK(rig.window.selection_hub_.front() == SelectionFront::scene);
+
+    pin->click();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.inspector_->showsGraphNode(); }));
+    CHECK_FALSE(rig.window.inspector_->pinned());
+    rig.showGraphNode("sharpen");
+    CHECK(pin->isVisible());
+    CHECK_FALSE(pin->isChecked());
+}
+
+TEST_CASE("HUB-1b Back unpins and a pinned removal stays gone after same-id recreation",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    auto *gone = rig.window.inspector_->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+    auto *back = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.backToScene"));
+    REQUIRE(pin != nullptr);
+    REQUIRE(gone != nullptr);
+    REQUIRE(back != nullptr);
+    pin->click();
+    auto &model = rig.window.graph_canvas_->model();
+    REQUIRE(rig.pumpUntil([&] { return model.canEdit(); }));
+    REQUIRE(model.removeNode("blur"));
+    REQUIRE(rig.pumpUntil([&] { return gone->isVisible(); }));
+    CHECK(rig.window.inspector_->pinned());
+    REQUIRE(rig.pumpUntil([&] { return model.canUndo(); }));
+    REQUIRE(model.undo());
+    rig.pumpFor(150);
+    INFO("Undo recreating the id does not silently reattach a pinned removed ref");
+    CHECK(gone->isVisible());
+    CHECK(rig.window.inspector_->graphNodeRef() == rig.graphNode("blur"));
+    back->click();
+    REQUIRE(rig.pumpUntil([&] { return !rig.window.inspector_->showsGraphNode(); }));
+    CHECK_FALSE(rig.window.inspector_->pinned());
+}
+
+TEST_CASE("HUB-1b Inspector edits and replies survive a hidden and closed Graph dock",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *dock = rig.window.docks_[MainWindow::GraphDock];
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *canvas = rig.window.graph_canvas_;
+    REQUIRE(dock != nullptr);
+    REQUIRE(spin != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return spin->isVisible() && spin->isEnabled(); }));
+    QPointer<GraphCanvasWidget> guarded_canvas = canvas;
+    dock->close();
+    REQUIRE(guarded_canvas != nullptr);
+    CHECK_FALSE(canvas->isVisible());
+    const auto closed_reads = rig.asked("get_graph_instances");
+    canvas->ensureInspectorRead(rig.graphNode("sharpen"));
+    INFO("a closed Graph dock still sends an explicit Inspector-demand read");
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.asked("get_graph_instances") > closed_reads;
+    }));
+
+    spin->setValue(7.5);
+    INFO("closed Graph dock completes the Inspector edit reply and document re-read");
+    rig.pumpFor(700);
+    INFO("closed dock RPCs=" << rig.asked("edit_graph_document")
+         << " value=" << spin->value() << " enabled=" << spin->isEnabled()
+         << " visible=" << spin->isVisible() << " engine="
+         << rig.engine.blur_parameters.value("value", 0.0));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.engine.blur_parameters.value("value", 0.0) == 7.5 &&
+               rig.window.graph_canvas_->model().nodeParameters("", "blur").at("value") == 7.5;
+    }));
+    REQUIRE(rig.pumpUntil([&] { return std::abs(spin->value() - 7.5) < 1.0e-9; }));
+    CHECK(rig.asked("edit_graph_document") == 1);
+
+    dock->hide();
+    spin->setFocus();
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("8.5"));
+    QTest::keyClick(spin, Qt::Key_Enter);
+    INFO("hidden Graph dock does not suppress Inspector-demand reads");
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.engine.blur_parameters.value("value", 0.0) == 8.5 &&
+               rig.window.graph_canvas_->model().nodeParameters("", "blur").at("value") == 8.5;
+    }));
+    CHECK(rig.asked("edit_graph_document") == 2);
+}
+
+TEST_CASE("HUB-1b a pinned edit names its own definition scope despite Graph selection",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.engine.graph_document["definitions"]["shared"] = {
+        {"nodes", Json::array({{{"id", "blur"}, {"op", "value.add"},
+                                {"parameters", Json{{"value", 11}}}}})},
+        {"outputs", Json::object()}};
+    const GraphNodeRef scoped{.scope = "shared", .id = "blur"};
+    rig.showGraphNode(scoped);
+    rig.window.graph_canvas_->scene().selectNode("", "blur");
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *scope = rig.window.inspector_->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.scope"));
+    auto *graph_spin = rig.window.graph_canvas_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.graphCanvasParameters.value"));
+    REQUIRE(pin != nullptr);
+    REQUIRE(spin != nullptr);
+    REQUIRE(scope != nullptr);
+    REQUIRE(graph_spin != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return spin->isEnabled() && graph_spin->isEnabled(); }));
+    REQUIRE(std::abs(spin->value() - 11.0) < 1.0e-9);
+    CHECK(scope->isVisible());
+    CHECK(scope->text().contains(QStringLiteral("shared definition")));
+    QPointer<QDoubleSpinBox> guarded_spin = spin;
+    pin->click();
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode("blur"));
+    INFO("a later Graph selection does not replace the pinned definition's fields");
+    REQUIRE(guarded_spin != nullptr);
+    spin = guarded_spin;
+
+    spin->setFocus();
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("12.5"));
+    QTest::keyClick(spin, Qt::Key_Enter);
+    INFO("the operation retains the pinned ref's scope and id, not current Graph selection");
+    REQUIRE(rig.pumpUntil([&] {
+        return std::ranges::any_of(rig.engine.asked, [&](const auto &request) {
+            if (request.first != "edit_graph_document") return false;
+            const auto &ops = request.second.at("ops");
+            return ops.size() == 1 && ops.front().at("scope") == "shared" &&
+                   ops.front().at("node") == "blur" &&
+                   ops.front().at("parameters").at("value") == 12.5;
+        });
+    }));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.graph_canvas_->model().nodeParameters("shared", "blur").at("value") == 12.5;
+    }));
+    CHECK(rig.window.graph_canvas_->model().nodeParameters("", "blur").at("value") == 1);
+}
+
+TEST_CASE("HUB-1b unsupported and non-editable nodes retain the read-only table",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *host = rig.window.inspector_->findChild<QWidget *>(
+        QStringLiteral("pelican.inspectorGraph.fieldsHost"));
+    auto *table = rig.window.inspector_->findChild<QTreeWidget *>(
+        QStringLiteral("pelican.inspectorGraph.parameters"));
+    auto *reason = rig.window.inspector_->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.readOnlyReason"));
+    REQUIRE(host != nullptr);
+    REQUIRE(table != nullptr);
+    REQUIRE(reason != nullptr);
+
+    rig.engine.graph_document["nodes"][0]["op"] = "render.image";
+    rig.loadGraphDocument();
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode());
+    rig.pumpFor(100);
+    INFO("an operation handled by the Graph's own special editor is not forced through generic fields");
+    CHECK_FALSE(host->isVisible());
+    CHECK(table->isVisible());
+    CHECK(reason->isVisible());
+    CHECK_FALSE(reason->text().isEmpty());
+
+    rig.engine.graph_document["nodes"][0]["op"] = "value.add";
+    rig.engine.graph_editable = false;
+    rig.loadGraphDocument();
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode());
+    rig.pumpFor(100);
+    INFO("a model-refused read-only document shows the table and sends no edit");
+    CHECK_FALSE(host->isVisible());
+    CHECK(table->isVisible());
+    CHECK(reason->isVisible());
+    CHECK(rig.asked("edit_graph_document") == 0);
+}
+
+TEST_CASE("HUB-1b all Inspector and Graph parameter object names are unique",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    rig.window.graph_canvas_->scene().selectNode("", "blur");
+    rig.pumpFor(100);
+    QSet<QString> seen;
+    for (auto *widget : rig.window.findChildren<QWidget *>()) {
+        const QString name = widget->objectName();
+        if (!name.startsWith(QStringLiteral("pelican.inspectorGraph.fields")) &&
+            !name.startsWith(QStringLiteral("pelican.graphCanvasParameters"))) continue;
+        INFO("unique widget object name: " << name.toStdString());
+        CHECK_FALSE(seen.contains(name));
+        seen.insert(name);
+    }
+    CHECK(seen.contains(QStringLiteral("pelican.inspectorGraph.fields.value")));
+    CHECK(seen.contains(QStringLiteral("pelican.graphCanvasParameters.value")));
+}
+
+TEST_CASE("HUB-1b Ctrl-Z follows the focused surface and text fields keep local undo",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *undo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.undo"));
+    REQUIRE(spin != nullptr);
+    REQUIRE(undo != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return spin->isEnabled(); }));
+    spin->setFocus();
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("2.5"));
+    QTest::keyClick(spin, Qt::Key_Enter);
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 2.5; }));
+    CHECK(undo->toolTip().contains(QStringLiteral("graph"), Qt::CaseInsensitive));
+    REQUIRE(rig.pumpUntil([&] { return undo->isEnabled(); }));
+
+    rig.focus(*undo);
+    QTest::keyClick(undo, Qt::Key_Z, Qt::ControlModifier);
+    INFO("Ctrl-Z on a non-text control inside the Graph page undoes Graph history");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 1.0; }));
+    CHECK(rig.asked("edit_graph_document") == 2);
+
+    rig.focus(*rig.window.graph_canvas_);
+    QTest::keyClick(rig.window.graph_canvas_, Qt::Key_Y, Qt::ControlModifier);
+    INFO("Ctrl-Y with Graph canvas focus uses the same Graph history");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 2.5; }));
+
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    REQUIRE(pin != nullptr);
+    if (!pin->isChecked()) pin->click();
+    rig.select("Cube");
+    REQUIRE(rig.window.inspector_->pinned());
+    rig.outliner.duplicateAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] {
+        return std::ranges::count(rig.engine.names(), "Cube_copy1") == 1;
+    }));
+    const auto scene_undos = rig.asked("undo");
+    rig.focus(rig.viewport);
+    REQUIRE(rig.pumpUntil([&] { return rig.window.inspector_->undoAction()->isEnabled(); }));
+    QTest::keyClick(&rig.viewport, Qt::Key_Z, Qt::ControlModifier);
+    INFO("viewport-focus Ctrl-Z is scene Undo even while the Graph page is shown");
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("undo") == scene_undos + 1; }));
+    CHECK(rig.engine.blur_parameters.value("value", 0.0) == 2.5);
+    CHECK(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.window.inspector_->pinned());
+}
+
+TEST_CASE("HUB-1b a Graph parameter text field keeps local Ctrl-Z",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    REQUIRE(spin != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return spin->isVisible() && spin->isEnabled(); }));
+    auto *line = spin->findChild<QLineEdit *>();
+    REQUIRE(line != nullptr);
+    rig.focus(*spin);
+    spin->selectAll();
+    QTest::keyClicks(line, QStringLiteral("9.5"));
+    const auto edits_before_text_undo = rig.asked("edit_graph_document");
+    QTest::keyClick(line, Qt::Key_Z, Qt::ControlModifier);
+    INFO("a focused text field's Ctrl-Z edits its text, not Graph history");
+    CHECK_FALSE(line->text().contains(QStringLiteral("9.5")));
+    rig.pumpFor(220);
+    CHECK(rig.asked("edit_graph_document") == edits_before_text_undo);
+    CHECK(rig.engine.blur_parameters.value("value", 0.0) == 1.0);
+}
+
+TEST_CASE("HUB-1b two parameter editors serialize reversed replies without losing text",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    rig.window.graph_canvas_->scene().selectNode("", "blur");
+    auto *inspector_spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *graph_spin = rig.window.graph_canvas_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.graphCanvasParameters.value"));
+    REQUIRE(rig.pumpUntil([&] { return graph_spin->isVisible() && graph_spin->isEnabled(); }));
+    auto *inspector_line = inspector_spin->findChild<QLineEdit *>();
+    rig.engine.defer_graph_replies = true;
+
+    rig.focus(*inspector_spin);
+    inspector_spin->selectAll();
+    QTest::keyClicks(inspector_line, QStringLiteral("4.5"));
+    rig.focus(*graph_spin);
+    graph_spin->selectAll();
+    QTest::keyClicks(graph_spin, QStringLiteral("3.5"));
+    QTest::keyClick(graph_spin, Qt::Key_Enter);
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.asked("edit_graph_document") == 1 && rig.asked("get_edit_result") >= 1;
+    }));
+    rig.pumpFor(220);
+    INFO("submitting Graph commits Inspector first and queues the Graph text");
+    CHECK(rig.asked("edit_graph_document") == 1);
+    CHECK(graph_spin->findChild<QLineEdit *>()->text().contains(QStringLiteral("3.5")));
+
+    rig.engine.releaseGraphReplies(true);
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("edit_graph_document") == 2; }));
+    rig.engine.defer_graph_replies = false;
+    rig.engine.releaseGraphReplies(true);
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.engine.blur_parameters.value("value", 0.0) == 3.5 &&
+               std::abs(inspector_spin->value() - 3.5) < 1.0e-9 &&
+               std::abs(graph_spin->value() - 3.5) < 1.0e-9;
+    }));
+    rig.engine.releaseGraphReplies(true);
+    rig.pumpFor(200);
+    CHECK(rig.asked("edit_graph_document") == 2);
+    std::vector<double> sent;
+    for (const auto &[method, params] : rig.engine.asked)
+        if (method == "edit_graph_document")
+            sent.push_back(params.at("ops").front().at("parameters").value("value", 0.0));
+    REQUIRE(sent.size() == 2);
+    CHECK(std::abs(sent[0] - 4.5) < 1.0e-9);
+    CHECK(std::abs(sent[1] - 3.5) < 1.0e-9);
+}
+
+TEST_CASE("HUB-1b Enter then focus loss commits once and Undo flushes pending text",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *undo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.undo"));
+    REQUIRE(rig.pumpUntil([&] { return spin->isVisible() && spin->isEnabled(); }));
+    rig.focus(*spin);
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("5.5"));
+    QTest::keyClick(spin, Qt::Key_Return);
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 5.5; }));
+    REQUIRE(rig.pumpUntil([&] { return undo->isEnabled(); }));
+    rig.focus(*undo);
+    rig.pumpFor(220);
+    INFO("editingFinished after Return does not send a second parameter edit");
+    CHECK(rig.asked("edit_graph_document") == 1);
+
+    rig.focus(*spin);
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("6.5"));
+    rig.engine.defer_graph_replies = true;
+    undo->click();
+    INFO("Undo first commits held text rather than overtaking or skipping it");
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.asked("edit_graph_document") == 2 && rig.asked("get_edit_result") >= 2;
+    }));
+    // The fake engine applies an edit when it answers get_edit_result, so 6.5
+    // is in the document now, with only the reply held. It has to be read here:
+    // once the reply goes, one engine.pump() can carry the re-read, the Undo and
+    // its result, and 6.5 is gone before anything looks.
+    REQUIRE(rig.engine.blur_parameters.value("value", 0.0) == 6.5);
+    rig.pumpFor(200);
+    INFO("Undo waits for the pending edit's reply");
+    REQUIRE(rig.asked("edit_graph_document") == 2);
+    REQUIRE(rig.engine.blur_parameters.value("value", 0.0) == 6.5);
+    rig.engine.defer_graph_replies = false;
+    rig.engine.releaseGraphReplies();
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("edit_graph_document") == 3; }));
+    INFO("Undo was sent after the pending edit's authoring revision landed");
+    Json undo_request;
+    for (const auto &[method, params] : rig.engine.asked)
+        if (method == "edit_graph_document") undo_request = params;
+    CHECK(undo_request.value("base_source_digest", std::string{}) == "hub1a-2");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 5.5; }));
+    rig.pumpFor(200);
+    CHECK(rig.asked("edit_graph_document") == 3);
+}
+
+TEST_CASE("HUB-1b held text follows pin rules and commits on unpin or page exit",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *back = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.backToScene"));
+    REQUIRE(rig.pumpUntil([&] { return spin->isVisible() && spin->isEnabled(); }));
+
+    rig.focus(*spin);
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("4.5"));
+    pin->click();
+    rig.pumpFor(220);
+    INFO("pinning the same ref neither submits nor replaces held text");
+    CHECK(rig.asked("edit_graph_document") == 0);
+    CHECK(spin->findChild<QLineEdit *>()->text().contains(QStringLiteral("4.5")));
+
+    rig.window.selection_hub_.pickedGraphNode(rig.graphNode("sharpen"));
+    rig.pumpFor(100);
+    CHECK(rig.window.inspector_->graphNodeRef() == rig.graphNode("blur"));
+    CHECK(spin->findChild<QLineEdit *>()->text().contains(QStringLiteral("4.5")));
+    pin->click();
+    INFO("unpin to another ref first commits the old ref's held text exactly once");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 4.5; }));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.inspector_->graphNodeRef() == rig.graphNode("sharpen");
+    }));
+    rig.pumpFor(220);
+    CHECK(rig.asked("edit_graph_document") == 1);
+
+    rig.showGraphNode("blur");
+    spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    REQUIRE(spin != nullptr);
+    REQUIRE(rig.pumpUntil([&] { return spin->isVisible() && spin->isEnabled(); }));
+    rig.focus(*spin);
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("5.5"));
+    back->click();
+    INFO("leaving for the scene finishes the Graph field rather than discarding it");
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 5.5; }));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+    CHECK(rig.asked("edit_graph_document") == 2);
+}
+
+TEST_CASE("HUB-1b an unread pinned scope is not a confirmed removal",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    auto *gone = rig.window.inspector_->findChild<QLabel *>(
+        QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+    pin->click();
+    InspectorGraphNodeView view;
+    view.ref = rig.graphNode("blur");
+    view.scope_read = false;
+    view.found = false;
+    rig.window.inspector_->showGraphNode(view);
+    INFO("an unread scope is pending, not removal");
+    CHECK(gone->isVisible());
+    CHECK(gone->text().contains(QStringLiteral("not been read")));
+
+    view.scope_read = true;
+    rig.window.inspector_->showGraphNode(view);
+    CHECK(gone->text().contains(QStringLiteral("no longer")));
+    view.found = true;
+    view.heading = "recreated blur";
+    view.op = "value.add";
+    rig.window.inspector_->showGraphNode(view);
+    INFO("confirmed removal remains sticky if the same id returns");
+    CHECK(gone->isVisible());
+    CHECK(rig.window.inspector_->pinned());
+}
+
+TEST_CASE("HUB-1b a project switch releases the Graph pin",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *pin = rig.window.inspector_->findChild<QToolButton *>(
+        QStringLiteral("pelican.inspectorPin"));
+    pin->click();
+    REQUIRE(rig.window.inspector_->pinned());
+    ProjectSandbox other;
+    other.write("project.json", R"json({
+  "schema":"pelican.project","version":1,"name":"other",
+  "basic_config":{"scene_data_json":"scenes/main.scene.json"}
+})json");
+    rig.window.openProject(QString::fromStdWString(other.root.wstring()));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.selection_hub_.front() == SelectionFront::scene;
+    }, 10000));
+    CHECK_FALSE(rig.window.inspector_->showsGraphNode());
+    CHECK_FALSE(rig.window.inspector_->pinned());
+    CHECK_FALSE(pin->isChecked());
+}
+
+TEST_CASE("HUB-1b Graph page Undo names and performs a pending render edit",
+          "[devstudio][outliner][inspector][hub1b]") {
+    Rig rig;
+    rig.select("Cube");
+    rig.showGraphNode();
+    auto *spin = rig.window.inspector_->findChild<QDoubleSpinBox *>(
+        QStringLiteral("pelican.inspectorGraph.fields.value"));
+    auto *undo = rig.window.inspector_->findChild<QPushButton *>(
+        QStringLiteral("pelican.inspectorGraph.undo"));
+    REQUIRE(rig.pumpUntil([&] { return spin->isVisible() && spin->isEnabled(); }));
+    rig.focus(*spin);
+    spin->selectAll();
+    QTest::keyClicks(spin, QStringLiteral("2.5"));
+    QTest::keyClick(spin, Qt::Key_Enter);
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 2.5; }));
+
+    const auto path = rig.sandbox.root / "render-switch.rgen";
+    { std::ofstream(path) << "after"; }
+    REQUIRE(rig.window.render_history_.has_value());
+    rig.window.graph_canvas_->recordRenderFiles(
+        "render switch", {{path.string(), "before", "after"}});
+    REQUIRE(rig.pumpUntil([&] {
+        return undo->toolTip().contains(QStringLiteral("render"), Qt::CaseInsensitive);
+    }));
+    INFO("the tooltip identifies the render entry at the head of Graph's shared history");
+    CHECK(undo->toolTip().contains(QStringLiteral("Graph history")));
+    undo->click();
+    REQUIRE(rig.pumpUntil([&] {
+        std::ifstream input(path);
+        return std::string(std::istreambuf_iterator<char>(input), {}) == "before";
+    }));
+    INFO("render Undo does not consume or revert the earlier Graph parameter edit");
+    CHECK(rig.engine.blur_parameters.value("value", 0.0) == 2.5);
+    CHECK(rig.asked("edit_graph_document") == 1);
+
+    REQUIRE(rig.pumpUntil([&] {
+        return undo->isEnabled() &&
+               !undo->toolTip().contains(QStringLiteral("render"), Qt::CaseInsensitive);
+    }));
+    undo->click();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.blur_parameters.value("value", 0.0) == 1.0; }));
 }
 
 } // namespace PelicanStudio

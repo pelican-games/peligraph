@@ -1,4 +1,5 @@
 #include "graphcanvaswidget.hpp"
+#include "inspectorwidget.hpp"
 #include "studiocommands.hpp"
 #include "../guitrace.hpp"
 #include "tabeditorder.hpp"
@@ -84,6 +85,7 @@
 #include <QMetaObject>
 #include <QMouseEvent>
 #include <QPolygonF>
+#include <QPointer>
 #include <QPainter>
 #include <QPen>
 #include <QPushButton>
@@ -9301,6 +9303,9 @@ struct GraphCanvasWidget::Impl {
     GraphCanvasPoseFields *pose_fields = nullptr;
     // UX-12a: the rest of a node's parameters, from the catalog's table.
     GraphCanvasParameterFields *parameter_fields = nullptr;
+    QPointer<InspectorGraphFieldsHost> inspector_fields;
+    std::optional<GraphNodeRef> inspector_read_requested;
+    bool serializing_parameter_edits = false;
     QComboBox *loop_branch = nullptr;
     QLabel *shared_mark = nullptr;
     // GL-1, decision 5: Show: one box per domain the root canvas can draw.
@@ -9534,6 +9539,16 @@ struct GraphCanvasWidget::Impl {
     // destroyed first and those connections are already gone when the QWidget
     // base destructor tears down the children.
     QObject guard;
+
+    void submitParameters(InspectorGraphFieldsHost *source) {
+        if (serializing_parameter_edits) return;
+        serializing_parameter_edits = true;
+        if (source != inspector_fields && inspector_fields) inspector_fields->finishEdit();
+        if (source != nullptr) parameter_fields->finishEdit();
+        serializing_parameter_edits = false;
+        dispatch();
+        showNotice();
+    }
 
     explicit Impl(GraphCanvasWidget &owner, GraphCanvasReadCapability capability)
         : view{owner}, graph{std::move(capability)} {
@@ -10595,7 +10610,8 @@ struct GraphCanvasWidget::Impl {
         side_layout->addWidget(pose_fields);
         // UX-12a, decision 1: every other op's parameters from its table (an
         // op with fields of its own lists the rest under More parameters).
-        parameter_fields = new GraphCanvasParameterFields(model, sent, side);
+        parameter_fields = new GraphCanvasParameterFields(
+            model, [this] { submitParameters(nullptr); }, side);
         parameter_fields->setOps([](std::string_view op) { return op != "pose.clip_sample"; });
         parameter_fields->setPendingChanged([this] { showNotice(); });
         side_layout->addWidget(parameter_fields);
@@ -14808,6 +14824,7 @@ struct GraphCanvasWidget::Impl {
         followPresentHookup();
         if (pose_fields != nullptr) pose_fields->followEditable();
         if (parameter_fields != nullptr) parameter_fields->followEditable();
+        if (inspector_fields) inspector_fields->followEditable();
         // GL-5a: and the folded pass's, which also take the context and the
         // shader list as they arrive.
         syncFoldedPassFields();
@@ -14930,6 +14947,144 @@ struct GraphCanvasWidget::Impl {
             folded_notice->hide();
         }
     }
+};
+
+class GraphCanvasInspectorFields final : public InspectorGraphFieldsHost {
+  public:
+    GraphCanvasInspectorFields(GraphCanvasWidget &graph, QWidget *parent)
+        : InspectorGraphFieldsHost(parent), graph_(&graph),
+          fields_(new GraphCanvasParameterFields(
+              graph.model(), [guard = QPointer<GraphCanvasWidget>(&graph)] {
+                  if (guard) guard->inspectorSubmitted();
+              }, this, QStringLiteral("pelican.inspectorGraph.fields"))) {
+        fields_->setOps([](std::string_view op) {
+            return op != "pose.clip_sample" && !GraphCanvasParameterFields::hasOwnFields(op);
+        });
+        auto *layout = new QVBoxLayout(this);
+        layout->setContentsMargins(0, 0, 0, 0);
+        layout->addWidget(fields_);
+        setObjectName(QStringLiteral("pelican.inspectorGraph.fieldsHost"));
+    }
+
+    void showNode(const GraphNodeRef &ref) override {
+        ref_ = ref;
+        ref_.scope = graphNodeScopeId(ref.scope);
+        const auto current = node();
+        fields_->showNode(current ? &*current : nullptr, ref_.scope);
+        updateEditable();
+    }
+
+    void followEditable() override {
+        if (!graph_) {
+            editable_ = false;
+            return;
+        }
+        fields_->followEditable();
+        updateEditable();
+        if (pending_history_ == PendingHistory::None) {
+            notifyUpdated();
+            return;
+        }
+        const auto &refusal = graph_->model().parameterRefusal();
+        if (refusal && refusal->scope == ref_.scope && refusal->node == ref_.id) {
+            pending_history_ = PendingHistory::None;
+            notifyUpdated();
+            return;
+        }
+        if (fields_->hasPendingEdit() || graph_->model().busy() || !graph_->model().canEdit()) {
+            notifyUpdated();
+            return;
+        }
+        const bool history_available = pending_history_ == PendingHistory::Undo ? canUndo()
+                                       : pending_history_ == PendingHistory::Redo ? canRedo() : false;
+        if (!history_available) {
+            notifyUpdated();
+            return;
+        }
+        const auto pending = std::exchange(pending_history_, PendingHistory::None);
+        if (pending == PendingHistory::Undo) graph_->undoGraphHistory();
+        else graph_->redoGraphHistory();
+        notifyUpdated();
+    }
+
+    void finishEdit() override {
+        if (graph_) fields_->finishEdit();
+    }
+
+    void setProjectRoot(const std::filesystem::path &root) override {
+        fields_->setProjectRoot(root);
+    }
+
+    [[nodiscard]] bool editable() const override { return editable_; }
+
+    [[nodiscard]] QString readOnlyReason() const override {
+        if (!graph_) return tr("The Graph is closed; parameter editing is read-only.");
+        if (!node()) return tr("This scope has not been read, or the node is gone.");
+        if (!graph_->inspectorFoldVerification(ref_).empty())
+            return tr("This node's fold group is being verified; edits wait until it finishes.");
+        if (graph_->model().foldedView())
+            return tr("Expand the folded Graph view to edit parameters.");
+        if (!graph_->model().canEdit()) return tr("The Graph is not editable while this change or Play is active.");
+        if (node()->loop || node()->instance)
+            return tr("Open the node's definition to edit its shared parameters.");
+        if (!supported_ || !fields_->hasRows())
+            return tr("This operation has no parameters editable here; use the Graph's detail column.");
+        return {};
+    }
+
+    void undo() override {
+        if (!graph_ || pending_history_ != PendingHistory::None) return;
+        fields_->finishEdit();
+        pending_history_ = PendingHistory::Undo;
+        followEditable();
+    }
+    void redo() override {
+        if (!graph_ || pending_history_ != PendingHistory::None) return;
+        fields_->finishEdit();
+        pending_history_ = PendingHistory::Redo;
+        followEditable();
+    }
+    [[nodiscard]] bool canUndo() const override {
+        return graph_ && !graph_->scene().editingInline() && !graph_->scene().dragging() &&
+               !graph_->scene().layoutPending() && graph_->scene().canUndoAny();
+    }
+    [[nodiscard]] bool canRedo() const override {
+        return graph_ && !graph_->scene().editingInline() && !graph_->scene().dragging() &&
+               !graph_->scene().layoutPending() && graph_->scene().canRedoAny();
+    }
+    [[nodiscard]] QString undoText() const override {
+        return graph_ ? graph_->graphUndoText() : tr("Undo graph edit");
+    }
+    [[nodiscard]] QString redoText() const override {
+        return graph_ ? graph_->graphRedoText() : tr("Redo graph edit");
+    }
+
+  private:
+    std::optional<GraphCanvasNode> node() const {
+        if (!graph_) return std::nullopt;
+        const auto nodes = graph_->model().nodes(ref_.scope);
+        const auto found = std::ranges::find(nodes, ref_.id, &GraphCanvasNode::id);
+        return found == nodes.end() ? std::nullopt : std::optional<GraphCanvasNode>{*found};
+    }
+
+    void updateEditable() {
+        const auto current = node();
+        supported_ = current && !current->loop && !current->instance &&
+                     current->op != "pose.clip_sample" &&
+                     !GraphCanvasParameterFields::hasOwnFields(current->op) &&
+                     !graph_->model().operationParameters(current->op).empty();
+        editable_ = graph_ && current && supported_ && fields_->hasRows() &&
+                    graph_->model().canEdit() && !graph_->model().foldedView() &&
+                    graph_->inspectorFoldVerification(ref_).empty();
+    }
+
+    enum class PendingHistory { None, Undo, Redo };
+    QPointer<GraphCanvasWidget> graph_;
+    GraphCanvasParameterFields *fields_;
+    GraphNodeRef ref_;
+    PendingHistory pending_history_ = PendingHistory::None;
+    bool editable_ = false;
+    bool supported_ = false;
 };
 
 GraphCanvasWidget::GraphCanvasWidget(GraphCanvasReadCapability graph,
@@ -15378,6 +15533,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     }
     impl_->project_root = project_root;
     impl_->activateGraphFilterProject();
+    impl_->inspector_read_requested.reset();
     // NB-3: where the canvas nodes' pictures read their images and fonts.
     impl_->scene->setProjectRoot(project_root);
     impl_->pass_fields->setProjectRoot(project_root);
@@ -15385,6 +15541,7 @@ void GraphCanvasWidget::setProjectRoot(const std::filesystem::path &project_root
     impl_->image_fields->setProjectRoot(project_root);
     impl_->pose_fields->setProjectRoot(project_root);
     impl_->parameter_fields->setProjectRoot(project_root);
+    if (impl_->inspector_fields) impl_->inspector_fields->setProjectRoot(project_root);
     impl_->compute_fields->setProjectRoot(project_root);
     impl_->publishShaderSources();
     impl_->published_initial_assets.reset();
@@ -15407,10 +15564,9 @@ void GraphCanvasWidget::setOpenCallableRecords(std::function<void()> open) {
 void GraphCanvasWidget::setRenderHistory(RenderEditHistory *history) {
     impl_->edit_order.setRenderHistory(history);
     impl_->compute_fields->setFileHistoryAction(
-        [impl = impl_.get()](const std::string &label, const std::string &path,
-                            const std::string &before, const std::string &after) {
-            impl->edit_order.recordFiles(label, {{path, before, after}});
-            impl->synchronize();
+        [this](const std::string &label, const std::string &path,
+               const std::string &before, const std::string &after) {
+            recordRenderFiles(label, {{path, before, after}});
         });
     impl_->synchronize();
 }
@@ -15575,10 +15731,66 @@ bool GraphCanvasWidget::removeImageTransferSource(const QString &resource, const
 GraphCanvasModel &GraphCanvasWidget::model() { return impl_->model; }
 GraphCanvasScene &GraphCanvasWidget::scene() { return *impl_->scene; }
 
+InspectorGraphFieldsHost *GraphCanvasWidget::makeInspectorFields(QWidget *parent) {
+    auto *fields = new GraphCanvasInspectorFields(*this, parent);
+    fields->setProjectRoot(impl_->project_root);
+    impl_->inspector_fields = fields;
+    return fields;
+}
+
+std::string GraphCanvasWidget::inspectorFoldVerification(const GraphNodeRef &node) const {
+    return impl_->folds && node.scope.empty() ? impl_->folds->verifyingGroupOf(node.id)
+                                              : std::string{};
+}
+
+void GraphCanvasWidget::ensureInspectorRead(const GraphNodeRef &node) {
+    if (!impl_->model.canRefresh() || impl_->inspector_read_requested == node) return;
+    impl_->inspector_read_requested = node;
+    refresh();
+}
+
+void GraphCanvasWidget::inspectorSubmitted() {
+    impl_->submitParameters(impl_->inspector_fields);
+}
+
+void GraphCanvasWidget::undoGraphHistory() {
+    impl_->scene->undoEdit();
+    impl_->synchronize();
+}
+
+void GraphCanvasWidget::redoGraphHistory() {
+    impl_->scene->redoEdit();
+    impl_->synchronize();
+}
+
+void GraphCanvasWidget::recordRenderFiles(
+    std::string label, std::vector<RenderEditHistory::FileChange> files) {
+    impl_->edit_order.recordFiles(std::move(label), std::move(files));
+    impl_->synchronize();
+}
+
+QString GraphCanvasWidget::graphUndoText() const {
+    const auto &records = impl_->edit_order.undoRecords();
+    if (!records.empty() && records.back().history == TabEditOrder::History::Render)
+        return tr("Undo render edit (Graph history)");
+    return tr("Undo graph edit");
+}
+
+QString GraphCanvasWidget::graphRedoText() const {
+    const auto &records = impl_->edit_order.redoRecords();
+    if (!records.empty() && records.back().history == TabEditOrder::History::Render)
+        return tr("Redo render edit (Graph history)");
+    return tr("Redo graph edit");
+}
+
 InspectorGraphNodeView GraphCanvasWidget::nodeView(const GraphNodeRef &node) const {
     InspectorGraphNodeView view;
     view.ref = node;
     view.ref.scope = graphNodeScopeId(node.scope);
+    view.scope_read = impl_->model.contextReceived() &&
+                      (view.ref.scope.empty() ||
+                       (impl_->model.definitionsReported() &&
+                        impl_->model.documentDefinitions().contains(view.ref.scope)));
     const auto nodes = impl_->model.nodes(view.ref.scope);
     const auto found = std::ranges::find(nodes, view.ref.id, &GraphCanvasNode::id);
     if (found == nodes.end()) {

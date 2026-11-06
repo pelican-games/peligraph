@@ -1134,8 +1134,11 @@ void MainWindow::createWorkspace() {
         scheduleInspectorRefresh();
         if (*schedule_frame_plan_follow) (*schedule_frame_plan_follow)();
     });
-    inspector_->setBackToSceneAction(
-        [this] { selection_hub_.pickedSceneObject(); });
+    inspector_->setBackToSceneAction([this] {
+        inspector_->setPinned(false);
+        inspector_->clearRemovedGraphNode();
+        selection_hub_.pickedSceneObject();
+    });
     // PM-3c: the objects the running game spawned, as greyed "(runtime)"
     // rows of the Outliner, shown read-only in the Inspector.
     runtime_outliner_ = new RuntimeOutliner(*viewport_, *outliner_,
@@ -1228,6 +1231,13 @@ void MainWindow::createWorkspace() {
     render_features_ = new RenderFeaturesWidget(viewport_, this);
     graph_canvas_ = new GraphCanvasWidget(
         graphCanvasReadCapability(*viewport_), this);
+    inspector_->setGraphFieldsHost(graph_canvas_->makeInspectorFields(inspector_));
+    inspector_->setPinAction([this](bool checked) {
+        if (checked && !inspector_->showsGraphNode()) return;
+        inspector_->setPinned(checked);
+        if (!checked) inspector_->clearRemovedGraphNode();
+        applyInspectorPage();
+    });
     // HUB-1a: a Graph press is a user intent only while the scene handles the
     // press; nullopt is the Graph's empty canvas, edge or control point.
     graph_canvas_->setNodePickObserver(
@@ -1301,7 +1311,7 @@ void MainWindow::createWorkspace() {
     // The tab's own editors follow its selection first; only then does the
     // Inspector page read the hub again. This only schedules.
     graph_canvas_->setNodeShownObserver([this] {
-        if (selection_hub_.front() == SelectionFront::graph_node)
+        if (selection_hub_.front() == SelectionFront::graph_node || inspector_->showsGraphNode())
             scheduleInspectorRefresh();
     });
     inspector_->setOpenInGraphAction([this](const GraphNodeRef &node) {
@@ -3073,7 +3083,7 @@ void MainWindow::applyUserKeymap() {
 }
 
 void MainWindow::updateSceneShortcuts() {
-    inspector_->setSceneHistoryFocus(sceneFocusGroup());
+    inspector_->setSceneHistoryFocus(sceneFocusGroup() && !inspector_->graphHistoryHasFocus());
     updateOutlinerActions();
 }
 
@@ -3783,6 +3793,8 @@ void MainWindow::openProjectNow(const QString &path) {
         pending_outliner_edit_.reset();
         // HUB-1a: a node id is not a node across projects, and a pick still
         // in flight belongs to the project being left.
+        inspector_->setPinned(false);
+        inspector_->clearRemovedGraphNode();
         selection_hub_.reset();
         pending_pick_intents_.clear();
         endGizmoSessionForProjectSwitch(opened_project.projectRoot());
@@ -3879,6 +3891,8 @@ void MainWindow::leaveCurrentProject(
     pending_outliner_edit_.reset();
     // HUB-1a: the next project starts on the scene side, and a viewport pick
     // still in flight from this one lands nowhere.
+    inspector_->setPinned(false);
+    inspector_->clearRemovedGraphNode();
     selection_hub_.reset();
     pending_pick_intents_.clear();
     endGizmoSessionForProjectSwitch(next_project_root);
@@ -4901,9 +4915,14 @@ void MainWindow::refreshInspectorPageNow() {
 }
 
 void MainWindow::applyInspectorPage() {
+    if (inspector_->pinned() && inspector_->showsGraphNode() && graph_canvas_ != nullptr) {
+        graph_canvas_->ensureInspectorRead(inspector_->graphNodeRef());
+        inspector_->showGraphNode(graph_canvas_->nodeView(inspector_->graphNodeRef()));
+        return;
+    }
     if (selection_hub_.front() == SelectionFront::graph_node &&
         selection_hub_.graphNode() && graph_canvas_ != nullptr) {
-        // HUB-1a: from the hub's ref, not the Graph's current selection.
+        graph_canvas_->ensureInspectorRead(*selection_hub_.graphNode());
         inspector_->showGraphNode(
             graph_canvas_->nodeView(*selection_hub_.graphNode()));
         return;

@@ -1,0 +1,137 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "hub_inspector_edit",
+  "description": "HUB-1b through the GUI: edit the default fixture's clock parameter from the Inspector's Graph page, undo it through Graph history, then pin that node while another Graph pick moves the hub.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {
+      "label": "the fixture's engine is up",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "the canvas has drawn the fixture's graph",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#left",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "show value nodes: clock is a value.input and only Render starts ticked",
+      "cmd": "click",
+      "name": "pelican.graphCanvasShow.value"
+    },
+    {
+      "label": "the editable value.input node has drawn",
+      "cmd": "wait",
+      "name": "pelican.graphCanvasView::graph_node#clock",
+      "visible": true,
+      "timeout_ms": 120000
+    },
+    {
+      "label": "pick clock in the Graph",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#clock"
+    },
+    {
+      "label": "the Inspector has the clock's name field",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.fields.name",
+      "visible": true,
+      "enabled": true,
+      "timeout_ms": 60000
+    },
+    {
+      "label": "type another clock the engine binds in the Inspector",
+      "cmd": "type",
+      "name": "pelican.inspectorGraph.fields.name",
+      "text": "time"
+    },
+    {
+      "label": "Return commits the Inspector edit once",
+      "cmd": "key",
+      "name": "pelican.inspectorGraph.fields.name",
+      "sequence": "Return"
+    },
+    {
+      "label": "the engine read names the edited clock parameter",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.name",
+      "value": "time",
+      "retry_ms": 60000
+    },
+    {
+      "label": "Undo on the Inspector Graph page",
+      "cmd": "click",
+      "name": "pelican.inspectorGraph.undo"
+    },
+    {
+      "label": "the engine read has the original clock parameter",
+      "expect": "rpc_equals",
+      "method": "get_graph_instances",
+      "params": {},
+      "path": "nodes[0].parameters.name",
+      "value": "scene_time",
+      "retry_ms": 60000
+    },
+    {
+      "label": "pin clock's Inspector page",
+      "cmd": "click",
+      "name": "pelican.inspectorPin"
+    },
+    {
+      "label": "the pin is on",
+      "expect": "result",
+      "command": {"cmd": "list", "pattern": "pelican.inspectorPin"},
+      "path": "widgets[0].checked",
+      "value": true,
+      "retry_ms": 30000
+    },
+    {
+      "label": "the pin says what it holds",
+      "cmd": "wait",
+      "name": "pelican.inspectorPin",
+      "text": "Pinned: clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "pick the other root node",
+      "cmd": "click",
+      "name": "pelican.graphCanvasView::graph_node#left"
+    },
+    {
+      "label": "the pinned Inspector heading still names clock",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.heading",
+      "contains": "clock",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "the pinned page still shows clock's field",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.fields.name",
+      "text": "scene_time",
+      "visible": true,
+      "timeout_ms": 30000
+    },
+    {
+      "label": "unpin",
+      "cmd": "click",
+      "name": "pelican.inspectorPin"
+    },
+    {
+      "label": "unpinning jumps to the node the pick moved the hub to",
+      "cmd": "wait",
+      "name": "pelican.inspectorGraph.heading",
+      "text": "left",
+      "visible": true,
+      "timeout_ms": 30000
+    }
+  ]
+}

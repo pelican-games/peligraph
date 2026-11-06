@@ -10,6 +10,7 @@
 #include <QWidget>
 
 #include <memory>
+#include <filesystem>
 #include <functional>
 #include <optional>
 
@@ -21,6 +22,33 @@ class QString;
 namespace PelicanStudio {
 
 class EmbeddedViewport;
+
+class InspectorGraphFieldsHost : public QWidget {
+  public:
+    using QWidget::QWidget;
+
+    virtual void showNode(const GraphNodeRef &ref) = 0;
+    virtual void followEditable() = 0;
+    virtual void finishEdit() = 0;
+    virtual void setProjectRoot(const std::filesystem::path &root) = 0;
+    [[nodiscard]] virtual bool editable() const = 0;
+    [[nodiscard]] virtual QString readOnlyReason() const = 0;
+    virtual void undo() = 0;
+    virtual void redo() = 0;
+    [[nodiscard]] virtual bool canUndo() const = 0;
+    [[nodiscard]] virtual bool canRedo() const = 0;
+    [[nodiscard]] virtual QString undoText() const = 0;
+    [[nodiscard]] virtual QString redoText() const = 0;
+    void setUpdateAction(std::function<void()> action) { update_action_ = std::move(action); }
+
+  protected:
+    void notifyUpdated() {
+        if (update_action_) update_action_();
+    }
+
+  private:
+    std::function<void()> update_action_;
+};
 
 class InspectorWidget final : public QWidget {
     struct Impl;
@@ -38,6 +66,12 @@ class InspectorWidget final : public QWidget {
     // follows `view.ref`, not the Graph tab's current selection. A node the
     // document no longer holds keeps the page (found == false).
     void showGraphNode(const InspectorGraphNodeView &view);
+    void setGraphFieldsHost(InspectorGraphFieldsHost *fields);
+    [[nodiscard]] GraphNodeRef graphNodeRef() const;
+    void setPinned(bool pinned);
+    [[nodiscard]] bool pinned() const noexcept;
+    void setPinAction(std::function<void(bool)> action);
+    void clearRemovedGraphNode();
     // The hub moved back to the scene: the fields are the page again, and
     // their values are read once more. Nothing typed is thrown away.
     void showSceneSide();
@@ -62,6 +96,7 @@ class InspectorWidget final : public QWidget {
     QAction *redoAction() const noexcept;
     // MainWindow shares these actions with the scene focus group and menu.
     void setSceneHistoryFocus(bool enabled);
+    [[nodiscard]] bool graphHistoryHasFocus() const;
     // G-2: Add object. One `spawn` through the Inspector's editor session, so
     // it shares its actor, its revision and its undo stack. Q-7: asked while
     // an edit is in flight, it waits for that edit (Queued). On refusal the

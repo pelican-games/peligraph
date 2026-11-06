@@ -9,6 +9,7 @@
 #include "graphcanvasparts.hpp"
 #include "graphcanvasreadcapability.hpp"
 #include "graphcanvasthumbnails.hpp"
+#include "../model/renderedithistory.hpp"
 #include "nodegraphics.hpp"
 
 #include <QAction>
@@ -44,6 +45,7 @@ namespace PelicanStudio {
 
 class TabEditOrder;
 class RenderEditHistory;
+class InspectorGraphFieldsHost;
 
 class RenderConfigDigest;
 
@@ -1589,6 +1591,15 @@ class GraphCanvasWidget final : public QWidget {
 
     GraphCanvasModel &model();
     GraphCanvasScene &scene();
+    InspectorGraphFieldsHost *makeInspectorFields(QWidget *parent);
+    [[nodiscard]] std::string inspectorFoldVerification(const GraphNodeRef &node) const;
+    void ensureInspectorRead(const GraphNodeRef &node);
+    void inspectorSubmitted();
+    void undoGraphHistory();
+    void redoGraphHistory();
+    void recordRenderFiles(std::string label, std::vector<RenderEditHistory::FileChange> files);
+    [[nodiscard]] QString graphUndoText() const;
+    [[nodiscard]] QString graphRedoText() const;
     // HUB-1a: what the Inspector's read-only page shows of `node`, read off
     // the document this tab holds for that node's scope -- not off whatever
     // the Graph happens to have selected now. A node the document no longer

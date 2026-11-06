@@ -1731,6 +1731,10 @@ bool GraphCanvasParameterFields::valuePending() const noexcept {
     return held_->pending() || gather_->isActive();
 }
 
+bool GraphCanvasParameterFields::hasPendingEdit() const noexcept {
+    return valuePending() || edit_result_pending_;
+}
+
 void GraphCanvasParameterFields::setPendingChanged(std::function<void()> changed) {
     held_->setChanged(std::move(changed));
 }
@@ -1889,8 +1893,10 @@ void GraphCanvasParameterFields::rebuild(const GraphCanvasNode &node, const Json
 
 void GraphCanvasParameterFields::load(const GraphCanvasNode &node) {
     const auto parameters = node.parameters.is_object() ? node.parameters : Json::object();
-    // A value typed and not yet sent is not taken from under the hand.
-    if (gather_->isActive()) return;
+    // Only a read after the edit's reply acknowledges it. The reply itself
+    // precedes that read, so it must not expose the old document to the fields.
+    if (gather_->isActive() || model_.busy() || held_->pending()) return;
+    edit_result_pending_ = false;
     loaded_ = parameters;
     for (auto &row : rows_) {
         if (row.editor->typing()) continue;
@@ -1967,6 +1973,7 @@ void GraphCanvasParameterFields::send() {
     const auto base = loaded_;
     loaded_ = changed;
     if (held_->sendOrHold(heldParametersEdit(model_, scope_, node_, base, changed))) {
+        edit_result_pending_ = true;
         if (submitted_) submitted_();
         return;
     }
@@ -1985,8 +1992,20 @@ void GraphCanvasParameterFields::release() {
     }
 }
 
+void GraphCanvasParameterFields::finishEdit() {
+    if (auto *spin = qobject_cast<QAbstractSpinBox *>(QApplication::focusWidget());
+        spin && isAncestorOf(spin)) {
+        spin->interpretText();
+    }
+    gather_->stop();
+    send();
+}
+
 void GraphCanvasParameterFields::followEditable() {
     const bool editable = !node_.empty() && model_.canEdit();
+    const auto nodes = model_.nodes(scope_);
+    const auto node = std::ranges::find(nodes, node_, &GraphCanvasNode::id);
+    if (node != nodes.end()) load(*node);
     for (auto &row : rows_) row.editor->setEditable(editable && !row.connected);
     // A value held for a save in flight goes as soon as the model is free.
     held_->follow();

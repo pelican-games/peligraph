@@ -210,6 +210,7 @@ class GraphCanvasParameterFields final : public QWidget {
 
     void showNode(const GraphCanvasNode *node, const std::string &scope);
     void followEditable();
+    void finishEdit();
     void setProjectRoot(const std::filesystem::path &root);
     // Which ops these fields are for (all with a table, by default).
     void setOps(std::function<bool(std::string_view op)> shows) { shows_ = std::move(shows); }
@@ -224,6 +225,8 @@ class GraphCanvasParameterFields final : public QWidget {
         follow_ = std::move(follow);
     }
     [[nodiscard]] bool valuePending() const noexcept;
+    [[nodiscard]] bool hasPendingEdit() const noexcept;
+    [[nodiscard]] bool hasRows() const noexcept { return !rows_.empty(); }
     void setPendingChanged(std::function<void()> changed);
     // The parameters as the fields hold them now.
     [[nodiscard]] nlohmann::json parameters() const;
@@ -274,6 +277,7 @@ class GraphCanvasParameterFields final : public QWidget {
     QLabel *note_ = nullptr;
     QTimer *gather_ = nullptr;
     std::unique_ptr<GraphCanvasHeldEdits> held_;
+    bool edit_result_pending_ = false;
 };
 
 // The value a parameter shows when it is not written: its default, else

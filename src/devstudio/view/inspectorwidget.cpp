@@ -43,6 +43,7 @@
 #include <QSignalBlocker>
 #include <QSizePolicy>
 #include <QTimer>
+#include <QToolButton>
 #include <QTableWidget>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -160,7 +161,28 @@ struct InspectorWidget::Impl {
     // HUB-1a: the read-only Graph page, and the scene side it replaces.
     QWidget *graph_page = nullptr;
     QVBoxLayout *graph_layout = nullptr;
+    QWidget *graph_sections = nullptr;
+    QVBoxLayout *graph_sections_layout = nullptr;
+    InspectorGraphFieldsHost *graph_fields = nullptr;
+    QLabel *graph_heading = nullptr;
+    QLabel *graph_op = nullptr;
+    QLabel *graph_id = nullptr;
+    QLabel *graph_scope = nullptr;
+    QLabel *graph_reason = nullptr;
+    QLabel *graph_gone = nullptr;
+    QTreeWidget *graph_parameters = nullptr;
+    QTreeWidget *graph_inputs = nullptr;
+    QTreeWidget *graph_outputs = nullptr;
+    QPushButton *graph_open = nullptr;
+    QPushButton *graph_undo_button = nullptr;
+    QPushButton *graph_redo_button = nullptr;
+    QAction *graph_undo_action = nullptr;
+    QAction *graph_redo_action = nullptr;
+    QToolButton *pin_button = nullptr;
+    std::function<void(bool)> pin_action;
     bool graph_front = false;
+    bool graph_pinned = false;
+    bool graph_removed = false;
     QString scene_label_text;
     bool scene_has_selection = false;
     std::function<void()> back_to_scene_action;
@@ -294,6 +316,15 @@ struct InspectorWidget::Impl {
         selection_label->setTextInteractionFlags(Qt::TextSelectableByMouse);
         selection_form->addRow(owner.tr("Selection"), selection_label);
         selection_row->addLayout(selection_form, 1);
+        pin_button = new QToolButton(&owner);
+        pin_button->setObjectName(QStringLiteral("pelican.inspectorPin"));
+        pin_button->setText(owner.tr("Pin"));
+        pin_button->setCheckable(true);
+        pin_button->setToolTip(owner.tr("Keep this Graph node in the Inspector"));
+        selection_row->addWidget(pin_button);
+        QObject::connect(pin_button, &QToolButton::toggled, &owner, [this](bool checked) {
+            if (pin_action) pin_action(checked);
+        });
         selection_row->addWidget(makePanelHelpButton(
             &owner, "pelican.inspector.help", ManualInspectorAnchor,
             owner.tr("Edit the declaration, then Add. Use registered asset "
@@ -415,14 +446,108 @@ struct InspectorWidget::Impl {
         keep_button->hide();
         notice_row->addWidget(keep_button);
         layout->addLayout(notice_row);
-        // HUB-1a: the read-only Graph page. Built empty; a node fills it only
-        // when the window has a settled pick and the tab is on screen.
         graph_page = new QWidget(&owner);
         graph_page->setObjectName(QStringLiteral("pelican.inspectorGraphPage"));
         graph_layout = new QVBoxLayout(graph_page);
         graph_layout->setContentsMargins(2, 2, 2, 2);
         graph_layout->setSpacing(6);
-        // Visibility belongs to applyPage(); the constructor ends with it.
+        auto *back = new QPushButton(graph_page);
+        back->setObjectName(QStringLiteral("pelican.inspectorGraph.backToScene"));
+        graph_layout->addWidget(back);
+        QObject::connect(back, &QPushButton::clicked, &owner, [this] {
+            if (back_to_scene_action) back_to_scene_action();
+        });
+        graph_heading = plainLabel({}, graph_page);
+        graph_heading->setObjectName(QStringLiteral("pelican.inspectorGraph.heading"));
+        graph_layout->addWidget(graph_heading);
+        graph_op = plainLabel({}, graph_page);
+        graph_op->setObjectName(QStringLiteral("pelican.inspectorGraph.op"));
+        graph_layout->addWidget(graph_op);
+        graph_id = plainLabel({}, graph_page);
+        graph_id->setObjectName(QStringLiteral("pelican.inspectorGraph.id"));
+        graph_layout->addWidget(graph_id);
+        graph_scope = plainLabel(owner.tr("Edits the shared definition"), graph_page);
+        graph_scope->setObjectName(QStringLiteral("pelican.inspectorGraph.scope"));
+        graph_layout->addWidget(graph_scope);
+        auto *history = new QHBoxLayout;
+        graph_undo_button = new QPushButton(graph_page);
+        graph_redo_button = new QPushButton(graph_page);
+        graph_undo_button->setObjectName(QStringLiteral("pelican.inspectorGraph.undo"));
+        graph_redo_button->setObjectName(QStringLiteral("pelican.inspectorGraph.redo"));
+        history->addWidget(graph_undo_button);
+        history->addWidget(graph_redo_button);
+        history->addStretch();
+        graph_layout->addLayout(history);
+        for (auto [button, action, name, keys] : {
+                 std::tuple{graph_undo_button, &graph_undo_action,
+                            "pelican.inspectorGraph.undo",
+                            QKeySequence::keyBindings(QKeySequence::Undo)},
+                 std::tuple{graph_redo_button, &graph_redo_action,
+                            "pelican.inspectorGraph.redo",
+                            QKeySequence::keyBindings(QKeySequence::Redo)}}) {
+            *action = new QAction(graph_page);
+            (*action)->setObjectName(QString::fromLatin1(name));
+            (*action)->setShortcuts(keys);
+            (*action)->setShortcutContext(Qt::WidgetWithChildrenShortcut);
+            setCommandHelp(**action,
+                           button == graph_undo_button ? "graph.undo" : "graph.redo",
+                           CommandSurface::Graph,
+                           button == graph_undo_button ? owner.tr("Undo graph edit")
+                                                       : owner.tr("Redo graph edit"));
+            graph_page->addAction(*action);
+            QObject::connect(*action, &QAction::triggered, button, [button] {
+                if (button->isEnabled()) button->click();
+            });
+        }
+        QObject::connect(graph_undo_button, &QPushButton::clicked, &owner, [this] {
+            if (!graph_fields) return;
+            graph_fields->finishEdit();
+            graph_fields->undo();
+            graph_fields->followEditable();
+            applyPage();
+        });
+        QObject::connect(graph_redo_button, &QPushButton::clicked, &owner, [this] {
+            if (!graph_fields) return;
+            graph_fields->finishEdit();
+            graph_fields->redo();
+            graph_fields->followEditable();
+            applyPage();
+        });
+        graph_sections = new QWidget(graph_page);
+        graph_sections_layout = new QVBoxLayout(graph_sections);
+        graph_sections_layout->setContentsMargins(0, 0, 0, 0);
+        graph_layout->addWidget(graph_sections);
+        auto *parameters_label = plainLabel(owner.tr("Parameters"), graph_page);
+        parameters_label->setObjectName(QStringLiteral("pelican.inspectorGraph.parametersLabel"));
+        graph_layout->addWidget(parameters_label);
+        graph_parameters = makeGraphTree(QStringLiteral("pelican.inspectorGraph.parameters"),
+                                         {owner.tr("Name"), owner.tr("Value")});
+        graph_layout->addWidget(graph_parameters);
+        graph_reason = plainLabel({}, graph_page);
+        graph_reason->setObjectName(QStringLiteral("pelican.inspectorGraph.readOnlyReason"));
+        graph_layout->addWidget(graph_reason);
+        auto *inputs_label = plainLabel(owner.tr("Inputs"), graph_page);
+        inputs_label->setObjectName(QStringLiteral("pelican.inspectorGraph.inputsLabel"));
+        graph_layout->addWidget(inputs_label);
+        graph_inputs = makeGraphTree(QStringLiteral("pelican.inspectorGraph.inputs"),
+                                     {owner.tr("Port"), owner.tr("Type"), owner.tr("Value")});
+        graph_layout->addWidget(graph_inputs);
+        auto *outputs_label = plainLabel(owner.tr("Outputs"), graph_page);
+        outputs_label->setObjectName(QStringLiteral("pelican.inspectorGraph.outputsLabel"));
+        graph_layout->addWidget(outputs_label);
+        graph_outputs = makeGraphTree(QStringLiteral("pelican.inspectorGraph.outputs"),
+                                      {owner.tr("Port"), owner.tr("Type"), owner.tr("Value")});
+        graph_layout->addWidget(graph_outputs);
+        graph_gone = plainLabel(owner.tr("This node is no longer in the document."), graph_page);
+        graph_gone->setObjectName(QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+        graph_layout->addWidget(graph_gone);
+        graph_open = new QPushButton(owner.tr("Open in Graph"), graph_page);
+        graph_open->setObjectName(QStringLiteral("pelican.inspectorGraph.openInGraph"));
+        graph_layout->addWidget(graph_open);
+        QObject::connect(graph_open, &QPushButton::clicked, &owner, [this] {
+            if (open_in_graph_action) open_in_graph_action(graph_ref);
+        });
+        graph_layout->addStretch();
         layout->addWidget(graph_page);
         QObject::connect(keep_button, &QPushButton::clicked, &owner, [this] {
             const auto &transaction = model.noticeTransaction();
@@ -676,6 +801,23 @@ struct InspectorWidget::Impl {
         ray_occurrences_button->setVisible(!graph && !runtime_shown);
         graph_attachments->setVisible(!graph && !runtime_shown);
         material_assign->setVisible(!graph && !runtime_shown);
+        pin_button->setVisible(graph);
+        undo_button->setVisible(!graph);
+        redo_button->setVisible(!graph);
+        if (graph) {
+            graph_undo_action->setText(graph_fields ? graph_fields->undoText() : owner.tr("Undo graph edit"));
+            graph_redo_action->setText(graph_fields ? graph_fields->redoText() : owner.tr("Redo graph edit"));
+            graph_undo_button->setText(graph_undo_action->text());
+            graph_redo_button->setText(graph_redo_action->text());
+            graph_undo_button->setToolTip(graph_undo_action->text());
+            graph_redo_button->setToolTip(graph_redo_action->text());
+            graph_undo_action->setToolTip(graph_undo_action->text());
+            graph_redo_action->setToolTip(graph_redo_action->text());
+            graph_undo_action->setEnabled(graph_fields && graph_fields->canUndo());
+            graph_redo_action->setEnabled(graph_fields && graph_fields->canRedo());
+            graph_undo_button->setEnabled(graph_undo_action->isEnabled());
+            graph_redo_button->setEnabled(graph_redo_action->isEnabled());
+        }
         if (!graph) {
             selection_label->setText(scene_label_text.isEmpty() ? owner.tr("None")
                                                                  : scene_label_text);
@@ -718,6 +860,7 @@ struct InspectorWidget::Impl {
     }
 
     void showSceneSide() {
+        if (graph_front && graph_fields) graph_fields->finishEdit();
         graph_front = false;
         // A runtime object is not a scene subject: coming back from the Graph
         // page goes to the declared selection, not to the spawned object that
@@ -760,102 +903,84 @@ struct InspectorWidget::Impl {
     }
 
     void showGraphNode(const InspectorGraphNodeView &view) {
+        const bool changed = graph_ref.scope != view.ref.scope || graph_ref.id != view.ref.id;
+        if (changed) {
+            if (graph_fields) graph_fields->finishEdit();
+            graph_removed = false;
+        }
         graph_front = true;
-        clearLayout(*graph_layout);
-        auto *back = new QPushButton(backToSceneText(), graph_page);
-        back->setObjectName(QStringLiteral("pelican.inspectorGraph.backToScene"));
-        QObject::connect(back, &QPushButton::clicked, &owner, [this] {
-            if (back_to_scene_action) back_to_scene_action();
-        });
-        graph_layout->addWidget(back);
-
-        const QString heading = QString::fromStdString(
-            view.heading.empty() ? view.ref.id : view.heading);
-        auto *heading_label = plainLabel(heading, graph_page);
-        heading_label->setObjectName(QStringLiteral("pelican.inspectorGraph.heading"));
-        graph_layout->addWidget(heading_label);
-        auto *op = plainLabel(QString::fromStdString(view.op), graph_page);
-        op->setObjectName(QStringLiteral("pelican.inspectorGraph.op"));
-        graph_layout->addWidget(op);
-        auto *id = plainLabel(QString::fromStdString(view.ref.id), graph_page);
-        id->setObjectName(QStringLiteral("pelican.inspectorGraph.id"));
-        graph_layout->addWidget(id);
-
-        auto *open = new QPushButton(owner.tr("Open in Graph"), graph_page);
-        open->setObjectName(QStringLiteral("pelican.inspectorGraph.openInGraph"));
-        open->setEnabled(view.found);
-        QObject::connect(open, &QPushButton::clicked, &owner, [this] {
-            if (open_in_graph_action) open_in_graph_action(graph_ref);
-        });
         graph_ref = view.ref;
-
-        if (!view.found) {
-            auto *gone = plainLabel(
-                view.from_rendering_setup
-                    ? owner.tr("This pass comes from the rendering setup. The Graph's own panel shows its settings.")
-                    : owner.tr("This node is no longer in the document."),
-                graph_page);
-            gone->setWordWrap(true);
-            gone->setObjectName(view.from_rendering_setup
-                                    ? QStringLiteral("pelican.inspectorGraph.fromRenderingSetup")
-                                    : QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
-            graph_layout->addWidget(gone);
-            graph_layout->addWidget(open);
-            graph_layout->addStretch();
+        if (auto *back = graph_page->findChild<QPushButton *>(
+                QStringLiteral("pelican.inspectorGraph.backToScene")))
+            back->setText(backToSceneText());
+        graph_heading->setText(QString::fromStdString(
+            view.heading.empty() ? view.ref.id : view.heading));
+        graph_op->setText(QString::fromStdString(view.op));
+        graph_id->setText(QString::fromStdString(view.ref.id));
+        graph_scope->setVisible(view.found && !view.ref.scope.empty());
+        if (graph_pinned && !view.found && view.scope_read) graph_removed = true;
+        const bool found = view.found && !graph_removed;
+        graph_open->setEnabled(found);
+        graph_gone->setText(view.from_rendering_setup
+                                ? owner.tr("This pass comes from the rendering setup. The Graph's own panel shows its settings.")
+                                : view.scope_read
+                                      ? owner.tr("This node is no longer in the document.")
+                                      : owner.tr("This node's scope has not been read yet."));
+        graph_gone->setObjectName(view.from_rendering_setup
+                                      ? QStringLiteral("pelican.inspectorGraph.fromRenderingSetup")
+                                      : QStringLiteral("pelican.inspectorGraph.noLongerInDocument"));
+        graph_gone->setVisible(!found);
+        graph_sections->setVisible(found);
+        graph_parameters->setVisible(found);
+        graph_inputs->setVisible(found);
+        graph_outputs->setVisible(found);
+        graph_reason->setVisible(found);
+        if (!found) {
+            if (graph_fields) graph_fields->hide();
+            graph_reason->hide();
             applyPage();
             return;
         }
-
-        inspectorGraphSectionFor(view.op).fill(*graph_page, view);
-
-        auto *parameters_label = plainLabel(owner.tr("Parameters"), graph_page);
-        parameters_label->setObjectName(
-            QStringLiteral("pelican.inspectorGraph.parametersLabel"));
-        graph_layout->addWidget(parameters_label);
-        auto *parameters = makeGraphTree(
-            QStringLiteral("pelican.inspectorGraph.parameters"),
-            {owner.tr("Name"), owner.tr("Value")});
+        if (changed || graph_sections_layout->count() == 0) {
+            clearLayout(*graph_sections_layout);
+            inspectorGraphSectionFor(view.op).fill(*graph_sections, view);
+        }
+        graph_parameters->clear();
         if (view.parameters.is_object())
             for (const auto &[name, value] : view.parameters.items())
-                addGraphRow(*parameters,
+                addGraphRow(*graph_parameters,
                             {QString::fromStdString(name), compactJsonText(value)});
-        graph_layout->addWidget(parameters);
-
-        auto *inputs_label = plainLabel(owner.tr("Inputs"), graph_page);
-        inputs_label->setObjectName(QStringLiteral("pelican.inspectorGraph.inputsLabel"));
-        graph_layout->addWidget(inputs_label);
-        auto *inputs = makeGraphTree(
-            QStringLiteral("pelican.inspectorGraph.inputs"),
-            {owner.tr("Port"), owner.tr("Type"), owner.tr("Value")});
+        if (graph_fields) {
+            if (changed) graph_fields->showNode(graph_ref);
+            else graph_fields->followEditable();
+        }
+        const bool editable = graph_fields && graph_fields->editable();
+        if (graph_fields) graph_fields->setVisible(editable);
+        graph_parameters->setVisible(!editable);
+        graph_reason->setText(editable ? QString{} : graph_fields
+                ? graph_fields->readOnlyReason()
+                : owner.tr("Parameter editing is unavailable while the Graph is closed."));
+        graph_reason->setVisible(!editable);
+        graph_inputs->clear();
         for (const InspectorGraphInput &port : view.inputs) {
             QString value;
             if (port.connected)
                 value = owner.tr("from %1").arg(QString::fromStdString(port.source));
             else if (port.has_parameter)
                 value = compactJsonText(port.parameter);
-            addGraphRow(*inputs, {QString::fromStdString(port.port),
-                                  QString::fromStdString(port.type), value});
+            addGraphRow(*graph_inputs, {QString::fromStdString(port.port),
+                                        QString::fromStdString(port.type), value});
         }
-        graph_layout->addWidget(inputs);
-
-        auto *outputs_label = plainLabel(owner.tr("Outputs"), graph_page);
-        outputs_label->setObjectName(QStringLiteral("pelican.inspectorGraph.outputsLabel"));
-        graph_layout->addWidget(outputs_label);
-        auto *outputs = makeGraphTree(
-            QStringLiteral("pelican.inspectorGraph.outputs"),
-            {owner.tr("Port"), owner.tr("Type"), owner.tr("Value")});
+        graph_outputs->clear();
         for (const InspectorGraphOutput &port : view.outputs) {
             QString value;
             if (port.has_value) {
                 value = QString::number(port.value, 'g', 6);
                 if (port.bundle) value += owner.tr(" (bundle)");
             }
-            addGraphRow(*outputs, {QString::fromStdString(port.port),
-                                   QString::fromStdString(port.type), value});
+            addGraphRow(*graph_outputs, {QString::fromStdString(port.port),
+                                         QString::fromStdString(port.type), value});
         }
-        graph_layout->addWidget(outputs);
-        graph_layout->addWidget(open);
-        graph_layout->addStretch();
         applyPage();
     }
 
@@ -3000,6 +3125,44 @@ void InspectorWidget::showGraphNode(const InspectorGraphNodeView &view) {
     impl_->showGraphNode(view);
 }
 
+void InspectorWidget::setGraphFieldsHost(InspectorGraphFieldsHost *fields) {
+    if (impl_->graph_fields == fields) return;
+    if (impl_->graph_fields) {
+        impl_->graph_fields->finishEdit();
+        impl_->graph_fields->setUpdateAction({});
+    }
+    impl_->graph_fields = fields;
+    if (fields == nullptr) return;
+    fields->setUpdateAction([guard = QPointer<InspectorWidget>(this)] {
+        QTimer::singleShot(0, guard, [guard] {
+            if (guard && guard->impl_->graph_front) guard->impl_->applyPage();
+        });
+    });
+    fields->setParent(impl_->graph_page);
+    const int parameters = impl_->graph_layout->indexOf(impl_->graph_parameters);
+    impl_->graph_layout->insertWidget(parameters, fields);
+    fields->hide();
+}
+
+GraphNodeRef InspectorWidget::graphNodeRef() const { return impl_->graph_ref; }
+
+void InspectorWidget::setPinned(bool pinned) {
+    if (impl_->graph_pinned == pinned) return;
+    impl_->graph_pinned = pinned;
+    const QSignalBlocker block{impl_->pin_button};
+    impl_->pin_button->setChecked(pinned);
+    impl_->pin_button->setText(pinned ? tr("Pinned: %1").arg(QString::fromStdString(impl_->graph_ref.id))
+                                      : tr("Pin"));
+}
+
+bool InspectorWidget::pinned() const noexcept { return impl_->graph_pinned; }
+
+void InspectorWidget::setPinAction(std::function<void(bool)> action) {
+    impl_->pin_action = std::move(action);
+}
+
+void InspectorWidget::clearRemovedGraphNode() { impl_->graph_removed = false; }
+
 void InspectorWidget::showSceneSide() { impl_->showSceneSide(); }
 
 bool InspectorWidget::showsGraphNode() const noexcept {
@@ -3047,6 +3210,11 @@ void InspectorWidget::setSceneHistoryFocus(bool enabled) {
     impl_->scene_history_focus = enabled;
     impl_->undo_action->setEnabled(enabled && impl_->model.canUndoRedo());
     impl_->redo_action->setEnabled(enabled && impl_->model.canUndoRedo());
+}
+
+bool InspectorWidget::graphHistoryHasFocus() const {
+    const QWidget *focus = QApplication::focusWidget();
+    return impl_->graph_front && focus && impl_->graph_page->isAncestorOf(focus);
 }
 
 bool InspectorWidget::saveScene() { return impl_->saveScene(); }
