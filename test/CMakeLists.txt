@@ -4141,6 +4141,13 @@ if(PELICAN_WITH_VIDEO_OUTPUT)
     target_compile_definitions(pelican_test_vo7_video_test PRIVATE
         PELICAN_FAKE_FFMPEG="$<TARGET_FILE:pelican_fake_ffmpeg>")
     add_dependencies(pelican_test_vo7_video_test pelican_fake_ffmpeg)
+    # VO-4: everything above the Spout boundary, with a fake, on every platform.
+    pelican_define_test(vo4_spout_test pelican_core)
+    # Real spoutDX, sender and receiver in one process: it needs a D3D11 device.
+    if(PELICAN_WITH_SPOUT)
+        pelican_define_test(vo4_spout_windows_test GPU pelican_core pelican_spoutdx)
+        target_sources(pelican_test_vo4_spout_windows_test PRIVATE spout_test_receiver.cpp)
+    endif()
 endif()
 
 if(PELICAN_WITH_CANVAS)
@@ -4457,6 +4464,11 @@ if(PELICAN_WITH_RPC AND PELICAN_WITH_VIDEO_OUTPUT)
         PELICAN_FAKE_FFMPEG="$<TARGET_FILE:pelican_fake_ffmpeg>")
     target_link_libraries(pelican_test_vo1a_output_runtime_test PRIVATE stb)
     add_dependencies(pelican_test_vo1a_output_runtime_test pelican_player pelican_fake_ffmpeg)
+    if(PELICAN_WITH_SPOUT)
+        # VO-4: a real player's --output-spout, read by a receiver in the test.
+        target_sources(pelican_test_vo1a_output_runtime_test PRIVATE spout_test_receiver.cpp)
+        target_link_libraries(pelican_test_vo1a_output_runtime_test PRIVATE pelican_spoutdx)
+    endif()
 endif()
 
 add_test(

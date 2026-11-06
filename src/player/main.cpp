@@ -460,6 +460,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("dir")
         .help("existing directory for output.file sinks (default: sinks inactive)");
+    program.add_argument("--output-spout")
+        .flag()
+        .help("publish the project's output.spout sinks as Spout senders (Windows; never in offline runs)");
     program.add_argument("--ffmpeg")
         .default_value(std::string{})
         .metavar("path")
@@ -719,6 +722,7 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (!render_out.empty()) {
             config.render_out = std::filesystem::path{render_out};
         }
+        config.output_spout = program.get<bool>("--output-spout");
         const auto ffmpeg = program.get<std::string>("--ffmpeg");
         if (!ffmpeg.empty()) config.ffmpeg = std::filesystem::path{ffmpeg};
         config.output_max_frames = parseOutputFrameLimit(

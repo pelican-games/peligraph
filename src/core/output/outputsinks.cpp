@@ -8,6 +8,7 @@
 #include "../vkcore/renderer.hpp"
 #include "../watch/problemlist.hpp"
 #include "outputslotqueue.hpp"
+#include "outputspout.hpp"
 #include "outputvideo.hpp"
 
 #include <algorithm>
@@ -117,6 +118,7 @@ struct OutputSinks::Impl {
         std::shared_ptr<State> state;
         std::shared_ptr<Pool> pool;
         std::shared_ptr<OutputVideoWriter> video;
+        std::shared_ptr<OutputSpoutSender> spout;
         std::uint64_t generation = 0;
     };
     struct SlotResource {
@@ -166,6 +168,7 @@ struct OutputSinks::Impl {
     std::vector<std::shared_ptr<Runtime>> current;
     std::vector<std::shared_ptr<Pool>> retired;
     std::vector<std::shared_ptr<OutputVideoWriter>> retired_videos;
+    std::vector<std::shared_ptr<OutputSpoutSender>> retired_spouts;
     std::deque<Work> work;
     std::thread worker;
     bool active = false;
@@ -173,6 +176,7 @@ struct OutputSinks::Impl {
     bool device_lost = false;
     bool worker_started = false;
     bool worker_busy = false;
+    bool worker_busy_spout = false;
     bool paused = false;
     bool pause_acknowledged = false;
     bool drain_expired = false;
@@ -191,8 +195,32 @@ struct OutputSinks::Impl {
     std::optional<std::filesystem::path> ffmpeg;
     bool headless = false;
     double fps = 60.0;
+    bool spout_armed = false;
+    bool offline = false;
+    // Held from a problems snapshot through its publication, so a Spout thread's
+    // publication can't overwrite a newer one. Taken before `mutex`.
+    std::mutex problems_mutex;
 
     void syncCounters(const std::shared_ptr<Runtime> &runtime) {
+        if (runtime->spout) {
+            const auto spout = runtime->spout->status();
+            runtime->state->state = spout.state;
+            runtime->state->stop_reason = spout.stop_reason;
+            runtime->state->last_error = spout.last_error;
+            runtime->state->frames_written = spout.frames_written;
+            runtime->state->frames_dropped =
+                spout.frames_dropped + runtime->pool->queue.framesDropped();
+            runtime->state->frames_discarded =
+                spout.frames_discarded + runtime->pool->queue.framesDiscarded();
+            // Slots, and what the sender holds outside them.
+            runtime->state->queue_depth = runtime->pool->queue.queueDepth() +
+                spout.mailbox_depth + (spout.sending ? 1 : 0);
+            runtime->state->registered = spout.registered;
+            runtime->state->sender_name = spout.sender_name;
+            runtime->state->width = spout.width;
+            runtime->state->height = spout.height;
+            return;
+        }
         if (runtime->video) {
             const auto video = runtime->video->status();
             runtime->state->state = video.state;
@@ -217,6 +245,19 @@ struct OutputSinks::Impl {
         ++problems_revision;
         if (runtime.generation == generation) published_revision = 0;
     }
+    // A readback or capture refusal. A Spout sink's sender owns its state.
+    void refuseRuntime(const std::shared_ptr<Runtime> &runtime, std::string error) {
+        if (runtime->spout) {
+            runtime->spout->refuse(std::move(error));
+            syncCounters(runtime);
+        } else {
+            runtime->state->state = "refused";
+            runtime->state->last_error = std::move(error);
+        }
+        noteProblem(*runtime);
+    }
+    std::shared_ptr<OutputSpoutSender> startSpout(const std::string &name);
+    void spoutRefused(const OutputSpoutSender &sender);
     void ensureWorker() {
         if (worker_started) return;
         stopping = false;
@@ -236,6 +277,8 @@ OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
     // Reverse-order module teardown must join the worker and release slot
     // resources before the device and allocator are destroyed.
     (void)GET_MODULE(VulkanManageCore);
+    // A Spout thread publishes its refusal, and is joined by this destructor.
+    (void)GET_MODULE(ProblemList);
     if (const auto *config = FastModuleContainer::tryGet<EngineLaunchConfig>();
         config != nullptr) {
         impl_->max_frames = config->output_max_frames;
@@ -243,6 +286,11 @@ OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
         impl_->ffmpeg = config->ffmpeg;
         impl_->headless = config->headless;
         impl_->fps = config->fps;
+        impl_->spout_armed = config->output_spout;
+        impl_->offline = config->start_time_explicit ||
+            config->render_out.has_value() || config->input_replay ||
+            config->input_replay_path.has_value() ||
+            config->live_replay_path.has_value();
         if (config->output_dir) {
             impl_->active = true;
             impl_->directory = *config->output_dir;
@@ -254,6 +302,8 @@ OutputSinks::~OutputSinks() {
     {
         std::lock_guard lock{impl_->mutex};
         impl_->stopping = true;
+        for (const auto &runtime : impl_->current)
+            if (runtime->spout) runtime->spout->requestStop();
         impl_->paused = false;
         impl_->pause_acknowledged = false;
         impl_->resume_at.reset();
@@ -287,11 +337,66 @@ OutputSinks::~OutputSinks() {
                       impl_->retired_videos.end());
     }
     for (const auto &video : videos) video->requestStop();
+    // Joining waits for a send or close to return, so it happens with no lock
+    // held: a refusing sender's callback takes this mutex.
+    std::vector<std::shared_ptr<OutputSpoutSender>> spouts;
+    {
+        std::lock_guard lock{impl_->mutex};
+        for (const auto &runtime : impl_->current) {
+            if (runtime->spout) spouts.push_back(std::move(runtime->spout));
+        }
+        spouts.insert(spouts.end(), impl_->retired_spouts.begin(),
+                      impl_->retired_spouts.end());
+        impl_->retired_spouts.clear();
+    }
+    spouts.clear();
+}
+
+std::shared_ptr<OutputSpoutSender> OutputSinks::Impl::startSpout(
+    const std::string &name) {
+    OutputSpoutSender::Options options;
+    options.name = name;
+    options.factory = outputSpoutBackendFactory();
+    const auto predecessor = std::find_if(retired_spouts.rbegin(), retired_spouts.rend(),
+        [&](const auto &sender) { return sender->name() == name; });
+    if (predecessor != retired_spouts.rend())
+        options.predecessor = (*predecessor)->release();
+    options.on_refused = [this](const OutputSpoutSender &sender) { spoutRefused(sender); };
+    return std::make_shared<OutputSpoutSender>(std::move(options));
+}
+
+void OutputSinks::Impl::spoutRefused(const OutputSpoutSender &sender) {
+    std::lock_guard publishing{problems_mutex};
+    std::vector<nlohmann::json> problems;
+    std::uint64_t revision = 0;
+    std::uint64_t seen_generation = 0;
+    {
+        std::lock_guard lock{mutex};
+        const auto runtime = std::find_if(current.begin(), current.end(),
+            [&](const auto &candidate) { return candidate->spout.get() == &sender; });
+        // A retired sender can't change what the current generation shows.
+        if (runtime == current.end()) return;
+        syncCounters(*runtime);
+        noteProblem(**runtime);
+        revision = problems_revision;
+        seen_generation = generation;
+        std::vector<std::shared_ptr<State>> states;
+        for (const auto &item : current) states.push_back(item->state);
+        problems = outputSinkProblems(statesToValues(states));
+    }
+    if (replaceOutputProblems(problems)) {
+        std::lock_guard lock{mutex};
+        if (generation == seen_generation && problems_revision == revision)
+            published_revision = revision;
+    }
 }
 
 void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
     std::vector<nlohmann::json> problems;
     std::uint64_t installed_generation = 0;
+    // Finished senders are joined after the lock is gone.
+    std::vector<std::shared_ptr<OutputSpoutSender>> released_spouts;
+    std::lock_guard publishing{impl_->problems_mutex};
     {
         std::lock_guard lock{impl_->mutex};
         ++impl_->generation;
@@ -327,11 +432,16 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
                 runtime->pool = std::make_shared<Impl::Pool>();
                 for (const auto &old : previous) {
                     if (!sameIdentity(*old->state, sink)) continue;
-                    if (sink.kind == "video" && old->spec != sink) continue;
+                    if ((sink.kind == "video" || sink.kind == "spout") &&
+                        old->spec != sink) continue;
                     runtime->state = old->state;
                     runtime->pool = old->pool;
                     runtime->pool->retired = false;
                     runtime->video = old->video;
+                    // A refused sender stays refused until a reload, which is
+                    // this: it's retired below and a new one starts.
+                    if (old->spout && old->spout->status().state == "running")
+                        runtime->spout = old->spout;
                     state = old->state;
                     state->format = sink.format;
                     state->when_full = sink.when_full;
@@ -363,9 +473,37 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
         }
         std::erase_if(impl_->retired_videos,
                       [](const auto &video) { return video->finished(); });
+        for (const auto &old : previous) {
+            if (!old->spout) continue;
+            const auto reused = std::any_of(impl_->current.begin(), impl_->current.end(),
+                [&](const auto &runtime) { return runtime->spout == old->spout; });
+            if (!reused) {
+                old->spout->requestStop();
+                impl_->retired_spouts.push_back(old->spout);
+            }
+        }
         std::vector<std::shared_ptr<State>> states;
         for (auto &runtime : impl_->current) {
             auto &state = *runtime->state;
+            if (runtime->spec.kind == "spout") {
+                const auto eligible = runtime->spec.enabled && impl_->spout_armed &&
+                                      !impl_->offline;
+                const auto activation = outputSpoutActivation(
+                    runtime->spec.enabled, impl_->spout_armed, impl_->offline,
+                    eligible && outputSpoutAvailable());
+                state.state = activation.state;
+                state.stop_reason = activation.stop_reason;
+                state.last_error = activation.error;
+                if (activation.start && !runtime->spec.error_code.empty()) {
+                    state.state = "refused";
+                    state.last_error = sinkError(runtime->spec);
+                } else if (activation.start) {
+                    if (!runtime->spout) runtime->spout = impl_->startSpout(runtime->spec.name);
+                    impl_->syncCounters(runtime);
+                }
+                states.push_back(runtime->state);
+                continue;
+            }
             if (!impl_->active) {
                 state.state = "inactive";
             } else if (!runtime->spec.error_code.empty()) {
@@ -397,6 +535,11 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
         }
         problems = outputSinkProblems(statesToValues(states));
         impl_->published_revision = impl_->problems_revision;
+        const auto finished = std::stable_partition(
+            impl_->retired_spouts.begin(), impl_->retired_spouts.end(),
+            [](const auto &sender) { return !sender->finished(); });
+        released_spouts.assign(finished, impl_->retired_spouts.end());
+        impl_->retired_spouts.erase(finished, impl_->retired_spouts.end());
     }
     const bool published = replaceOutputProblems(problems);
     std::lock_guard lock{impl_->mutex};
@@ -444,7 +587,8 @@ void OutputSinks::Impl::discardUnstarted() {
     std::size_t index = 0;
     while (index < work.size()) {
         auto &entry = work[index];
-        if (entry.pool->queue.state(entry.slot) == OutputSlotState::sending) {
+        if (entry.pool->queue.state(entry.slot) == OutputSlotState::sending ||
+            entry.runtime->spout) {
             ++index;
             continue;
         }
@@ -468,13 +612,11 @@ void OutputSinks::Impl::finishSlot(Work &entry, bool written,
         bytes_written += written_bytes;
         ++entry.runtime->state->frames_written;
     }
-    const auto max_frame_complete = max_frames != 0 &&
+    const auto max_frame_complete = max_frames != 0 && !entry.runtime->spout &&
         entry.runtime->state->frames_written >= max_frames &&
         entry.pool->queue.queueDepth() == 1;
     if (!limit && !error.empty() && entry.generation == generation) {
-        entry.runtime->state->state = "refused";
-        entry.runtime->state->last_error = error;
-        noteProblem(*entry.runtime);
+        refuseRuntime(entry.runtime, error);
     } else if (!limit && max_frame_complete && !entry.discard) {
         entry.runtime->state->state = "finished";
         entry.runtime->state->stop_reason = "max_frames";
@@ -483,7 +625,8 @@ void OutputSinks::Impl::finishSlot(Work &entry, bool written,
     }
     if (limit) {
         for (auto &runtime : current) {
-            if (runtime->state->state != "running") continue;
+            // The byte budget is about files; Spout writes none.
+            if (runtime->state->state != "running" || runtime->spout) continue;
             runtime->state->state = "finished";
             runtime->state->stop_reason = "max_bytes";
             runtime->state->stop_value = max_bytes;
@@ -539,10 +682,36 @@ void OutputSinks::Impl::process(Work entry) {
             }
         }
     }
-    std::vector<std::uint8_t> pixels;
-    std::optional<std::uint64_t> budget;
     const auto bytes = static_cast<vk::DeviceSize>(entry.extent.width) *
         entry.extent.height * 4;
+    if (entry.runtime->spec.kind == "spout") {
+        // Into the sender's own storage, with no temporary, then the slot is
+        // free again whatever the sender is doing. A frame of a generation
+        // that's gone never reaches the mailbox.
+        bool current_generation = false;
+        {
+            std::lock_guard lock{mutex};
+            current_generation = entry.generation == generation;
+        }
+        if (ready && !entry.discard && !device_error && error.empty() &&
+            current_generation) {
+            auto frame = entry.runtime->spout->acquire(entry.extent.width,
+                entry.extent.height, entry.format == vk::Format::eB8G8R8A8Unorm ||
+                                     entry.format == vk::Format::eB8G8R8A8Srgb);
+            if (frame) {
+                invalidateSlot(slot, bytes);
+                const auto info = GET_MODULE(VulkanManageCore).getAllocator().
+                    getAllocationInfo(slot.buffer.allocation.get());
+                std::memcpy(frame->pixels.data(), info.pMappedData,
+                            frame->pixels.size());
+                entry.runtime->spout->publish(std::move(*frame));
+            }
+        }
+        finishSlot(entry, false, 0, std::move(error), false, device_error);
+        return;
+    }
+    std::vector<std::uint8_t> pixels;
+    std::optional<std::uint64_t> budget;
     if (ready && !entry.discard && !device_error && error.empty()) {
         invalidateSlot(slot, bytes);
         const auto info = GET_MODULE(VulkanManageCore).getAllocator().
@@ -645,6 +814,7 @@ void OutputSinks::Impl::run() {
             selected = std::move(work.front());
             work.pop_front();
             worker_busy = true;
+            worker_busy_spout = selected->runtime->spec.kind == "spout";
             selected->wait_for_fence = selected->pool->queue.state(selected->slot) ==
                 OutputSlotState::gpu_pending;
             selected->pool->queue.markSending(selected->slot);
@@ -679,7 +849,12 @@ void OutputSinks::captureFrame(Renderer &renderer) {
     {
         std::lock_guard lock{impl_->mutex};
         if (impl_->device_lost) throw vk::DeviceLostError("Output capture device lost");
-        if (!impl_->active || !impl_->table) return;
+        if (!impl_->table) return;
+        const auto spout_running = std::any_of(impl_->current.begin(),
+            impl_->current.end(), [](const auto &runtime) {
+                return runtime->spout != nullptr;
+            });
+        if (!impl_->active && !spout_running) return;
         capture_generation = impl_->generation;
         impl_->ensureWorker();
     }
@@ -690,6 +865,15 @@ void OutputSinks::captureFrame(Renderer &renderer) {
     }
     for (const auto &runtime : captures) {
         if (runtime->generation != capture_generation) continue;
+        // Each kind by its own flag, before any Vulkan readback is submitted.
+        if (runtime->spec.kind == "spout") {
+            if (!runtime->spout) continue;
+            std::lock_guard lock{impl_->mutex};
+            impl_->syncCounters(runtime);
+            if (runtime->state->state != "running") continue;
+        } else if (!impl_->active) {
+            continue;
+        }
         if (runtime->spec.every_n == 0 || frame % runtime->spec.every_n != 0)
             continue;
         double selection_ms = 0.0;
@@ -702,9 +886,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             throw;
         } catch (const std::exception &e) {
             std::lock_guard lock{impl_->mutex};
-            runtime->state->state = "refused";
-            runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
-            impl_->noteProblem(*runtime);
+            impl_->refuseRuntime(runtime, std::string{"output.read_failed@1: "} + e.what());
             continue;
         }
         if (read.status == OutputReadStatus::inactive) {
@@ -719,17 +901,13 @@ void OutputSinks::captureFrame(Renderer &renderer) {
         }
         if (read.status == OutputReadStatus::refused) {
             std::lock_guard lock{impl_->mutex};
-            runtime->state->state = "refused";
-            runtime->state->last_error = read.error;
-            impl_->noteProblem(*runtime);
+            impl_->refuseRuntime(runtime, read.error);
             continue;
         }
         if (!outputFileFormat(read.format)) {
             std::lock_guard lock{impl_->mutex};
-            runtime->state->state = "refused";
-            runtime->state->last_error = "output.format_unsupported@1: " +
-                vk::to_string(read.format);
-            impl_->noteProblem(*runtime);
+            impl_->refuseRuntime(runtime, "output.format_unsupported@1: " +
+                vk::to_string(read.format));
             continue;
         }
         const auto drop = runtime->spec.when_full == "drop";
@@ -762,7 +940,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             while (true) {
                 if (runtime->generation != impl_->generation ||
                     impl_->stopping || runtime->state->state != "running") break;
-                if (!runtime->video && impl_->max_frames != 0 &&
+                if (!runtime->video && !runtime->spout && impl_->max_frames != 0 &&
                     runtime->state->frames_written + runtime->pool->queue.size() >=
                         impl_->max_frames) break;
                 if (runtime->pool->queue.queueDepth() == output_slot_count) {
@@ -880,9 +1058,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
         } catch (const std::exception &e) {
             if (video_frame) runtime->video->cancel(video_frame);
             std::lock_guard lock{impl_->mutex};
-            runtime->state->state = "refused";
-            runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
-            impl_->noteProblem(*runtime);
+            impl_->refuseRuntime(runtime, std::string{"output.read_failed@1: "} + e.what());
             continue;
         }
 
@@ -926,12 +1102,12 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                 runtime->pool->queue.cancel(slot);
                 resource.source_lease.reset();
                 cancel_work();
-                if (runtime->video) runtime->video->abort(submitted.error);
-                else {
-                    runtime->state->state = "refused";
-                    runtime->state->last_error = submitted.error;
+                if (runtime->video) {
+                    runtime->video->abort(submitted.error);
+                    impl_->noteProblem(*runtime);
+                } else {
+                    impl_->refuseRuntime(runtime, submitted.error);
                 }
-                impl_->noteProblem(*runtime);
                 impl_->syncCounters(runtime);
                 impl_->free_cv.notify_all();
             } else {
@@ -961,12 +1137,12 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             resource.source_lease.reset();
             cancel_work();
             const auto error = std::string{"output.read_failed@1: "} + e.what();
-            if (runtime->video) runtime->video->abort(error);
-            else {
-                runtime->state->state = "refused";
-                runtime->state->last_error = error;
+            if (runtime->video) {
+                runtime->video->abort(error);
+                impl_->noteProblem(*runtime);
+            } else {
+                impl_->refuseRuntime(runtime, error);
             }
-            impl_->noteProblem(*runtime);
             impl_->syncCounters(runtime);
             impl_->free_cv.notify_all();
         }
@@ -976,6 +1152,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
         impl_->work_cv.notify_one();
     }
 
+    std::lock_guard publishing{impl_->problems_mutex};
     std::vector<nlohmann::json> problems;
     std::uint64_t revision = 0;
     {
@@ -995,10 +1172,17 @@ void OutputSinks::captureFrame(Renderer &renderer) {
 }
 
 nlohmann::json OutputSinks::status() const {
+    std::lock_guard publishing{impl_->problems_mutex};
     std::unique_lock lock{impl_->mutex};
     if (impl_->worker_started && !impl_->paused) {
+        // Spout's status is a snapshot: it doesn't wait for a readback or a send.
         impl_->work_cv.wait(lock, [&] {
-            return (impl_->work.empty() && !impl_->worker_busy) ||
+            const auto file_work = std::any_of(impl_->work.begin(), impl_->work.end(),
+                [](const Impl::Work &entry) {
+                    return entry.runtime->spec.kind != "spout";
+                });
+            return (!file_work &&
+                    (!impl_->worker_busy || impl_->worker_busy_spout)) ||
                    impl_->paused || impl_->stopping;
         });
     }
@@ -1036,8 +1220,9 @@ nlohmann::json OutputSinks::status() const {
             {"stop_value", state.stop_value},
             {"frames_written", state.frames_written},
             {"last_error", state.last_error},
-            {"queue_depth", runtime->video ? state.queue_depth
-                                          : runtime->pool->queue.queueDepth()},
+            {"queue_depth", runtime->video || runtime->spout
+                                ? state.queue_depth
+                                : runtime->pool->queue.queueDepth()},
             {"frames_dropped", state.frames_dropped},
             {"frames_discarded", state.frames_discarded},
             {"render_wait_ms", state.render_wait_ms}};
@@ -1048,9 +1233,15 @@ nlohmann::json OutputSinks::status() const {
             item["encoder_state"] = state.encoder_state;
             item["final_bytes"] = state.final_bytes;
         }
+        if (runtime->spec.kind == "spout") {
+            item["registered"] = state.registered;
+            item["sender_name"] = state.sender_name;
+            item["width"] = state.width;
+            item["height"] = state.height;
+        }
         sinks.push_back(std::move(item));
     }
-    return {{"active", impl_->active}, {"sinks", std::move(sinks)},
+    return {{"active", impl_->active || impl_->spout_armed}, {"sinks", std::move(sinks)},
         {"frames_skipped_inactive", impl_->frames_skipped_inactive},
         {"frames_skipped_no_contents", impl_->frames_skipped_no_contents}};
 }

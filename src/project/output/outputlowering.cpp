@@ -199,6 +199,7 @@ struct ParsedSink {
     std::uint64_t fps_num = 0;
     std::uint64_t fps_den = 0;
     bool video = false;
+    bool spout = false;
     SourceTarget source;
     std::string source_node;
     std::string source_port;
@@ -223,9 +224,11 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
     }
     for (const auto &node : *root) {
         const auto operation = stringAt(node, "op");
-        if (operation != "output.file" && operation != "output.video") continue;
+        if (operation != "output.file" && operation != "output.video" &&
+            operation != "output.spout") continue;
         ParsedSink sink;
         sink.video = operation == "output.video";
+        sink.spout = operation == "output.spout";
         sink.node = &node;
         sink.id = stringAt(node, "id");
         const auto parameters = node.find("parameters");
@@ -233,8 +236,9 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
                                  ? emptyObject()
                                  : *parameters;
         const auto invalid = [&](std::string_view key, std::string_view reason) {
-            throw GraphRegistryError(sink.video ? "output.video_parameter_invalid@1"
-                                                : "output.parameter_invalid@1",
+            throw GraphRegistryError(sink.spout ? "output.spout_parameter_invalid@1"
+                                     : sink.video ? "output.video_parameter_invalid@1"
+                                                  : "output.parameter_invalid@1",
                                      {{"node", sink.id},
                                       {"parameter", std::string{key}},
                                       {"reason", std::string{reason}}});
@@ -246,11 +250,12 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
                                         key == "when_full";
             const bool video_parameter = key == "fps_num" || key == "fps_den" ||
                                          key == "codec" || key == "mode";
-            if (!common && (sink.video ? !video_parameter : !file_parameter))
+            if (!common && (sink.spout || (sink.video ? !video_parameter : !file_parameter)))
                 invalid(key, "unknown_parameter");
         }
         sink.name = stringAt(values, "name");
-        if (!validName(sink.name))
+        if (!validName(sink.name) ||
+            (sink.spout && sink.name.size() > output_spout_name_bytes))
             throw GraphRegistryError("output.name_invalid@1",
                                      {{"node", sink.id}, {"name", sink.name}});
         if (const auto found = names.find(sink.name); found != names.end())
@@ -337,6 +342,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
             }
             sink.when_full = sink.mode == "live" ? "drop" : "wait";
         }
+        if (sink.spout) sink.when_full = "drop";
         parsed.push_back(std::move(sink));
     }
     if (parsed.empty()) return result;
@@ -458,10 +464,22 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
     result.document["nodes"] = std::move(retained_nodes);
     result.changed = true;
     for (const auto &sink : parsed) {
-        if (!sink.enabled) continue;
+        if (!sink.enabled) {
+            // A disabled Spout sink stays in the table, with no source or
+            // retain, so its status can say it's inactive and not_enabled.
+            if (sink.spout) {
+                OutputSinkSpec spec;
+                spec.name = sink.name;
+                spec.kind = "spout";
+                spec.enabled = false;
+                spec.when_full = sink.when_full;
+                result.sinks.sinks.push_back(std::move(spec));
+            }
+            continue;
+        }
         OutputSinkSpec spec;
         spec.name = sink.name;
-        spec.kind = sink.video ? "video" : "file";
+        spec.kind = sink.spout ? "spout" : sink.video ? "video" : "file";
         spec.every_n = sink.every_n;
         spec.enabled = true;
         spec.format = sink.format;
@@ -477,7 +495,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         result.sinks.sinks.push_back(std::move(spec));
         addRetain(result.document, sink.source.graph, sink.source.target);
         Json report{{"name", sink.name},
-                    {"kind", sink.video ? "video" : "file"},
+                    {"kind", sink.spout ? "spout" : sink.video ? "video" : "file"},
                     {"graph", sink.source.graph},
                     {"target", sink.source.target}};
         if (sink.video) {
@@ -485,7 +503,7 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
             report["fps_den"] = sink.fps_den;
             report["codec"] = sink.codec;
             report["mode"] = sink.mode;
-        } else {
+        } else if (!sink.spout) {
             report["every_n"] = sink.every_n;
             report["format"] = sink.format;
         }

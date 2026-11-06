@@ -1,11 +1,17 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <string>
 #include <string_view>
 #include <vector>
 
 namespace Pelican {
+
+// VO-4: Spout's fixed 256-byte ANSI name buffers, less the terminator. The sink
+// name rule leaves only lower-case ASCII, digits and underscores, so a name's
+// encoding is the same in Spout's buffers as here.
+inline constexpr std::size_t output_spout_name_bytes = 255;
 
 // VO-1a: one removable output.file node, as the authoring lowering leaves it.
 // The public `reports["output"]` row intentionally carries only the fields the

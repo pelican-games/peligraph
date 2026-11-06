@@ -79,6 +79,12 @@ THIRD_PARTY: list[Entry] = [
           use="Ogg Vorbis decoder compiled into the audio backend.",
           license="MIT OR Unlicense",
           texts=[("deps:miniaudio", "extras/stb_vorbis.c", 5548, 5586)]),
+    Entry("Spout2", fetch="spout2",
+          use="Seven sources of its spoutDX SDK, with one safety patch "
+              "(cmake/spout2_checksender.patch), compiled into pelican_spoutdx and "
+              "linked into pelican_core on Windows when PELICAN_WITH_SPOUT is on.",
+          license="BSD-2-Clause",
+          texts=[("deps", "LICENSE")]),
     Entry("JSON for Modern C++ (nlohmann/json)", fetch="nlohmann",
           use="Header-only, compiled into the executables.",
           license="MIT",

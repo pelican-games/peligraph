@@ -29,13 +29,18 @@ void registerOutputGraphModule(GraphModuleRegistry &registry) {
                                {"fps_den", GraphParameterChange::rebuild},
                                {"codec", GraphParameterChange::rebuild},
                                {"mode", GraphParameterChange::rebuild}};
+    // VO-4: a sender name and on/off. Spout has no every_n, format or when_full.
+    GraphOperationContract spout = file;
+    spout.parameter_changes = {{"name", GraphParameterChange::rebuild},
+                               {"enabled", GraphParameterChange::rebuild}};
     registry.registerModule(GraphModuleManifest{
         "pelican.output", 1,
-        "Removable render-target sinks that write image or video frames while the engine runs.",
+        "Removable render-target sinks that write image or video frames, or send them to Spout, while the engine runs.",
         {},
         {{"output.file", GraphOperationRegistration{file, {}}},
-         {"output.video", GraphOperationRegistration{video, {}}}},
-        {"output.file", "output.video"}});
+         {"output.video", GraphOperationRegistration{video, {}}},
+         {"output.spout", GraphOperationRegistration{spout, {}}}},
+        {"output.file", "output.video", "output.spout"}});
 }
 
 } // namespace Pelican

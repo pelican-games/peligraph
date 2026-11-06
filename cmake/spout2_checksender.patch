@@ -1,0 +1,58 @@
+diff --git a/SPOUTSDK/SpoutDirectX/SpoutDX/SpoutDX.cpp b/SPOUTSDK/SpoutDirectX/SpoutDX/SpoutDX.cpp
+index 83f803f..624f639 100644
+--- a/SPOUTSDK/SpoutDirectX/SpoutDX/SpoutDX.cpp
++++ b/SPOUTSDK/SpoutDirectX/SpoutDX/SpoutDX.cpp
+@@ -1716,6 +1716,9 @@ bool spoutDX::CheckSender(unsigned int width, unsigned int height, DWORD dwForma
+ 		// Make sure DirectX is initialized
+ 		if (!OpenDirectX11())
+ 			return false;
++		// Pelican VO-4: OpenDirectX11 returns true whether or not a device exists
++		if (!m_pd3dDevice || !m_pImmediateContext)
++			return false;
+ 
+ 		// Save width and height to test for sender size changes
+ 		m_Width = width;
+@@ -1725,11 +1728,18 @@ bool spoutDX::CheckSender(unsigned int width, unsigned int height, DWORD dwForma
+ 		// Create a shared texture for the sender
+ 		// A sender creates a new texture with a new share handle
+ 		m_dxShareHandle = nullptr;
+-		spoutdx.CreateSharedDX11Texture(m_pd3dDevice, m_Width, m_Height, (DXGI_FORMAT)m_dwFormat, &m_pSharedTexture, m_dxShareHandle);
++		// Pelican VO-4: a failed texture or sender must not reach UpdateSubresource
++		if (!spoutdx.CreateSharedDX11Texture(m_pd3dDevice, m_Width, m_Height, (DXGI_FORMAT)m_dwFormat, &m_pSharedTexture, m_dxShareHandle)
++			|| !m_pSharedTexture || !m_dxShareHandle)
++			return false;
+ 		
+ 		// Create a sender using the DX11 shared texture handle (m_dxShareHandle)
+ 		// and specifying the same texture format
+ 		m_bSpoutInitialized = sendernames.CreateSender(m_SenderName, m_Width, m_Height, m_dxShareHandle, m_dwFormat);
++		if (!m_bSpoutInitialized) {
++			sendernames.ReleaseSenderName(m_SenderName);
++			return false;
++		}
+ 		
+ 		// TODO
+ 		// This could be a separate function SetHostPath
+@@ -1753,16 +1763,20 @@ bool spoutDX::CheckSender(unsigned int width, unsigned int height, DWORD dwForma
+ 		frame.EnableFrameCount(m_SenderName);
+ 	}
+ 	// Initialized but has the source texture changed size ?
+-	else if (m_Width != width || m_Height != height || m_dwFormat != dwFormat) {
++	else if (m_Width != width || m_Height != height || m_dwFormat != dwFormat || !m_pSharedTexture) {
+ 
+ 		// Re-create the class shared texture with the new size
+ 		if (m_pSharedTexture) m_pSharedTexture->Release();
+ 		m_pSharedTexture = nullptr;
+ 		m_dxShareHandle = nullptr;
+-		spoutdx.CreateSharedDX11Texture(m_pd3dDevice, width, height, (DXGI_FORMAT)dwFormat, &m_pSharedTexture, m_dxShareHandle);
++		// Pelican VO-4: the size is checked again next frame, because the texture is null
++		if (!spoutdx.CreateSharedDX11Texture(m_pd3dDevice, width, height, (DXGI_FORMAT)dwFormat, &m_pSharedTexture, m_dxShareHandle)
++			|| !m_pSharedTexture || !m_dxShareHandle)
++			return false;
+ 		
+ 		// Update the sender and class variables
+-		sendernames.UpdateSender(m_SenderName, width, height, m_dxShareHandle, dwFormat);
++		if (!sendernames.UpdateSender(m_SenderName, width, height, m_dxShareHandle, dwFormat))
++			return false;
+ 
+ 		m_Width = width;
+ 		m_Height = height;

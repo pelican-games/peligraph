@@ -138,6 +138,39 @@ if(PELICAN_WITH_AUDIO)
   endif()
 endif()
 
+## Spout2 (VO-4). Only spoutDX's own sources are compiled, into pelican_spoutdx
+## (src/core/output); Spout's CMake targets and prebuilt binaries are not used.
+## With the option off nothing is fetched and nothing links d3d11 or dxgi.
+cmake_dependent_option(PELICAN_WITH_SPOUT
+  "Enable the output.spout sender through spoutDX (Windows)" ON
+  "WIN32;PELICAN_WITH_VIDEO_OUTPUT" OFF)
+if(PELICAN_WITH_SPOUT)
+  FetchContent_Declare(
+    spout2
+    GIT_REPOSITORY https://github.com/leadedge/Spout2.git
+    GIT_TAG        2.007h # 7d32b056f9e00174aeae80e722854ccaffcb2e5a
+    GIT_SHALLOW    TRUE
+    PATCH_COMMAND
+      ${CMAKE_COMMAND}
+        "-DSPOUT2_SOURCE_DIR=<SOURCE_DIR>"
+        "-DSPOUT2_COMMIT=7d32b056f9e00174aeae80e722854ccaffcb2e5a"
+        "-DSPOUT2_PATCH=${CMAKE_CURRENT_SOURCE_DIR}/cmake/spout2_checksender.patch"
+        -P
+        "${CMAKE_CURRENT_SOURCE_DIR}/cmake/patch_spout2.cmake"
+  )
+  FetchContent_GetProperties(spout2)
+  if(NOT spout2_POPULATED)
+    if(POLICY CMP0169)
+      cmake_policy(PUSH)
+      cmake_policy(SET CMP0169 OLD)
+    endif()
+    FetchContent_Populate(spout2)
+    if(POLICY CMP0169)
+      cmake_policy(POP)
+    endif()
+  endif()
+endif()
+
 ## json
 FetchContent_Declare(
   nlohmann

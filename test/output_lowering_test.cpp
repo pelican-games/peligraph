@@ -934,6 +934,85 @@ TEST_CASE("VO-7 output.video lowers defaults and rational live rates",
     CHECK(live.sinks.sinks.front().mode == "live");
 }
 
+TEST_CASE("VO-4 output.spout lowers with drop, a retain and no file parameters",
+          "[vo4][output-lowering]") {
+    auto graph = document(Json{{"name", "send_main"}});
+    node(graph, "sink").at("op") = "output.spout";
+    const auto lowered = Pelican::lowerOutputNodes(graph);
+    REQUIRE(lowered.sinks.sinks.size() == 1);
+    const auto &sink = lowered.sinks.sinks.front();
+    CHECK(sink.kind == "spout");
+    CHECK(sink.name == "send_main");
+    CHECK(sink.enabled);
+    CHECK(sink.when_full == "drop");
+    CHECK(sink.every_n == 1);
+    CHECK_FALSE(sink.target.empty());
+    const auto &report = lowered.report.at("sinks").front();
+    CHECK(report.at("kind") == "spout");
+    CHECK(report.at("target") == sink.target);
+    CHECK_FALSE(report.contains("every_n"));
+    CHECK_FALSE(report.contains("format"));
+    CHECK(lowered.document.at("rendering").at("target_planning").at("graphs")
+              .at(sink.graph).at("resources").at(sink.target).at("retain") == true);
+    CHECK(Pelican::builtinGraphModuleRegistry().isSink("output.spout"));
+
+    // A file sink and a Spout sink of the same source lower to the same document.
+    const auto file = Pelican::lowerOutputNodes(document(Json{{"name", "send_main"}}));
+    CHECK(file.document == lowered.document);
+}
+
+TEST_CASE("VO-4 a disabled output.spout has a table row, no source and no retain",
+          "[vo4][output-lowering]") {
+    auto graph = document(Json{{"name", "off"}, {"enabled", false}});
+    node(graph, "sink").at("op") = "output.spout";
+    node(graph, "sink").erase("inputs");
+    const auto lowered = Pelican::lowerOutputNodes(graph);
+    REQUIRE(lowered.sinks.sinks.size() == 1);
+    const auto &sink = lowered.sinks.sinks.front();
+    CHECK(sink.kind == "spout");
+    CHECK_FALSE(sink.enabled);
+    CHECK(sink.target.empty());
+    CHECK(lowered.report.at("sinks").empty());
+    CHECK_FALSE(lowered.document.at("rendering").contains("target_planning"));
+}
+
+TEST_CASE("VO-4 invalid output.spout parameters refuse by name",
+          "[vo4][output-lowering]") {
+    const auto invalid = [](Json parameters) {
+        auto graph = document(std::move(parameters));
+        node(graph, "sink").at("op") = "output.spout";
+        return refusal(graph);
+    };
+    CHECK(invalid(Json::object()) == "output.name_invalid@1");
+    CHECK(invalid(Json{{"name", ""}}) == "output.name_invalid@1");
+    CHECK(invalid(Json{{"name", "Has Space"}}) == "output.name_invalid@1");
+    CHECK(invalid(Json{{"name", std::string(256, 'a')}}) == "output.name_invalid@1");
+    CHECK(invalid(Json{{"name", std::string(255, 'a')}}) == "accepted");
+    for (const auto &key : {"every_n", "format", "when_full", "fps_num", "unknown"}) {
+        CAPTURE(std::string{key});
+        CHECK(invalid(Json{{"name", "send"}, {key, 1}}) ==
+              "output.spout_parameter_invalid@1");
+    }
+    CHECK(invalid(Json{{"name", "send"}, {"enabled", 1}}) ==
+          "output.spout_parameter_invalid@1");
+}
+
+TEST_CASE("VO-4 a Spout sink shares the name rule with the other sinks and leaves their digests alone",
+          "[vo4][output-lowering]") {
+    auto graph = document(Json{{"name", "same"}});
+    auto second = node(graph, "sink");
+    second.at("id") = "sink_two";
+    second.at("op") = "output.spout";
+    graph.at("nodes").push_back(second);
+    CHECK(refusal(graph) == "output.name_duplicate@1");
+
+    // The digest VO-2 pinned for an output.file document.
+    const auto file_only = Pelican::lowerOutputNodes(document());
+    CHECK(Pelican::renderConfigSourceDigest(file_only.document.dump()) ==
+          "c8ab8e70722b8dd8595980c3daf64a85b900b3fe776b69a2292ab6d592a12841");
+    CHECK(file_only.sinks.sinks.front().kind == "file");
+}
+
 TEST_CASE("VO-7 invalid video parameters refuse with the video code",
           "[vo7][output-lowering]") {
     const auto invalid = [](Json parameters) {

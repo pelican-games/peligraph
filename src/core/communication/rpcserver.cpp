@@ -38,6 +38,7 @@
 #include "../launchconfig.hpp"
 #if PELICAN_WITH_VIDEO_OUTPUT
 #include "../output/outputsinks.hpp"
+#include "../output/outputspout.hpp"
 #endif
 #include "../material/materialcontainer.hpp"
 #include "../light/lightcontainer.hpp"
@@ -1674,6 +1675,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             sinks->resumeWorkerAfterForTesting(std::chrono::milliseconds{
                 params.at("resume_after_ms").get<std::int64_t>()});
         return nlohmann::json{{"paused", paused}};
+    });
+    server.setHandler("test_output_spout_backend", [](const nlohmann::json &params) {
+        return outputSpoutTestBackendControl(params);
     });
     server.setHandler("test_output_capture_timings", [](const nlohmann::json &params) {
         requireObjectParams(params, "test_output_capture_timings");

@@ -18,6 +18,9 @@ class Renderer;
 // The loaded document's file sinks. The render thread only records copies;
 // one worker waits for the GPU, encodes and writes. File sinks default to
 // "wait" to preserve every frame; only "drop" gives a non-waiting full queue.
+// Each kind is armed by its own flag: file and video by --output-dir, Spout by
+// --output-spout. A Spout sink always drops, and only hands the worker's copy to
+// its sender's thread (outputspout.hpp), so it can't hold up either thread.
 DECLARE_MODULE(OutputSinks) {
   public:
     struct State {
@@ -41,6 +44,11 @@ DECLARE_MODULE(OutputSinks) {
         std::uint64_t final_bytes = 0;
         std::uint64_t queue_depth = 0;
         double render_wait_ms = 0.0;
+        // VO-4: output.spout only. No receiver count: it can't be read reliably.
+        bool registered = false;
+        std::string sender_name;
+        std::uint32_t width = 0;
+        std::uint32_t height = 0;
     };
 
     struct Impl;

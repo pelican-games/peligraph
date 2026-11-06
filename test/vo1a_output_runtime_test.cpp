@@ -3,6 +3,9 @@
 // file numbering and the frame the pixels came from are all visible without a
 // capture transform. The player is driven over line-delimited JSON-RPC.
 #include "../src/project/projecttemplate.hpp"
+#if PELICAN_WITH_SPOUT
+#include "spout_test_receiver.hpp"
+#endif
 
 #include <catch2/catch_test_macros.hpp>
 
@@ -2022,6 +2025,514 @@ TEST_CASE("VO-2 explicit asynchronous capture benchmark",
     }
     writeFile(result_path, measurements.dump(2) + "\n");
 }
+
+namespace {
+
+Json spoutSink(std::string name, std::string id = "spout") {
+    return {{"id", std::move(id)},
+            {"op", "output.spout"},
+            {"parameters", {{"name", std::move(name)}}},
+            {"inputs", {{"source", {{"node", "fill"}, {"port", "color"}}}}},
+            {"outputs", Json::array()}};
+}
+
+// The player's sinks use a recording backend while this is alive. The child
+// process inherits it.
+struct SpoutTestBackendEnvironment {
+    explicit SpoutTestBackendEnvironment(const char *mode = "1") { set(mode); }
+    ~SpoutTestBackendEnvironment() { set(""); }
+    static void set(const char *value) {
+#ifdef _WIN32
+        REQUIRE(_putenv_s("PELICAN_OUTPUT_SPOUT_TEST_BACKEND", value) == 0);
+#else
+        if (value[0] == 0) {
+            REQUIRE(unsetenv("PELICAN_OUTPUT_SPOUT_TEST_BACKEND") == 0);
+        } else {
+            REQUIRE(setenv("PELICAN_OUTPUT_SPOUT_TEST_BACKEND", value, 1) == 0);
+        }
+#endif
+    }
+};
+
+Json sinkNamed(const Json &status, std::string_view name) {
+    for (const auto &sink : status.at("sinks")) {
+        if (sink.at("name").get<std::string>() == name) return sink;
+    }
+    FAIL("no sink named " << std::string{name} << " in " << status.dump());
+    return Json{};
+}
+
+template <class Predicate>
+bool waitFor(Predicate predicate, std::chrono::milliseconds limit = std::chrono::seconds(15)) {
+    const auto deadline = std::chrono::steady_clock::now() + limit;
+    while (!predicate()) {
+        if (std::chrono::steady_clock::now() >= deadline) return false;
+        std::this_thread::yield();
+    }
+    return true;
+}
+
+void attachSpoutGraph(TempProject &project, std::vector<Json> sinks) {
+    auto root = project.readRoot();
+    auto &nodes = root["nodes"];
+    nodes.push_back(targetNode("fill_target", "R8G8B8A8_UNORM"));
+    nodes.push_back(fillNode("fill", "fill_target", "fill_target"));
+    for (auto &sink : sinks) nodes.push_back(std::move(sink));
+    project.writeRoot(root);
+}
+
+// The 4x4 pattern of writeExactPatternShader, in the order Spout carries it.
+std::vector<std::uint8_t> exactPatternBgra() {
+    std::vector<std::uint8_t> bytes;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            bytes.push_back(static_cast<std::uint8_t>(30 + x * y));
+            bytes.push_back(static_cast<std::uint8_t>(20 + y));
+            bytes.push_back(static_cast<std::uint8_t>(10 + x));
+            bytes.push_back(static_cast<std::uint8_t>(40 + x + y));
+        }
+    }
+    return bytes;
+}
+
+} // namespace
+
+TEST_CASE("VO-4 without --output-spout nothing opens, even with --output-dir",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_no_flag"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send"), sinkNode("shot")});
+    const auto output_dir = project.outputPath();
+
+    SECTION("no flags at all") {
+        PlayerRpc player{project, {}, "vo4_no_flag"};
+        for (int frame = 0; frame < 3; ++frame) (void)player.result("step_frame");
+        const auto status = player.outputStatus();
+        const auto spout = sinkNamed(status, "send");
+        INFO(spout.dump());
+        CHECK(spout.at("kind") == "spout");
+        CHECK(spout.at("state") == "inactive");
+        CHECK(spout.at("stop_reason") == "not_enabled");
+        CHECK(spout.at("registered") == false);
+        CHECK(spout.at("frames_written") == 0);
+        CHECK_FALSE(spout.contains("receivers"));
+        CHECK(sinkNamed(status, "shot").at("state") == "inactive");
+        const auto seen = player.result("test_output_spout_backend");
+        CHECK(seen.at("opens") == 0);
+        CHECK(seen.at("sends") == 0);
+        CHECK(outputProblems(player).empty());
+    }
+    SECTION("--output-dir alone arms only the file sink") {
+        PlayerRpc player{project, outputFlags(output_dir), "vo4_dir_only"};
+        for (int frame = 0; frame < 3; ++frame) (void)player.result("step_frame");
+        const auto status = player.outputStatus();
+        const auto spout = sinkNamed(status, "send");
+        INFO(status.dump());
+        CHECK(spout.at("state") == "inactive");
+        CHECK(spout.at("stop_reason") == "not_enabled");
+        CHECK(sinkNamed(status, "shot").at("state") == "running");
+        CHECK(sinkNamed(status, "shot").at("frames_written") == 3);
+        CHECK(player.result("test_output_spout_backend").at("opens") == 0);
+        CHECK(frameFiles(output_dir).size() == 3);
+    }
+}
+
+TEST_CASE("VO-4 --output-spout alone sends and leaves the file sink inactive",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_flag_only"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send"), sinkNode("shot")});
+    const auto output_dir = project.outputPath();
+    PlayerRpc player{project, {"--output-spout"}, "vo4_flag_only"};
+    Json status;
+    const auto published = waitFor([&] {
+        (void)player.result("step_frame");
+        status = player.outputStatus();
+        return sinkNamed(status, "send").at("registered").get<bool>();
+    });
+    INFO(status.dump());
+    REQUIRE(published);
+    const auto spout = sinkNamed(status, "send");
+    CHECK(spout.at("state") == "running");
+    CHECK(spout.at("stop_reason") == "none");
+    CHECK(spout.at("sender_name") == "send");
+    CHECK(spout.at("width") == 4);
+    CHECK(spout.at("height") == 4);
+    CHECK(spout.at("last_error") == "");
+    CHECK(sinkNamed(status, "shot").at("state") == "inactive");
+    CHECK(frameFiles(output_dir).empty());
+    const auto seen = player.result("test_output_spout_backend");
+    CHECK(seen.at("opens") == 1);
+    // RGBA8 source, BGRA8 bytes.
+    CHECK(seen.at("last_pixels").get<std::vector<std::uint8_t>>() == exactPatternBgra());
+}
+
+TEST_CASE("VO-4 file, video and Spout sinks run together, and limits don't stop Spout",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_all"};
+    project.writeExactPatternShader();
+    auto video = videoSink("movie");
+    video["id"] = "movie_sink";
+    attachSpoutGraph(project, {spoutSink("send"), sinkNode("shot"), std::move(video)});
+    const auto output_dir = project.outputPath();
+    auto flags = outputFlags(output_dir, 3);
+    flags.insert(flags.end(), {"--ffmpeg", PELICAN_FAKE_FFMPEG, "--output-spout"});
+    PlayerRpc player{project, flags, "vo4_all"};
+    Json status;
+    const auto all_done = waitFor([&] {
+        (void)player.result("step_frame");
+        status = player.outputStatus();
+        return sinkNamed(status, "shot").at("state") == "finished" &&
+               sinkNamed(status, "movie").at("state") == "finished" &&
+               sinkNamed(status, "send").at("frames_written").get<std::uint64_t>() > 3;
+    });
+    INFO(status.dump());
+    CHECK(all_done);
+    CHECK(sinkNamed(status, "shot").at("frames_written") == 3);
+    CHECK(sinkNamed(status, "movie").at("frames_written") == 3);
+    CHECK(sinkNamed(status, "send").at("state") == "running");
+    CHECK(frameFiles(output_dir).size() == 3);
+    // Never a file for a Spout frame.
+    std::size_t named_send = 0;
+    for (const auto &entry : fs::directory_iterator{output_dir})
+        if (entry.path().filename().string().starts_with("send")) ++named_send;
+    CHECK(named_send == 0);
+}
+
+TEST_CASE("VO-4 an offline run never opens, even with the flag", "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_offline"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    const auto render_out = project.root / "render.png";
+    PlayerRpc player{project, {"--output-spout", "--render-out", render_out.string()},
+                     "vo4_offline"};
+    for (int frame = 0; frame < 3; ++frame) (void)player.result("step_frame");
+    const auto spout = oneSink(player.outputStatus());
+    INFO(spout.dump());
+    CHECK(spout.at("state") == "inactive");
+    CHECK(spout.at("stop_reason") == "offline");
+    CHECK(spout.at("registered") == false);
+    const auto seen = player.result("test_output_spout_backend");
+    CHECK(seen.at("opens") == 0);
+    CHECK(seen.at("sends") == 0);
+    CHECK(outputProblems(player).empty());
+}
+
+TEST_CASE("VO-4 an authored-disabled sink stays inactive with the flag", "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_disabled"};
+    project.writeExactPatternShader();
+    auto sink = spoutSink("send");
+    sink["parameters"]["enabled"] = false;
+    attachSpoutGraph(project, {std::move(sink)});
+    PlayerRpc player{project, {"--output-spout"}, "vo4_disabled"};
+    for (int frame = 0; frame < 2; ++frame) (void)player.result("step_frame");
+    const auto spout = oneSink(player.outputStatus());
+    INFO(spout.dump());
+    CHECK(spout.at("state") == "inactive");
+    CHECK(spout.at("stop_reason") == "not_enabled");
+    CHECK(player.result("test_output_spout_backend").at("opens") == 0);
+}
+
+TEST_CASE("VO-4 a blocked send holds no staging slot and stops neither the render thread nor a file sink",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_blocked"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send"),
+                               sinkNode("shot", "fill", "color", 1, true, "raw", "drop")});
+    const auto output_dir = project.outputPath();
+    auto flags = outputFlags(output_dir);
+    flags.emplace_back("--output-spout");
+    PlayerRpc player{project, flags, "vo4_blocked"};
+    // A step's answer normally includes a status, which waits for file work: a
+    // worker stuck behind the send would then show up as a hung step.
+    (void)player.result("test_output_step_status", {{"enabled", false}});
+    (void)player.result("test_output_spout_backend", {{"block_send", true}});
+    const auto send_is_stuck = waitFor([&] {
+        (void)player.result("step_frame");
+        return player.result("test_output_spout_backend").at("send_blocked").get<bool>();
+    });
+    REQUIRE(send_is_stuck);
+
+    // More captures than the sink has slots. Disk is the witness here, because a
+    // worker stuck behind the send would hold get_status too.
+    const std::size_t captures = 12;
+    for (std::size_t frame = 0; frame < captures; ++frame) (void)player.result("step_frame");
+    const auto file_sink_ran = waitFor([&] {
+        return frameFiles(output_dir).size() >= captures / 2;
+    });
+    CHECK(file_sink_ran);
+    // One frame in the stuck send and one in the mailbox; every slot is free.
+    const auto slots_free = waitFor([&] {
+        return file_sink_ran &&
+               sinkNamed(player.outputStatus(), "send").at("queue_depth") == 2;
+    });
+    CHECK(slots_free);
+    const auto seen = player.result("test_output_spout_backend", {{"block_send", false}});
+    CHECK(seen.at("sends") == 0);
+    if (file_sink_ran) {
+        const auto status = player.outputStatus();
+        INFO(status.dump());
+        const auto spout = sinkNamed(status, "send");
+        CHECK(spout.at("state") == "running");
+        CHECK(spout.at("frames_dropped").get<std::uint64_t>() > 0);
+        CHECK(sinkNamed(status, "shot").at("state") == "running");
+    }
+}
+
+TEST_CASE("VO-4 a reload to the same name waits for the old sender's close, without the render thread",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_reload"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    PlayerRpc player{project, {"--output-spout"}, "vo4_reload"};
+    const auto published = waitFor([&] {
+        (void)player.result("step_frame");
+        return oneSink(player.outputStatus()).at("registered").get<bool>();
+    });
+    REQUIRE(published);
+
+    (void)player.result("test_output_spout_backend", {{"block_close", true}});
+    auto changed = project.readRoot();
+    for (auto &node : changed.at("nodes")) {
+        if (node.at("op") == "render.image") {
+            node["id"] = "other_target";
+        }
+        if (node.at("id") == "fill") {
+            node["inputs"]["color"]["node"] = "other_target";
+        }
+    }
+    project.writeRoot(changed);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    const auto closing = waitFor([&] {
+        return player.result("test_output_spout_backend").at("close_blocked").get<bool>();
+    });
+    REQUIRE(closing);
+
+    // The render thread keeps going, and the new sender hasn't opened.
+    for (int frame = 0; frame < 3; ++frame) (void)player.result("step_frame");
+    auto seen = player.result("test_output_spout_backend");
+    CHECK(seen.at("opens") == 1);
+    CHECK(oneSink(player.outputStatus()).at("registered") == false);
+
+    seen = player.result("test_output_spout_backend", {{"block_close", false}});
+    const auto reopened = waitFor([&] {
+        (void)player.result("step_frame");
+        return player.result("test_output_spout_backend").at("opens") == 2 &&
+               oneSink(player.outputStatus()).at("registered").get<bool>();
+    });
+    CHECK(reopened);
+    seen = player.result("test_output_spout_backend");
+    INFO(seen.dump());
+    Json events = Json::array();
+    for (const auto &event : seen.at("events")) {
+        if (!event.get<std::string>().starts_with("send:")) events.push_back(event);
+    }
+    REQUIRE(events.size() == 4);
+    CHECK(events.at(0) == "open:send");
+    CHECK(events.at(1) == "close_begin:send");
+    CHECK(events.at(2) == "close:send");
+    CHECK(events.at(3) == "open:send");
+    CHECK(oneSink(player.outputStatus()).at("state") == "running");
+}
+
+TEST_CASE("VO-4 a frame of a generation that's gone never reaches the backend",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_stale"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    PlayerRpc player{project, {"--output-spout"}, "vo4_stale"};
+    const auto published = waitFor([&] {
+        (void)player.result("step_frame");
+        return oneSink(player.outputStatus()).at("registered").get<bool>();
+    });
+    REQUIRE(published);
+    const auto sendsOf = [&](const char *size) {
+        const auto seen = player.result("test_output_spout_backend");
+        return std::count(seen.at("events").begin(), seen.at("events").end(),
+                          Json(std::string{"send:"} + size));
+    };
+    const auto idle = waitFor([&] {
+        return oneSink(player.outputStatus()).at("queue_depth") == 0;
+    });
+    REQUIRE(idle);
+    const auto old_sends = sendsOf("4x4");
+    REQUIRE(old_sends > 0);
+
+    // Frames captured with the worker parked, then a reload that keeps the
+    // sender. The old frames are 4x4 and every later one is 8x8.
+    (void)player.result("test_output_worker_pause", {{"paused", true}});
+    (void)player.result("step_frame");
+    (void)player.result("step_frame");
+    auto resized = project.readRoot();
+    for (auto &node : resized.at("nodes")) {
+        if (node.at("op") == "render.image") {
+            node["parameters"]["width"] = 8;
+            node["parameters"]["height"] = 8;
+        }
+    }
+    project.writeRoot(resized);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    (void)player.result("test_output_worker_pause", {{"paused", false}});
+    const auto new_frames = waitFor([&] {
+        (void)player.result("step_frame");
+        return sendsOf("8x8") > 0 &&
+               oneSink(player.outputStatus()).at("queue_depth") == 0;
+    });
+    REQUIRE(new_frames);
+    CHECK(sendsOf("4x4") == old_sends);
+    const auto spout = oneSink(player.outputStatus());
+    INFO(spout.dump());
+    CHECK(spout.at("frames_discarded").get<std::uint64_t>() >= 2);
+    CHECK(spout.at("state") == "running");
+    CHECK(spout.at("width") == 8);
+    CHECK(player.result("test_output_spout_backend").at("opens") == 1);
+}
+
+TEST_CASE("VO-4 an asynchronous refusal is a Problem with no further frame, and a reload retries",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend{"fail_open"};
+    TempProject project{"vo4_problem"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    PlayerRpc player{project, {"--output-spout"}, "vo4_problem"};
+    // No step_frame: the sender's thread met this by itself.
+    Json problems;
+    const auto listed = waitFor([&] {
+        problems = outputProblems(player);
+        return !problems.empty();
+    });
+    REQUIRE(listed);
+    INFO(problems.dump());
+    REQUIRE(problems.size() == 1);
+    CHECK(problems.at(0).at("code") == "output.spout_open_failed@1");
+    CHECK(problems.at(0).at("node") == "send");
+    const auto sink = oneSink(player.outputStatus());
+    CHECK(sink.at("state") == "refused");
+    CHECK(sink.at("registered") == false);
+    (void)player.result("step_frame");
+    (void)player.result("step_frame");
+    CHECK(oneSink(player.outputStatus()).at("state") == "refused");
+    CHECK(player.result("test_output_spout_backend").at("opens") == 1);
+
+    auto resized = project.readRoot();
+    for (auto &node : resized.at("nodes")) {
+        if (node.at("op") == "render.image") node["parameters"]["width"] = 8;
+    }
+    project.writeRoot(resized);
+    const auto settled = player.settle(player.result("reload_render_documents"));
+    REQUIRE(settled.at("status") == "committed");
+    const auto reopened = waitFor([&] {
+        return player.result("test_output_spout_backend").at("opens") == 2;
+    });
+    CHECK(reopened);
+}
+
+TEST_CASE("VO-4 a source that isn't RGBA8 or BGRA8 refuses by the file sink's code",
+          "[vo4][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo4_format"};
+    project.writeExactPatternShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R16G16B16A16_SFLOAT"),
+                    fillNode("fill", "fill_target", "fill_target"), spoutSink("send"));
+    project.writeRoot(root);
+    PlayerRpc player{project, {"--output-spout"}, "vo4_format"};
+    (void)player.result("step_frame");
+    const auto refused = waitFor([&] {
+        return oneSink(player.outputStatus()).at("state") == "refused";
+    });
+    CHECK(refused);
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("last_error").get<std::string>().starts_with("output.format_unsupported@1"));
+    CHECK(player.result("test_output_spout_backend").at("sends") == 0);
+    CHECK(outputProblems(player).at(0).at("code") == "output.format_unsupported@1");
+}
+
+TEST_CASE("VO-4 UNORM and SRGB sources send the bytes the file sink writes, only swapped",
+          "[vo4][gpu]") {
+    struct Source {
+        const char *format;
+        bool bgra;
+    };
+    for (const auto source : {Source{"R8G8B8A8_UNORM", false}, Source{"R8G8B8A8_SRGB", false},
+                              Source{"B8G8R8A8_UNORM", true}, Source{"B8G8R8A8_SRGB", true}}) {
+        CAPTURE(std::string{source.format});
+        SpoutTestBackendEnvironment backend;
+        TempProject project{std::string{"vo4_"} + source.format};
+        project.writeExactPatternShader();
+        auto root = project.readRoot();
+        auto &nodes = root["nodes"];
+        nodes.push_back(targetNode("fill_target", source.format));
+        nodes.push_back(fillNode("fill", "fill_target", "fill_target"));
+        nodes.push_back(spoutSink("send"));
+        nodes.push_back(sinkNode("shot"));
+        project.writeRoot(root);
+        const auto output_dir = project.outputPath();
+        auto flags = outputFlags(output_dir);
+        flags.emplace_back("--output-spout");
+        PlayerRpc player{project, flags, source.format};
+        const auto published = waitFor([&] {
+            (void)player.result("step_frame");
+            return sinkNamed(player.outputStatus(), "send").at("registered").get<bool>();
+        });
+        REQUIRE(published);
+        const auto files = frameFiles(output_dir);
+        REQUIRE_FALSE(files.empty());
+        const auto &file = files.front();
+        std::vector<std::uint8_t> expected(file.bytes.begin() + 16, file.bytes.end());
+        if (!source.bgra) {
+            for (std::size_t at = 0; at + 3 < expected.size(); at += 4)
+                std::swap(expected[at], expected[at + 2]);
+        }
+        const auto seen = player.result("test_output_spout_backend");
+        CHECK(seen.at("last_pixels").get<std::vector<std::uint8_t>>() == expected);
+    }
+}
+
+#if PELICAN_WITH_SPOUT
+TEST_CASE("VO-4 a real player's --output-spout is read by a Spout receiver here, pixel for pixel",
+          "[vo4][gpu]") {
+    const auto name = "pelican_vo4_player_" +
+        std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo4_real"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink(name)});
+    PlayerRpc player{project, {"--output-spout"}, "vo4_real"};
+    const auto expected = exactPatternBgra();
+    const auto received = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.width() == 4 && receiver.height() == 4 &&
+               receiver.pixels() == expected;
+    }, std::chrono::seconds(30));
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(received);
+    CHECK(sink.at("state") == "running");
+    CHECK(sink.at("registered") == true);
+    CHECK(sink.at("sender_name") == name);
+    CHECK(sink.at("width") == 4);
+    CHECK(sink.at("height") == 4);
+    CHECK(sink.at("frames_written").get<std::uint64_t>() >= 1);
+    CHECK(spoutTestSenderListed(name));
+    player.close();
+    CHECK_FALSE(spoutTestSenderListed(name));
+}
+#endif
 
 TEST_CASE("VO-7 offline video drains through the real sink and closes on engine exit",
           "[vo7][gpu]") {

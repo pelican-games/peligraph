@@ -98,6 +98,9 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // raw frames into. Absent means no sink is active, although the lowered
     // document still retains their targets for the report's cost.
     std::optional<std::filesystem::path> output_dir;
+    // VO-4: --output-spout, the only thing that arms output.spout sinks. Apart
+    // from output_dir. Studio's embedded engine doesn't pass it.
+    bool output_spout = false;
     // External H.264 encoder. Absent searches PATH at the first video frame.
     std::optional<std::filesystem::path> ffmpeg;
     // Per sink; a sink that reaches it becomes finished.
