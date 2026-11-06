@@ -3,6 +3,7 @@ target_sources(pelican_core PRIVATE
     core.cpp
     debugutils.cpp
     devicefeaturepolicy.cpp
+    extensionrequests.cpp
     memorydiagnostics.cpp
     deletionqueue.cpp
     externaldepthsubmission.cpp

@@ -5,6 +5,7 @@ target_sources(pelican_core PRIVATE
     outputvideo.cpp
     outputvideoprocess.cpp
     outputspout.cpp
+    outputspoutgpupath.cpp
 )
 
 # VO-4: only the seven sources spoutDX needs, from the pinned and patched tag.
@@ -29,6 +30,6 @@ if(PELICAN_WITH_SPOUT)
       "${spout_sdk}/SpoutGL")
   target_link_libraries(pelican_spoutdx PRIVATE
       d3d11 dxgi shell32 shlwapi advapi32 version)
-  target_sources(pelican_core PRIVATE outputspoutbackend_win.cpp)
-  target_link_libraries(pelican_core PRIVATE pelican_spoutdx)
+  target_sources(pelican_core PRIVATE outputspoutbackend_win.cpp outputspoutgpusource_win.cpp)
+  target_link_libraries(pelican_core PRIVATE pelican_spoutdx dxgi)
 endif()

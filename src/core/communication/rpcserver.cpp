@@ -39,6 +39,7 @@
 #if PELICAN_WITH_VIDEO_OUTPUT
 #include "../output/outputsinks.hpp"
 #include "../output/outputspout.hpp"
+#include "../output/outputspoutgpupath.hpp"
 #endif
 #include "../material/materialcontainer.hpp"
 #include "../light/lightcontainer.hpp"
@@ -1726,7 +1727,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
             {"active", false},
             {"sinks", nlohmann::json::array()},
             {"frames_skipped_inactive", 0},
-            {"frames_skipped_no_contents", 0}};
+            {"frames_skipped_no_contents", 0},
+            {"spout_gpu_path", outputSpoutGpuPathJson(OutputSpoutGpuPathReport{})}};
         if (const auto *sinks =
                 FastModuleContainer::tryGet<OutputSinks>()) {
             output_sinks_status = sinks->status();
@@ -1828,6 +1830,10 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
               {"synchronization",
                vulkan_validation.synchronization_validation},
               {"reason", vulkan_validation.reason}}},
+            // VO-5a: what the engine asked Vulkan for, apart from whether any
+            // of it makes a feature work (output.spout_gpu_path says that).
+            {"vulkan_extensions",
+             vulkanExtensionReportJson(modules.vulkan.getVulkanExtensionReport())},
             {"gpu_timing", std::move(gpu_timing)},
             {"memory", std::move(memory)},
             {"window_output",

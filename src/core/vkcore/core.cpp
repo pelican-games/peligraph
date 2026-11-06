@@ -1,6 +1,7 @@
 #include "core.hpp"
 #include "bootstrap.hpp"
 #include "devicefeaturepolicy.hpp"
+#include "extensionrequests.hpp"
 #include "windowsurface.hpp"
 #include "../startup.hpp"
 #include "../config.hpp"
@@ -85,11 +86,13 @@ struct VulkanInstanceState {
     std::shared_ptr<Android::ValidationLogMessenger> android_validation_log;
 #endif
     VulkanValidationStatus validation;
+    VulkanExtensionTableReport extensions;
 };
 
 static VulkanInstanceState vulkanCreateInstance(
     bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
-    const VulkanValidationSelection &validation_selection) {
+    const VulkanValidationSelection &validation_selection,
+    const VulkanExtensionRequests &extension_requests) {
     LOG_INFO(logger, "initializing vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -145,10 +148,27 @@ static VulkanInstanceState vulkanCreateInstance(
     exts.push_back(VK_KHR_PORTABILITY_ENUMERATION_EXTENSION_NAME);
 #endif
 
+    // Holds the names exts points at across the create call.
+    VulkanExtensionTableReport extension_report;
+    extension_report.enabled.assign(exts.begin(), exts.end());
+    if (!extension_requests.instance().empty()) {
+        auto resolution = resolveVulkanExtensions(
+            VulkanExtensionLevel::instance, std::move(extension_report.enabled),
+            extension_requests.instance(), supportedInstanceExtensions());
+        if (resolution.refusal) throw std::runtime_error(*resolution.refusal);
+        extension_report = {std::move(resolution.enabled), std::move(resolution.rows)};
+        exts = vulkanExtensionNamePointers(extension_report.enabled);
+    }
+
     create_info.pApplicationInfo = &app_info;
     create_info.setPEnabledExtensionNames(exts);
     create_info.setPEnabledLayerNames(layers);
 
+#if PELICAN_OUTPUT_TEST_SEAMS
+    recordVulkanCreationForTesting(VulkanExtensionLevel::instance,
+                                   create_info.enabledExtensionCount,
+                                   create_info.ppEnabledExtensionNames);
+#endif
     auto instance = vk::createInstanceUnique(create_info);
 #if defined(__ANDROID__)
     auto android_validation_log = validation_selection.enabled
@@ -164,6 +184,7 @@ static VulkanInstanceState vulkanCreateInstance(
             validation_selection,
             containsInstanceLayer(layers, vulkanValidationLayerName),
             create_info.pNext == &validation_features),
+        .extensions = std::move(extension_report),
     };
 }
 
@@ -197,7 +218,8 @@ static std::vector<std::string> requiredXrInstanceExtensions(
 
 static VulkanInstanceState xrCreateVulkanInstance(
     bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
-    const VulkanValidationSelection &validation_selection) {
+    const VulkanValidationSelection &validation_selection,
+    const VulkanExtensionRequests &extension_requests) {
     LOG_INFO(logger, "initializing OpenXR-selected vulkan instance...");
 
     vk::ApplicationInfo app_info;
@@ -212,15 +234,17 @@ static VulkanInstanceState xrCreateVulkanInstance(
         layers.push_back(vulkanValidationLayerName.data());
     }
 
-    const auto required_extensions =
-        requiredXrInstanceExtensions(headless, debug_utils_selection);
-    const auto supported_extensions = supportedInstanceExtensions();
-    if (const auto missing =
-            firstMissingVulkanExtension(required_extensions, supported_extensions)) {
-        throw OpenXr::VulkanBootstrapError("required Vulkan instance extension missing: " +
-                                           *missing);
-    }
-    const auto extension_names = vulkanExtensionNamePointers(required_extensions);
+    // XR's list as required rows in a copy: the flat retry after a failed XR
+    // attempt gets the table without them.
+    const auto xr_requests = withOpenXrInstanceRequests(
+        extension_requests, requiredXrInstanceExtensions(headless, debug_utils_selection));
+    auto resolution = resolveVulkanExtensions(
+        VulkanExtensionLevel::instance, {}, xr_requests.instance(),
+        supportedInstanceExtensions());
+    if (resolution.refusal) throw OpenXr::VulkanBootstrapError(*resolution.refusal);
+    VulkanExtensionTableReport extension_report{std::move(resolution.enabled),
+                                                std::move(resolution.rows)};
+    const auto extension_names = vulkanExtensionNamePointers(extension_report.enabled);
 
     vk::InstanceCreateInfo create_info;
     const vk::ValidationFeatureEnableEXT synchronization_validation =
@@ -238,6 +262,11 @@ static VulkanInstanceState xrCreateVulkanInstance(
     create_info.setPEnabledExtensionNames(extension_names);
     create_info.setPEnabledLayerNames(layers);
 
+#if PELICAN_OUTPUT_TEST_SEAMS
+    recordVulkanCreationForTesting(VulkanExtensionLevel::instance,
+                                   create_info.enabledExtensionCount,
+                                   create_info.ppEnabledExtensionNames);
+#endif
     const auto raw_instance = OpenXr::createVulkanInstance(
         vulkan_api_version, &vkGetInstanceProcAddr,
         *reinterpret_cast<const VkInstanceCreateInfo *>(&create_info));
@@ -247,6 +276,7 @@ static VulkanInstanceState xrCreateVulkanInstance(
             validation_selection,
             containsInstanceLayer(layers, vulkanValidationLayerName),
             create_info.pNext == &validation_features),
+        .extensions = std::move(extension_report),
     };
 }
 #endif
@@ -632,6 +662,8 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
                                             bool headless, bool &memory_budget_enabled,
                                             VulkanRuntimeCapabilities &runtime_capabilities,
                                             std::vector<std::string> &enabled_device_extensions,
+                                            const VulkanExtensionRequests &extension_requests,
+                                            VulkanExtensionTableReport &extension_report,
                                             bool use_openxr = false) {
     LOG_INFO(logger, "initializing vulkan device...");
 
@@ -702,7 +734,32 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
         enabled_extensions.emplace_back(
             VK_EXT_CONSERVATIVE_RASTERIZATION_EXTENSION_NAME);
     }
+    // VO-5a: the table's rows go last, after the list the engine always had. An
+    // unsupported optional row is skipped here, so it can't cause an XR
+    // fallback; an XR runtime can still reject a supported one at the create
+    // call below, which takes the existing failure path, with no retry.
+    {
+        auto resolution = resolveVulkanExtensions(
+            VulkanExtensionLevel::device, std::move(enabled_extensions),
+            extension_requests.device(), supported_extensions);
+        if (resolution.refusal) {
+#if PELICAN_WITH_OPENXR
+            if (use_openxr) throw OpenXr::VulkanBootstrapError(*resolution.refusal);
+#endif
+            throw std::runtime_error(*resolution.refusal);
+        }
+        enabled_extensions = std::move(resolution.enabled);
+        extension_report = {enabled_extensions, std::move(resolution.rows)};
+    }
     enabled_device_extensions = enabled_extensions;
+    {
+        std::string extension_list;
+        for (const auto &extension : enabled_extensions) {
+            if (!extension_list.empty()) extension_list += ", ";
+            extension_list += extension;
+        }
+        LOG_INFO(logger, "vulkan device extensions: {}", extension_list);
+    }
     const auto exts = vulkanExtensionNamePointers(enabled_extensions);
 
     vk::DeviceQueueCreateInfo graphics_queue_info, presentation_queue_info, compute_queue_info;
@@ -928,6 +985,12 @@ static vk::UniqueDevice createLogicalDevice(vk::PhysicalDevice phys_device, cons
             pipeline_state.conservative_point_and_line_rasterization,
     };
 
+#if PELICAN_OUTPUT_TEST_SEAMS
+    recordVulkanCreationForTesting(
+        VulkanExtensionLevel::device,
+        create_info_chain.get<vk::DeviceCreateInfo>().enabledExtensionCount,
+        create_info_chain.get<vk::DeviceCreateInfo>().ppEnabledExtensionNames);
+#endif
 #if PELICAN_WITH_OPENXR
     if (use_openxr) {
         const auto &chained_create_info = create_info_chain.get<vk::DeviceCreateInfo>();
@@ -980,14 +1043,19 @@ struct VulkanBootstrapState {
     VulkanValidationStatus validation;
     std::vector<std::string>
         enabled_device_extensions;
+    // Kept only from the bootstrap that succeeded: a failed XR attempt's state
+    // is thrown away with its rows.
+    VulkanExtensionReport extension_report;
 };
 
 static VulkanBootstrapState bootstrapFlatVulkan(
     bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
-    const VulkanValidationSelection &validation_selection) {
+    const VulkanValidationSelection &validation_selection,
+    const VulkanExtensionRequests &extension_requests) {
     VulkanBootstrapState result;
     auto instance = vulkanCreateInstance(
-        headless, debug_utils_selection, validation_selection);
+        headless, debug_utils_selection, validation_selection, extension_requests);
+    result.extension_report.instance = std::move(instance.extensions);
     result.instance = std::move(instance.instance);
 #if defined(__ANDROID__)
     result.android_validation_log = std::move(instance.android_validation_log);
@@ -1023,7 +1091,10 @@ static VulkanBootstrapState bootstrapFlatVulkan(
     result.device = createLogicalDevice(result.physical_device, result.queues, headless,
                                         result.memory_budget_enabled,
                                         result.runtime_capabilities,
-                                        result.enabled_device_extensions);
+                                        result.enabled_device_extensions,
+                                        extension_requests,
+                                        result.extension_report.device);
+    result.extension_report.device_created_by = "engine";
 #if defined(__ANDROID__)
     // Bootstrap owns no swapchain: its surface is needed only for selection.
     result.window_surface.reset();
@@ -1034,10 +1105,12 @@ static VulkanBootstrapState bootstrapFlatVulkan(
 #if PELICAN_WITH_OPENXR
 static VulkanBootstrapState bootstrapXrVulkan(
     bool headless, const DebugUtilsExtensionSelection &debug_utils_selection,
-    const VulkanValidationSelection &validation_selection) {
+    const VulkanValidationSelection &validation_selection,
+    const VulkanExtensionRequests &extension_requests) {
     VulkanBootstrapState result;
     auto instance = xrCreateVulkanInstance(
-        headless, debug_utils_selection, validation_selection);
+        headless, debug_utils_selection, validation_selection, extension_requests);
+    result.extension_report.instance = std::move(instance.extensions);
     result.instance = std::move(instance.instance);
     result.validation = std::move(instance.validation);
     if (!headless) {
@@ -1082,7 +1155,10 @@ static VulkanBootstrapState bootstrapXrVulkan(
                                         result.memory_budget_enabled,
                                         result.runtime_capabilities,
                                         result.enabled_device_extensions,
+                                        extension_requests,
+                                        result.extension_report.device,
                                         true);
+    result.extension_report.device_created_by = "openxr";
     return result;
 }
 #endif
@@ -1091,6 +1167,10 @@ VulkanManageCore::VulkanManageCore() {
     StartupPhaseTimer startup_timer{&StartupMetrics::addVulkan};
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     const bool headless = launch_config.headless;
+    auto extension_requests = collectVulkanExtensionRequests(launch_config.output_spout);
+#if PELICAN_OUTPUT_TEST_SEAMS
+    applyExtraVulkanExtensionRequestsForTesting(extension_requests);
+#endif
     const auto debug_utils_selection = selectDebugUtilsExtension(
         launch_config.gpu_labels, supportedInstanceExtensions());
     const auto validation_selection = selectVulkanValidation(
@@ -1100,21 +1180,21 @@ VulkanManageCore::VulkanManageCore() {
     if (launch_config.xr_active) {
         try {
             bootstrap = bootstrapXrVulkan(
-                headless, debug_utils_selection, validation_selection);
+                headless, debug_utils_selection, validation_selection, extension_requests);
         } catch (const OpenXr::VulkanBootstrapError &error) {
             OpenXr::abandonDiscovery();
             const auto info = resolveXrBootstrapFailure(launch_config, error.what());
             LOG_INFO(logger, "{}", info);
             bootstrap = bootstrapFlatVulkan(
-                headless, debug_utils_selection, validation_selection);
+                headless, debug_utils_selection, validation_selection, extension_requests);
         }
     } else {
         bootstrap = bootstrapFlatVulkan(
-            headless, debug_utils_selection, validation_selection);
+            headless, debug_utils_selection, validation_selection, extension_requests);
     }
 #else
     bootstrap = bootstrapFlatVulkan(
-        headless, debug_utils_selection, validation_selection);
+        headless, debug_utils_selection, validation_selection, extension_requests);
 #endif
     instance = std::move(bootstrap.instance);
 #if defined(__ANDROID__)
@@ -1131,6 +1211,7 @@ VulkanManageCore::VulkanManageCore() {
     enabled_device_extensions =
         std::move(
             bootstrap.enabled_device_extensions);
+    extension_report = std::move(bootstrap.extension_report);
     if (runtime_capabilities
             .dynamic_rendering_local_read) {
         const auto raw_device =

@@ -9,6 +9,7 @@
 #include "../watch/problemlist.hpp"
 #include "outputslotqueue.hpp"
 #include "outputspout.hpp"
+#include "outputspoutgpupath.hpp"
 #include "outputvideo.hpp"
 
 #include <algorithm>
@@ -196,6 +197,8 @@ struct OutputSinks::Impl {
     bool headless = false;
     double fps = 60.0;
     bool spout_armed = false;
+    // VO-5a: set in the constructor and never changed.
+    nlohmann::json spout_gpu_path;
     bool offline = false;
     // Held from a problems snapshot through its publication, so a Spout thread's
     // publication can't overwrite a newer one. Taken before `mutex`.
@@ -276,7 +279,7 @@ struct OutputSinks::Impl {
 OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
     // Reverse-order module teardown must join the worker and release slot
     // resources before the device and allocator are destroyed.
-    (void)GET_MODULE(VulkanManageCore);
+    const auto &vulkan = GET_MODULE(VulkanManageCore);
     // A Spout thread publishes its refusal, and is joined by this destructor.
     (void)GET_MODULE(ProblemList);
     if (const auto *config = FastModuleContainer::tryGet<EngineLaunchConfig>();
@@ -296,6 +299,10 @@ OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
             impl_->directory = *config->output_dir;
         }
     }
+    // VO-5a: once, for the device this module lives inside of.
+    const auto gpu_path = outputSpoutGpuPathForRun(impl_->spout_armed, vulkan);
+    impl_->spout_gpu_path = outputSpoutGpuPathJson(gpu_path);
+    LOG_INFO(logger, "spout gpu path: {} ({})", gpu_path.state, gpu_path.reason);
 }
 
 OutputSinks::~OutputSinks() {
@@ -1243,7 +1250,8 @@ nlohmann::json OutputSinks::status() const {
     }
     return {{"active", impl_->active || impl_->spout_armed}, {"sinks", std::move(sinks)},
         {"frames_skipped_inactive", impl_->frames_skipped_inactive},
-        {"frames_skipped_no_contents", impl_->frames_skipped_no_contents}};
+        {"frames_skipped_no_contents", impl_->frames_skipped_no_contents},
+        {"spout_gpu_path", impl_->spout_gpu_path}};
 }
 
 #if PELICAN_OUTPUT_TEST_SEAMS

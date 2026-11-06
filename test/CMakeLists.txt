@@ -4152,6 +4152,23 @@ if(PELICAN_WITH_VIDEO_OUTPUT)
         pelican_define_test(vo4_spout_windows_test GPU pelican_core pelican_spoutdx)
         target_sources(pelican_test_vo4_spout_windows_test PRIVATE spout_test_receiver.cpp)
     endif()
+    # VO-5a: the GPU path check with a fake source, on every platform.
+    pelican_define_test(vo5a_gpu_path_test pelican_core)
+    # The real source, real Vulkan, real DXGI and a real spoutDX device.
+    if(PELICAN_WITH_SPOUT)
+        pelican_define_test(vo5a_gpu_path_windows_test GPU pelican_core pelican_spoutdx
+                            VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+        target_link_libraries(pelican_test_vo5a_gpu_path_windows_test PRIVATE dxgi)
+    endif()
+endif()
+# VO-5a: the extension request table, with no GPU, in every build.
+pelican_define_test(vo5a_extension_requests_test pelican_core)
+# VO-5a: what really reaches the create calls, flat and through a fake OpenXR
+# runtime that calls real Vulkan.
+pelican_define_test(vo5a_bootstrap_test GPU pelican_core VulkanMemoryAllocator
+                    VulkanMemoryAllocator-Hpp)
+if(PELICAN_WITH_OPENXR)
+    target_link_libraries(pelican_test_vo5a_bootstrap_test PRIVATE pelican_openxr)
 endif()
 
 if(PELICAN_WITH_CANVAS)

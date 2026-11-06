@@ -457,8 +457,10 @@ std::wstring quoteWindowsArgument(const std::wstring &argument) {
 // one argument.
 class PlayerRpc {
   public:
+    enum class Display : std::uint8_t { headless, windowed };
+
     PlayerRpc(const TempProject &project, std::vector<std::string> extra,
-              std::string_view name) {
+              std::string_view name, Display display = Display::headless) {
         log_ = project.logPath(name);
         if (std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr) {
             extra.emplace_back("--vulkan-validation");
@@ -489,6 +491,9 @@ class PlayerRpc {
             PELICAN_VO1A_PLAYER, "--project", project.root.string(),
             "--rpc",             "--headless", "--size", "64x64",
             "--log-file",        log_.string()};
+        if (display == Display::windowed) {
+            arguments.erase(std::find(arguments.begin(), arguments.end(), "--headless"));
+        }
         for (auto &argument : extra) arguments.push_back(std::move(argument));
         std::wstring command;
         for (const auto &argument : arguments) {
@@ -527,6 +532,9 @@ class PlayerRpc {
                 player.string(), "--project", project.root.string(),
                 "--rpc",         "--headless", "--size", "64x64",
                 "--log-file",    log_.string()};
+            if (display == Display::windowed) {
+                arguments.erase(std::find(arguments.begin(), arguments.end(), "--headless"));
+            }
             for (auto &argument : extra) arguments.push_back(std::move(argument));
             std::vector<char *> argv;
             argv.reserve(arguments.size() + 1);
@@ -2686,3 +2694,149 @@ TEST_CASE("VO-7 reload removal finalizes the retired writer before releasing slo
     (void)unsetenv("PELICAN_FAKE_FFMPEG_SIDE");
 #endif
 }
+
+// VO-5a: the extension report and the GPU path check of a real player. The
+// sends themselves are VO-4's cases above, which don't change.
+namespace {
+
+bool vo5aExpectsAvailable() { return std::getenv("PELICAN_VO5A_EXPECT_AVAILABLE") != nullptr; }
+
+// One player's status. With PELICAN_VO1A_VULKAN_VALIDATION it proves validation
+// was on before it takes "no VUID" for an answer.
+Json vo5aRunPlayer(const TempProject &project, std::vector<std::string> flags,
+                   std::string_view name,
+                   PlayerRpc::Display display = PlayerRpc::Display::headless) {
+    Json status;
+    {
+        PlayerRpc player{project, std::move(flags), name, display};
+        status = player.result("get_status");
+        player.close();
+        // Closing stdin doesn't end a windowed player: close() terminates it.
+        if (display == PlayerRpc::Display::headless) CHECK(player.exitCode() == 0);
+    }
+    INFO(status.at("vulkan_validation").dump());
+    const auto log = readFile(project.logPath(name));
+    if (std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr) {
+        REQUIRE(status.at("vulkan_validation").at("enabled") == true);
+    }
+    CHECK(log.find("VUID-") == std::string::npos);
+    return status;
+}
+
+std::vector<std::string> vo5aEnabled(const Json &status) {
+    return status.at("vulkan_extensions").at("device").at("enabled").get<std::vector<std::string>>();
+}
+
+void vo5aCheckTheThreeAtTheEnd(const Json &without, const Json &with) {
+    INFO(without.at("vulkan_extensions").dump());
+    INFO(with.at("vulkan_extensions").dump());
+    auto expected = vo5aEnabled(without);
+    const std::vector<std::string> names{"VK_KHR_external_memory_win32",
+                                         "VK_KHR_external_semaphore_win32",
+                                         "VK_KHR_win32_keyed_mutex"};
+    const auto &rows = with.at("vulkan_extensions").at("device").at("rows");
+    REQUIRE(rows.size() == names.size());
+    for (std::size_t index = 0; index < names.size(); ++index) {
+        CHECK(rows[index].at("name") == names[index]);
+        CHECK(rows[index].at("need") == "optional");
+        CHECK(rows[index].at("requested_by") == Json::array({"output.spout"}));
+        if (rows[index].at("outcome") == "enabled") expected.push_back(names[index]);
+    }
+    CHECK(vo5aEnabled(with) == expected);
+    CHECK(with.at("vulkan_extensions").at("device_created_by") == "engine");
+    CHECK(with.at("vulkan_extensions").at("list_scope") == "engine_requested");
+    CHECK(with.at("vulkan_extensions").at("instance") ==
+          without.at("vulkan_extensions").at("instance"));
+    const auto &path = with.at("output").at("spout_gpu_path");
+    INFO(path.dump());
+    CHECK_FALSE(path.at("handles").is_null());
+    if (vo5aExpectsAvailable()) {
+        CHECK(expected.size() == vo5aEnabled(without).size() + names.size());
+        CHECK(path.at("state") == "available");
+        CHECK(path.at("reason") == "none");
+    }
+}
+
+} // namespace
+
+TEST_CASE("VO-5a a player without the flag has no rows and doesn't ask", "[vo5a][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo5a_no_flag"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    const auto status = vo5aRunPlayer(project, {}, "vo5a_no_flag");
+    INFO(status.at("vulkan_extensions").dump());
+    const auto &extensions = status.at("vulkan_extensions");
+    CHECK(extensions.at("device").at("rows").empty());
+    CHECK(extensions.at("instance").at("rows").empty());
+    CHECK(extensions.at("device_created_by") == "engine");
+    const auto enabled = vo5aEnabled(status);
+    for (const auto *name : {"VK_KHR_external_memory_win32", "VK_KHR_external_semaphore_win32",
+                             "VK_KHR_win32_keyed_mutex"}) {
+        CHECK(std::find(enabled.begin(), enabled.end(), name) == enabled.end());
+    }
+    const auto &path = status.at("output").at("spout_gpu_path");
+    INFO(path.dump());
+    CHECK(path.at("state") == "unavailable");
+#if !defined(_WIN32)
+    CHECK(path.at("reason") == "platform_unsupported");
+#elif !PELICAN_WITH_SPOUT
+    CHECK(path.at("reason") == "build_without_spout");
+#else
+    CHECK(path.at("reason") == "not_requested");
+#endif
+    CHECK(path.at("handles").is_null());
+}
+
+#if PELICAN_WITH_SPOUT
+TEST_CASE("VO-5a --output-spout adds the three at the end of the flag-off list", "[vo5a][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo5a_pair"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    const auto without = vo5aRunPlayer(project, {}, "vo5a_without");
+    const auto with = vo5aRunPlayer(project, {"--output-spout"}, "vo5a_with");
+    vo5aCheckTheThreeAtTheEnd(without, with);
+}
+
+TEST_CASE("VO-5a a windowed player keeps the swapchain's place and adds the three last",
+          "[vo5a][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo5a_window"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    const auto without =
+        vo5aRunPlayer(project, {}, "vo5a_win_without", PlayerRpc::Display::windowed);
+    const auto with = vo5aRunPlayer(project, {"--output-spout"}, "vo5a_win_with",
+                                    PlayerRpc::Display::windowed);
+    vo5aCheckTheThreeAtTheEnd(without, with);
+    REQUIRE_FALSE(vo5aEnabled(without).empty());
+    CHECK(vo5aEnabled(without).front() == "VK_KHR_swapchain");
+    CHECK(vo5aEnabled(with).front() == "VK_KHR_swapchain");
+}
+
+TEST_CASE("VO-5a the sink behaves as in VO-4, with the extensions on", "[vo5a][gpu]") {
+    SpoutTestBackendEnvironment backend;
+    TempProject project{"vo5a_sink"};
+    project.writeExactPatternShader();
+    attachSpoutGraph(project, {spoutSink("send")});
+    PlayerRpc player{project, {"--output-spout"}, "vo5a_sink"};
+    Json status;
+    const auto published = waitFor([&] {
+        (void)player.result("step_frame");
+        status = player.outputStatus();
+        return sinkNamed(status, "send").at("registered").get<bool>();
+    });
+    INFO(status.dump());
+    REQUIRE(published);
+    const auto spout = sinkNamed(status, "send");
+    CHECK(spout.at("state") == "running");
+    CHECK(spout.at("stop_reason") == "none");
+    CHECK(spout.at("last_error") == "");
+    CHECK(spout.at("frames_written").get<std::uint64_t>() >= 1);
+    CHECK(player.result("test_output_spout_backend").at("last_pixels").get<std::vector<std::uint8_t>>() ==
+          exactPatternBgra());
+    // The GPU path's answer makes no Problem, whichever it is.
+    CHECK(outputProblems(player).empty());
+}
+#endif

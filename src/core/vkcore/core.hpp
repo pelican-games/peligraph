@@ -6,6 +6,7 @@
 #include "accelerationstructuredispatch.hpp"
 #include "cmdbuf.hpp"
 #include "debugutils.hpp"
+#include "extensionrequests.hpp"
 #include "image.hpp"
 #include "memorydiagnostics.hpp"
 #include "raytracingpipelinedispatch.hpp"
@@ -58,6 +59,7 @@ DECLARE_MODULE(VulkanManageCore) {
     VulkanRuntimeCapabilities runtime_capabilities;
     std::vector<std::string>
         enabled_device_extensions;
+    VulkanExtensionReport extension_report;
     PFN_vkCmdSetRenderingAttachmentLocationsKHR
         set_rendering_attachment_locations = nullptr;
     PFN_vkCmdSetRenderingInputAttachmentIndicesKHR
@@ -130,6 +132,9 @@ DECLARE_MODULE(VulkanManageCore) {
     std::span<const std::string>
     getEnabledDeviceExtensions() const noexcept {
         return enabled_device_extensions;
+    }
+    const VulkanExtensionReport &getVulkanExtensionReport() const noexcept {
+        return extension_report;
     }
     void setRenderingAttachmentLocations(
         vk::CommandBuffer command_buffer,
