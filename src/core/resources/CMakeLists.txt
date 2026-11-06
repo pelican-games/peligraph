@@ -53,6 +53,7 @@ embed_shader(scene_present.frag)
 # BS-1: the built-in fallback generation's one pass; SPIR-V as well, so a
 # build without the runtime shader compiler starts on it too.
 embed_shader(fallback_clear.frag)
+embed_shader(error_magenta.frag)
 embed_shader(rt_shadow_mask.frag)
 embed_shader(rt_shadow_mask_pipeline.rgen)
 embed_shader(rt_shadow_mask_pipeline.rmiss)
@@ -179,6 +180,7 @@ b_embed(pelican_resources fullscreen.frag)
 # per pass, so there is no build-time SPIR-V.
 b_embed(pelican_resources passthrough.frag)
 b_embed(pelican_resources fallback_clear.frag)
+b_embed(pelican_resources error_magenta.frag)
 b_embed(pelican_resources scene_present.frag)
 b_embed(pelican_resources rt_shadow_mask.frag)
 b_embed(pelican_resources rt_shadow_mask_pipeline.rgen)

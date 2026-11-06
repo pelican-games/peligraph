@@ -870,6 +870,12 @@ void validateShaderResourceInterfaceReflection(
                 std::string{shaderResourcePortIncludeName} +
                 "> and use its generated accessor");
         }
+        if (expected.port.resource.starts_with("gc2_unconnected_image_") &&
+            (expected.descriptor == ShaderResourceDescriptorKind::combined_image_sampler ||
+             expected.descriptor == ShaderResourceDescriptorKind::input_attachment) &&
+            found->numeric_type != ReflectedImageNumericType::floating) {
+            throw std::runtime_error(prefix + " requires floating-point image sampling");
+        }
         const auto expected_type =
             descriptorType(expected.descriptor);
         if (found->type != expected_type ||

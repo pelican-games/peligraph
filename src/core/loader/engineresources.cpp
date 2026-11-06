@@ -87,6 +87,8 @@ constexpr auto registered_ids =
     "passthrough.frag",
     "fallback_clear.frag",
     "fallback_clear.frag.spv",
+    "error_magenta.frag",
+    "error_magenta.frag.spv",
     "scene_present.frag",
     "scene_present.frag.spv",
     "rt_shadow_mask.frag",
@@ -279,6 +281,8 @@ std::optional<std::string_view> engineResource(std::string_view id) {
     PELICAN_ENGINE_RESOURCE("passthrough.frag")
     PELICAN_ENGINE_RESOURCE("fallback_clear.frag")
     PELICAN_ENGINE_RESOURCE("fallback_clear.frag.spv")
+    PELICAN_ENGINE_RESOURCE("error_magenta.frag")
+    PELICAN_ENGINE_RESOURCE("error_magenta.frag.spv")
     PELICAN_ENGINE_RESOURCE("scene_present.frag")
     PELICAN_ENGINE_RESOURCE("scene_present.frag.spv")
     PELICAN_ENGINE_RESOURCE("rt_shadow_mask.frag")

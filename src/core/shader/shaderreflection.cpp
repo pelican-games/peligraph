@@ -79,6 +79,19 @@ ReflectedImageViewDimension imageViewDimension(
                : ReflectedImageViewDimension::two_d;
 }
 
+ReflectedImageNumericType imageNumericType(
+    const SpvReflectDescriptorBinding &binding) {
+    if (!isImageDescriptor(static_cast<vk::DescriptorType>(binding.descriptor_type)) ||
+        binding.type_description == nullptr) return ReflectedImageNumericType::none;
+    const auto flags = binding.type_description->type_flags;
+    if ((flags & SPV_REFLECT_TYPE_FLAG_FLOAT) != 0) return ReflectedImageNumericType::floating;
+    if ((flags & SPV_REFLECT_TYPE_FLAG_INT) != 0)
+        return binding.type_description->traits.numeric.scalar.signedness == 0
+            ? ReflectedImageNumericType::unsigned_integer
+            : ReflectedImageNumericType::signed_integer;
+    return ReflectedImageNumericType::none;
+}
+
 // EL-4c: the Vulkan format a storage image's SPIR-V image format (its GLSL
 // layout qualifier) names, by the Vulkan specification's compatibility table.
 vk::Format storageImageFormat(SpvImageFormat format) {
@@ -237,6 +250,7 @@ ShaderReflection reflect(std::span<const uint32_t> spirv) {
                 ? storageImageFormat(binding->image.image_format)
                 : vk::Format::eUndefined,
             binding->accessed != 0,
+            imageNumericType(*binding),
         });
     }
 
@@ -356,6 +370,10 @@ ShaderReflection merge(std::span<const ShaderReflection> stages) {
                 binding.image_view_dimension) {
                 throw std::runtime_error(
                     "Shader descriptor image view dimension mismatch");
+            }
+            if (existing.numeric_type != binding.numeric_type) {
+                throw std::runtime_error(
+                    "Shader descriptor image numeric type mismatch");
             }
             if (existing.input_attachment_index !=
                 binding.input_attachment_index) {

@@ -425,8 +425,11 @@ void syncRenderPipelineIncompleteProblems(std::string_view source,
             const auto port = input.value("port", std::string{});
             const auto substitute = input.value("substitute", std::string{});
             const auto location = (scope.empty() ? std::string{} : scope + ".") + node + "." + port;
+            const auto message = substitute == "error_image"
+                ? "Unconnected image input " + location + " uses error_image (1x1 magenta)."
+                : "Unconnected scalar input " + location + " uses zero_value (value 0).";
             Json refusal{{"code", "graph.input_unconnected@1"},
-                {"message", "Unconnected scalar input " + location + " uses zero_value (value 0)."},
+                {"message", message},
                 {"document", graphDocumentReference(root_reference).value_or(std::string{root_reference})},
                 {"scope", scope}, {"node", node}, {"port", port}, {"substitute", substitute}};
             if (!scope.empty()) refusal["definition"] = scope;

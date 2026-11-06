@@ -15619,6 +15619,379 @@ void main() { discard; }
     SKIP("runtime shader compiler required");
 #endif
 }
+
+TEST_CASE("GC-2a2 empty sampled images draw produced magenta through edit reload and open",
+          "[gc2a2][headless][render][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    const bool open_cut = GENERATE(false, true);
+    CAPTURE(open_cut);
+    setupLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).vulkan_validation = VulkanValidationMode::enabled;
+    Rc3d2Project project;
+    const auto color_type = nlohmann::json{{"semantic", "pelican.render.color_signal@1"},
+        {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    const auto color = nlohmann::json{{"kind", "image"}, {"access", "write"},
+        {"attachment", "color"}, {"location", 0}, {"type", color_type}};
+    project.document["nodes"] = nlohmann::json::array({
+        {{"id", "source_image"}, {"op", "render.image"},
+         {"parameters", {{"type", color_type}, {"format", "R8G8B8A8_UNORM"}, {"width", 1}, {"height", 1},
+                         {"extent_scale", 1.0}, {"usage", {"COLOR_ATTACHMENT", "SAMPLED"}}}}, {"outputs", {"resource"}}},
+        {{"id", "source_producer"}, {"op", "render.fullscreen"},
+         {"parameters", {{"pass_set", "physical_scope_main"},
+           {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/original"}}},
+           {"ports", {{"color", color}}}}},
+         {"inputs", {{"color", {{"node", "source_image"}, {"port", "resource"}}}}}, {"outputs", {"color"}}},
+        {{"id", "output_color"}, {"op", "render.target_ref"},
+         {"parameters", {{"name", "physical_scope_color"}, {"type", color_type}}}, {"outputs", {"resource"}}},
+        {{"id", "consumer"}, {"op", "render.fullscreen"},
+         {"parameters", {{"pass_set", "physical_scope_main"}, {"after", {"physical_scope_overlay"}},
+           {"before", {"physical_scope_present"}},
+           {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/gc2a2_consume"}}},
+           {"ports", {{"input_color", {{"kind", "image"}, {"access", "read"}, {"type", color_type}}},
+                      {"color", color}}}}},
+         {"inputs", {{"input_color", {{"node", "source_image"}, {"port", "resource"}}},
+                     {"color", {{"node", "output_color"}, {"port", "resource"}}}}}, {"outputs", {"color"}}}});
+    auto &consumer_node = project.document["nodes"][3];
+    writeTextFile(project.root / "shaders/original.frag", R"glsl(
+#version 450
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(0.2, 0.4, 0.8, 1.0); }
+)glsl");
+    writeTextFile(project.root / "shaders/gc2a2_consume.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D pelican_resource_input_color;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() {
+    if (textureSize(pelican_resource_input_color, 0) != ivec2(1, 1)) { outColor = vec4(1, 0, 0, 1); return; }
+    outColor = texture(pelican_resource_input_color, inUV);
+}
+)glsl");
+    writeTextFile(project.root / "shaders/physical_scope_overlay.frag", "#version 450\nvoid main() { discard; }\n");
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    REQUIRE(core.getVulkanValidationStatus().available);
+    REQUIRE(core.getVulkanValidationStatus().enabled);
+    REQUIRE(core.getVulkanValidationStatus().synchronization_validation);
+    const auto draw = [&] {
+        GET_MODULE(EngineTime).advance();
+        renderer.render();
+        core.waitIdle();
+        const auto pixels = GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() >= 4);
+        return std::array<int, 4>{pixels[0], pixels[1], pixels[2], pixels[3]};
+    };
+    const auto require_pixels = [&](const std::array<int, 4> &expected) {
+        CHECK(draw() == expected);
+        CHECK(draw() == expected);
+    };
+    const auto problems = [&] {
+        nlohmann::json result = nlohmann::json::array();
+        for (const auto &problem : GET_MODULE(ProblemList).problemsOf(renderPipelineProblemDomain))
+            if (problem.value("code", std::string{}) == "graph.input_unconnected@1") result.push_back(problem);
+        return result;
+    };
+    const auto apply = [&] {
+        const auto reference = GET_MODULE(ProjectBasicConfig).renderingConfigReference();
+        const auto key = GET_MODULE(PathResolver).normalizedReference(reference);
+        const auto bytes = project.document.dump();
+        return renderer.applyRenderPipelineAuthoringCandidate(RenderConfigCandidateDocumentSet{key,
+            {{.reference = reference, .normalized_reference = key, .path = project.root / "pipeline.json",
+              .operation = RenderConfigDocumentOperation::replace,
+              .expected = {RenderConfigDocumentExistence::present,
+                           renderConfigSourceDigest(readTextFile(project.root / "pipeline.json"))},
+              .bytes = bytes}}}, [&, bytes] { writeTextFile(project.root / "pipeline.json", bytes); });
+    };
+    const std::array<int, 4> magenta{255, 0, 255, 255};
+    if (open_cut) consumer_node["inputs"].erase("input_color");
+    writeTextFile(project.root / "pipeline.json", project.document.dump());
+    if (open_cut) {
+        REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(watch::ReloadRequest{
+            watch::makeAssetKey("pipeline.json"), watch::ReloadKind::modified, {}, 1}));
+    }
+    const auto original = draw();
+    CHECK(draw() == original);
+    if (open_cut) CHECK(original == magenta);
+    REQUIRE(problems().size() == (open_cut ? 1u : 0u));
+    if (!open_cut) {
+        consumer_node["inputs"].erase("input_color");
+        const auto applied = apply();
+        INFO(applied.error);
+        REQUIRE((applied.staged || applied.committed));
+        RendererTestAccess::setExecutionTracing(renderer, true);
+        require_pixels(magenta);
+        REQUIRE(problems().size() == 1);
+        CHECK(problems()[0].at("node") == "consumer");
+        CHECK(problems()[0].at("port") == "input_color");
+        CHECK(problems()[0].at("fields").at("substitute") == "error_image");
+        const auto stored = nlohmann::json::parse(readTextFile(project.root / "pipeline.json"));
+        CHECK(stored == project.document);
+        CHECK(stored.dump().find("gc2_unconnected") == std::string::npos);
+        const auto frame = renderer.currentFramePlanJson();
+        REQUIRE(frame.at("incomplete_inputs").size() == 1);
+        CHECK(frame.at("incomplete_inputs")[0].at("synthetic") == true);
+        CHECK(frame.at("incomplete_inputs")[0].at("origin").at("port") == "input_color");
+        const std::string synthetic = "gc2_unconnected_image_0";
+        const auto synthetic_display = [&](const nlohmann::json &plan) {
+            nlohmann::json result = nlohmann::json::array();
+            for (const auto &entry : plan.at("nodes"))
+                if (std::string{entry.at("name").get<std::string>()}.find(synthetic) == 0) result.push_back(entry);
+            for (const auto &entry : plan.at("barriers"))
+                if (entry.at("resource") == synthetic) result.push_back(entry);
+            result.push_back(plan.at("incomplete_inputs"));
+            return result;
+        };
+        const auto display_before_reload = synthetic_display(frame);
+        const auto find_node = [&](const std::string &name) {
+            return std::find_if(frame.at("nodes").begin(), frame.at("nodes").end(),
+                [&](const auto &entry) { return entry.at("name") == name; });
+        };
+        const auto producer = find_node(synthetic + "_producer");
+        const auto consumer = find_node("consumer");
+        REQUIRE(producer != frame.at("nodes").end());
+        REQUIRE(consumer != frame.at("nodes").end());
+        CHECK(producer->at("order").get<std::size_t>() < consumer->at("order").get<std::size_t>());
+        const auto &execution = RendererTestAccess::lastExecutionTrace(renderer);
+        REQUIRE(execution.at("nodes").is_array());
+        const auto find_execution = [&](const std::string &name) {
+            return std::find_if(execution.at("nodes").begin(), execution.at("nodes").end(),
+                [&](const auto &entry) { return entry.at("name") == name; });
+        };
+        const auto producer_execution = find_execution(synthetic + "_producer");
+        const auto consumer_execution = find_execution("consumer");
+        REQUIRE(producer_execution != execution.at("nodes").end());
+        REQUIRE(consumer_execution != execution.at("nodes").end());
+        CHECK(producer_execution->at("order").get<std::size_t>() <
+              consumer_execution->at("order").get<std::size_t>());
+        REQUIRE(producer_execution->at("attachments").size() == 1);
+        CHECK(producer_execution->at("attachments")[0].at("resource") == synthetic);
+        CHECK(producer_execution->at("attachments")[0].at("final_layout") == "color_attachment_optimal");
+        CHECK(std::any_of(consumer_execution->at("inputs").begin(), consumer_execution->at("inputs").end(),
+            [&](const auto &input) {
+                return input.at("resource") == synthetic && input.at("final_layout") == "shader_read_only_optimal";
+            }));
+        CHECK(std::find(consumer->at("reads").begin(), consumer->at("reads").end(), synthetic) !=
+              consumer->at("reads").end());
+        CHECK(std::any_of(frame.at("barriers").begin(), frame.at("barriers").end(), [&](const auto &barrier) {
+            return barrier.at("kind") == "read_after_write" && barrier.at("resource") == synthetic &&
+                   barrier.at("from") == synthetic + "_producer" && barrier.at("to") == "consumer";
+        }));
+        const auto physical = std::find_if(frame.at("physical_target_plan").at("resources").begin(),
+            frame.at("physical_target_plan").at("resources").end(),
+            [&](const auto &entry) { return entry.at("logical_resource") == synthetic; });
+        REQUIRE(physical != frame.at("physical_target_plan").at("resources").end());
+        CHECK(physical->at("extent").at("width") == 1);
+        CHECK(physical->at("extent").at("height") == 1);
+        CHECK(physical->at("dimension") == "2d");
+        CHECK(physical->at("array_layers") == 1);
+        CHECK(physical->at("lifetime").at("last_use") == consumer->at("order"));
+        CHECK(physical->at("payload_bytes") > 0);
+        CHECK(frame.at("memory_summary").at("payload_bytes") > 0);
+        writeTextFile(project.root / "pipeline.json", project.document.dump());
+        REQUIRE(GET_MODULE(watch::ReloadService).applyRequestForTesting(watch::ReloadRequest{
+            watch::makeAssetKey("pipeline.json"), watch::ReloadKind::modified, {}, 1}));
+        require_pixels(magenta);
+        CHECK(problems()[0].at("source") == std::string{problemSourceHotReload});
+        CHECK(synthetic_display(renderer.currentFramePlanJson()) == display_before_reload);
+        consumer_node["inputs"]["input_color"] = {{"node", "source_image"}, {"port", "resource"}};
+        const auto reconnected = apply();
+        INFO(reconnected.error);
+        REQUIRE((reconnected.staged || reconnected.committed));
+        require_pixels(original);
+        CHECK(problems().empty());
+
+        const auto &runtime = GET_MODULE(FrameGraphRuntimeContainer);
+        const auto before = runtime.snapshot();
+        const auto file_before = readTextFile(project.root / "pipeline.json");
+        consumer_node["inputs"].erase("input_color");
+        writeTextFile(project.root / "shaders/gc2a2_consume.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform usampler2D pelican_resource_input_color;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(texture(pelican_resource_input_color, inUV)); }
+)glsl");
+        const auto refused = apply();
+        INFO(refused.error);
+        CHECK_FALSE(refused.staged);
+        CHECK_FALSE(refused.committed);
+        CHECK(refused.error.find("consumer") != std::string::npos);
+        CHECK(runtime.snapshot() == before);
+        CHECK(readTextFile(project.root / "pipeline.json") == file_before);
+        writeTextFile(project.root / "shaders/gc2a2_consume.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D pelican_resource_input_color;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = texture(pelican_resource_input_color, inUV); }
+)glsl");
+        require_pixels(original);
+    }
+#else
+    SKIP("runtime shader compiler required");
+#endif
+}
+
+TEST_CASE("GC-2a2 compute reads a produced image and writes observable pixels",
+          "[gc2a2][headless][render][compute][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).vulkan_validation = VulkanValidationMode::enabled;
+    Rc3d2Project project;
+    auto &legacy_passes = project.document["rendering"]["rendering_passes"][0]["passes"];
+    legacy_passes.erase(std::remove_if(legacy_passes.begin(), legacy_passes.end(), [](const auto &pass) {
+        return pass.at("name") == "physical_scope_base" || pass.at("name") == "physical_scope_overlay";
+    }), legacy_passes.end());
+    const auto type = nlohmann::json{{"semantic", "pelican.render.color_signal@1"},
+        {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    for (auto &target : project.document["rendering"]["render_targets"])
+        if (target.at("name") == "physical_scope_color") target["usage"].push_back("STORAGE");
+    project.document["nodes"] = nlohmann::json::array({
+        {{"id", "output"}, {"op", "render.target_ref"},
+         {"parameters", {{"name", "physical_scope_color"}, {"type", type}}}, {"outputs", {"resource"}}},
+        {{"id", "consume"}, {"op", "render.compute"},
+         {"parameters", {{"shader", "shaders/gc2a2_consume"},
+           {"dispatch", {{"groups", {64, 64, 1}}}}, {"before", {"physical_scope_present"}},
+           {"ports", {{"input_color", {{"kind", "image"}, {"access", "read"}, {"binding", "sampled"},
+                                           {"type", type}}},
+                      {"color", {{"kind", "image"}, {"access", "write"}, {"binding", "storage"},
+                                      {"type", type}}}}}}},
+         {"inputs", {{"color", {{"node", "output"}, {"port", "resource"}}}}},
+         {"outputs", {"color"}}}});
+    writeTextFile(project.root / "pipeline.json", project.document.dump());
+    writeTextFile(project.root / "shaders/gc2a2_consume.comp", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+layout(local_size_x = 1, local_size_y = 1) in;
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D pelican_resource_input_color;
+layout(rgba8, set = PELICAN_SET_PASS_INPUT, binding = 1) writeonly uniform image2D pelican_resource_color;
+void main() {
+    ivec2 pixel = ivec2(gl_GlobalInvocationID.xy);
+    if (any(greaterThanEqual(pixel, imageSize(pelican_resource_color)))) return;
+    if (textureSize(pelican_resource_input_color, 0) != ivec2(1, 1)) {
+        imageStore(pelican_resource_color, pixel, vec4(1, 0, 0, 1));
+        return;
+    }
+    imageStore(pelican_resource_color, pixel, texelFetch(pelican_resource_input_color, ivec2(0), 0));
+}
+)glsl");
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    REQUIRE(core.getVulkanValidationStatus().available);
+    REQUIRE(core.getVulkanValidationStatus().enabled);
+    REQUIRE(core.getVulkanValidationStatus().synchronization_validation);
+    const auto draw = [&] {
+        GET_MODULE(EngineTime).advance();
+        renderer.render();
+        core.waitIdle();
+        const auto pixels = GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() >= 4);
+        return std::array<int, 4>{pixels[0], pixels[1], pixels[2], pixels[3]};
+    };
+    const std::array<int, 4> magenta{255, 0, 255, 255};
+    for (int frame = 0; frame < 5; ++frame) CHECK(draw() == magenta);
+    const auto plan = renderer.currentFramePlanJson();
+    REQUIRE(plan.at("incomplete_inputs").size() == 1);
+    CHECK(plan.at("incomplete_inputs")[0].at("node") == "consume");
+    const auto physical = std::find_if(plan.at("physical_target_plan").at("resources").begin(),
+        plan.at("physical_target_plan").at("resources").end(), [](const auto &resource) {
+            return resource.at("logical_resource") == "gc2_unconnected_image_0";
+        });
+    REQUIRE(physical != plan.at("physical_target_plan").at("resources").end());
+    CHECK(physical->at("extent").at("width") == 1);
+    CHECK(physical->at("extent").at("height") == 1);
+#else
+    SKIP("runtime shader compiler required");
+#endif
+}
+TEST_CASE("GC-2a2 physical image sources share only their full compatible type",
+          "[gc2a2][headless][render][gpu]") {
+#if PELICAN_RUNTIME_SHADER_COMPILER
+    setupLogger();
+    FastModuleContainer modules;
+    GET_MODULE(EngineLaunchConfig).vulkan_validation = VulkanValidationMode::enabled;
+    Rc3d2Project project;
+    const auto type = nlohmann::json{{"semantic", "pelican.render.color_signal@1"},
+        {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+    auto different_type = type;
+    different_type["arguments"] = {{"reference", "display"}, {"transfer", "linear"}, {"range", "normalized"}};
+    const auto read_port = [&](const auto &port_type) {
+        return nlohmann::json{{"kind", "image"}, {"access", "read"}, {"type", port_type}};
+    };
+    const auto color_port = [&] {
+        return nlohmann::json{{"kind", "image"}, {"access", "write"}, {"attachment", "color"},
+                              {"location", 0}, {"type", type}};
+    };
+    const auto consumer = [&](const std::string &id, const auto &port_type, const nlohmann::json &after) {
+        return nlohmann::json{{"id", id}, {"op", "render.fullscreen"},
+            {"parameters", {{"pass_set", "physical_scope_main"}, {"after", after},
+              {"before", {"physical_scope_present"}},
+              {"shader", {{"vertex", "engine://fullscreen"}, {"fragment", "shaders/gc2a2_share"}}},
+              {"ports", {{"input_a", read_port(port_type)}, {"color", color_port()}}}}},
+            {"inputs", {{"color", {{"node", "output"}, {"port", "resource"}}}}}, {"outputs", {"color"}}};
+    };
+    project.document["nodes"] = nlohmann::json::array({
+        {{"id", "output"}, {"op", "render.target_ref"},
+         {"parameters", {{"name", "physical_scope_color"}, {"type", type}}}, {"outputs", {"resource"}}},
+        consumer("consume_a", type, nlohmann::json::array({"physical_scope_overlay"})),
+        consumer("consume_b", type, nlohmann::json::array({"consume_a"})),
+        consumer("consume_c", different_type, nlohmann::json::array({"consume_b"}))});
+    writeTextFile(project.root / "pipeline.json", project.document.dump());
+    writeTextFile(project.root / "shaders/gc2a2_share.frag", R"glsl(
+#version 450
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+layout(set = PELICAN_SET_PASS_INPUT, binding = 0) uniform sampler2D pelican_resource_input_a;
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = texture(pelican_resource_input_a, inUV); }
+)glsl");
+    writeTextFile(project.root / "shaders/physical_scope_overlay.frag", "#version 450\nvoid main() { discard; }\n");
+    auto &renderer = GET_MODULE(Renderer);
+    auto &core = GET_MODULE(VulkanManageCore);
+    REQUIRE(core.getVulkanValidationStatus().available);
+    REQUIRE(core.getVulkanValidationStatus().enabled);
+    REQUIRE(core.getVulkanValidationStatus().synchronization_validation);
+    for (int frame = 0; frame < 3; ++frame) {
+        GET_MODULE(EngineTime).advance();
+        renderer.render();
+        core.waitIdle();
+        const auto pixels = GET_MODULE(RenderTarget).readbackLastFrameRGBA8();
+        REQUIRE(pixels.size() >= 4);
+        CHECK(std::array<int, 4>{pixels[0], pixels[1], pixels[2], pixels[3]} ==
+              std::array<int, 4>{255, 0, 255, 255});
+    }
+    auto &targets = GET_MODULE(RenderTargetContainer);
+    const auto shared = targets.getRenderTargetIdByName("gc2_unconnected_image_0");
+    const auto different = targets.getRenderTargetIdByName("gc2_unconnected_image_1");
+    CHECK(targets.getImage(shared).image.get() != targets.getImage(different).image.get());
+    CHECK_FALSE(targets.sharesAllocation(shared, different));
+    const auto plan = renderer.currentFramePlanJson();
+    const auto producer_count = std::count_if(plan.at("nodes").begin(), plan.at("nodes").end(), [](const auto &node) {
+        return node.at("name").template get<std::string>().starts_with("gc2_unconnected_image_") &&
+               node.at("name").template get<std::string>().ends_with("_producer");
+    });
+    CHECK(producer_count == 2);
+    REQUIRE(plan.at("incomplete_inputs").size() == 3);
+    CHECK(plan.at("incomplete_inputs")[0].at("node") == "consume_a");
+    CHECK(plan.at("incomplete_inputs")[0].at("port") == "input_a");
+    CHECK(plan.at("incomplete_inputs")[1].at("node") == "consume_b");
+    CHECK(plan.at("incomplete_inputs")[1].at("port") == "input_a");
+    CHECK(plan.at("incomplete_inputs")[2].at("node") == "consume_c");
+    CHECK(plan.at("incomplete_inputs")[2].at("port") == "input_a");
+#else
+    SKIP("runtime shader compiler required");
+#endif
+}
 } // namespace Pelican
 
 namespace Pelican {

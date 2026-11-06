@@ -77,6 +77,8 @@
     "passthrough.frag",
     "fallback_clear.frag",
     "fallback_clear.frag.spv",
+    "error_magenta.frag",
+    "error_magenta.frag.spv",
     "scene_present.frag",
     "scene_present.frag.spv",
     "rt_shadow_mask.frag",

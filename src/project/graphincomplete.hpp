@@ -24,5 +24,6 @@ GraphIncompleteResult completeUnconnectedInputs(nlohmann::json authoring_documen
                                                 const GraphModuleRegistry &modules);
 
 nlohmann::json graphIncompleteInputsJson(const std::vector<GraphIncompleteInput> &inputs);
+std::string graphIncompleteDiagnostic(nlohmann::json authoring_document, std::string_view diagnostic);
 
 } // namespace Pelican

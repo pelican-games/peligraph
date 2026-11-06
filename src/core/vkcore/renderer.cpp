@@ -3958,6 +3958,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
 
     auto &state = *render_pipeline_reload_state;
     ++state.attempted;
+    const auto incomplete_document = candidate_documents.rootDocument().bytes;
     try {
         auto &config = GET_MODULE(ProjectBasicConfig);
         const auto default_pass_name =
@@ -4093,7 +4094,7 @@ Renderer::applyRenderPipelineAuthoringCandidate(
         }
         return *transaction->outcome;
     } catch (const std::exception &caught) {
-        result.error = caught.what();
+        result.error = graphIncompleteDiagnostic(nlohmann::json::parse(incomplete_document), caught.what());
         result.exception = std::current_exception();
         recordRenderPipelineAuthoringFailure(caught, state.source_reference);
     } catch (...) {

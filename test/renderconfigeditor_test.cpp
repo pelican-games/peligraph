@@ -12835,6 +12835,64 @@ TEST_CASE("FR-4 edit_batch takes edit_graph_document and edit_preset_pass as one
     CHECK(present->at("reads") == Json::array({"deferred_lighting__color"}));
 }
 
+TEST_CASE("GC-2a2 cut sampled image edits stay authored and document Undo restores them",
+          "[render-config-editor][gc2a2]") {
+    Fr3Harness harness;
+    const auto original = readBytes(harness.project.render_config);
+    const auto document = Json::parse(original);
+    Json parameters;
+    for (const auto &node : document.at("nodes"))
+        if (node.at("id") == "deferred_lighting") parameters = node.at("parameters");
+    REQUIRE(parameters.is_object());
+    auto &albedo = parameters.at("ports").at("albedo");
+    albedo.erase("binding");
+    albedo.erase("input_index");
+    albedo.erase("sampling");
+    for (auto &[name, port] : parameters.at("ports").items())
+        if (name != "albedo" && port.contains("input_index"))
+            port["input_index"] = port.at("input_index").get<int>() - 1;
+
+    const auto read = rd1Documents(harness.service->getRenderDocuments(Json::object()));
+    const auto cut = harness.single(fr3GraphEdit(Json::array({
+        Json{{"op", "set_node_parameters"}, {"node", "deferred_lighting"}, {"parameters", parameters}},
+        Json{{"op", "set_input"}, {"node", "deferred_lighting"}, {"port", "albedo"}, {"source", nullptr}}})));
+    INFO(cut.dump());
+    REQUIRE(cut.at("status") == "committed");
+    REQUIRE(cut.at("incomplete_inputs").size() == 1);
+    CHECK(cut.at("incomplete_inputs")[0].at("node") == "deferred_lighting");
+    CHECK(cut.at("incomplete_inputs")[0].at("port") == "albedo");
+    CHECK(cut.at("incomplete_inputs")[0].at("substitute") == "error_image");
+    const auto stored = Json::parse(readBytes(harness.project.render_config));
+    CHECK(stored.dump().find("gc2_unconnected_") == std::string::npos);
+    for (const auto &node : stored.at("nodes"))
+        if (node.at("id") == "deferred_lighting")
+            CHECK_FALSE(node.at("inputs").contains("albedo"));
+    CHECK(fr3PlanNode(harness.runtime.frame_plan, "gc2_unconnected_image_0_producer") != nullptr);
+
+    const auto restored = harness.settle(harness.service->restoreRenderDocuments(
+        {{"documents", Json::array({rd1Restore(read.at("passes/main.json"),
+                                               Json(cut.at("documents").at("passes/main.json")))})}}));
+    INFO(restored.dump());
+    REQUIRE(restored.at("status") == "committed");
+    CHECK(readBytes(harness.project.render_config) == original);
+
+    const auto before_failure = readBytes(harness.project.render_config);
+    const auto plan_before = harness.runtime.frame_plan;
+    const auto digest_before = harness.digest();
+    harness.runtime.validate_candidate = [](const RenderConfigCandidateDocumentSet &) {
+        throw std::runtime_error("Shader resource port 'albedo' (resource 'gc2_unconnected_image_0') requires floating-point image sampling");
+    };
+    const auto refused = harness.single(fr3GraphEdit(Json::array({
+        Json{{"op", "set_node_parameters"}, {"node", "deferred_lighting"}, {"parameters", parameters}},
+        Json{{"op", "set_input"}, {"node", "deferred_lighting"}, {"port", "albedo"}, {"source", nullptr}}})));
+    INFO(refused.dump());
+    CHECK(refused.at("status") == "rejected");
+    CHECK(readBytes(harness.project.render_config) == before_failure);
+    CHECK(harness.runtime.frame_plan == plan_before);
+    CHECK(harness.digest() == digest_before);
+    CHECK(readBytes(harness.project.render_config) == original);
+}
+
 // FR-4: edit_preset_pass, edit_compute_task and remove_compute_task read the
 // project preset or feature they rewrite as the editor holds it, so inside
 // edit_batch each builds on what the edit before it made of the same

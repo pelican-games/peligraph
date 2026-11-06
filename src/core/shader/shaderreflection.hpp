@@ -22,6 +22,13 @@ enum class ReflectedImageViewDimension {
     other,
 };
 
+enum class ReflectedImageNumericType {
+    none,
+    floating,
+    signed_integer,
+    unsigned_integer,
+};
+
 std::string_view reflectedImageViewDimensionName(
     ReflectedImageViewDimension dimension);
 
@@ -46,6 +53,7 @@ struct ReflectedBinding {
     // static use, through the call graph). A merge is accessed when any
     // stage's is. True where nothing was reflected.
     bool accessed = true;
+    ReflectedImageNumericType numeric_type = ReflectedImageNumericType::none;
 };
 
 struct ReflectedFragmentOutput {
