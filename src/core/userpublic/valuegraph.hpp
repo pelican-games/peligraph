@@ -86,6 +86,18 @@ struct UiSinkBinding {
     std::string path;
     UiSinkProperty property = UiSinkProperty::value;
 };
+enum class OscSendKind : std::uint8_t { floating, integer, boolean };
+struct OscSendSink {
+    std::string node;
+    std::string address;
+    OscSendKind kind{};
+    std::size_t source{};
+};
+struct OscSendValue {
+    std::string_view address;
+    OscSendKind kind{};
+    double value{};
+};
 using UiValueWriter = std::function<bool(std::string_view path, UiSinkProperty, float)>;
 // Where an instance input port's value came from in one evaluation.
 // `connected` is an edge in the authoring document; `parameter` and `default`
@@ -257,6 +269,10 @@ class PELICAN_API Graph {
     // still owns its (path, property), so which writer owns a unit does not
     // change with scene lifetimes.
     const std::vector<UiSinkBinding> &uiSinkBindings() const noexcept { return ui_sinks_; }
+    const std::vector<OscSendSink> &oscSendSinks() const noexcept { return osc_sends_; }
+    std::vector<OscSendValue> oscSendValues(
+        const std::vector<std::optional<double>> &node_values,
+        const InactiveScopes &inactive) const;
 
     const GraphInstanceOwner *scopeOwner(std::string_view node) const noexcept;
 
@@ -339,6 +355,7 @@ class PELICAN_API Graph {
     std::map<std::string, std::vector<std::size_t>, std::less<>> outputs_;
     enum class Target { render_buffer, sound_volume, sound_pitch, ui_value, ui_visible };
     std::vector<UiSinkBinding> ui_sinks_;
+    std::vector<OscSendSink> osc_sends_;
     struct Binding {
         std::string output;
         std::string target;

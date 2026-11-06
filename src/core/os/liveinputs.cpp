@@ -479,8 +479,9 @@ void LiveInputs::resetFrozenLocked() {
     }
 }
 
-ValueGraph::Inputs LiveInputs::frozenInputs() const {
+ValueGraph::Inputs LiveInputs::frozenInputs(bool *replaying) const {
     std::scoped_lock lock{mutex_};
+    if (replaying != nullptr) *replaying = replaying_;
     ValueGraph::Inputs inputs;
     for (const auto &runtime : runtime_)
         inputs.emplace("live:" + runtime.spec.name, runtime.value);

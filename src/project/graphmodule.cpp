@@ -742,10 +742,12 @@ GraphOperationContract GraphModuleRegistry::resolveOperation(const nlohmann::jso
                                  {{"node", nodeId(node)}, {"op", op}});
     const auto &registration = modules_.at(owner->second).operations.at(op);
     // RS-9 / RS-15: what the op cannot do without, for a declared contract
-    // and a factory alike.
-    checkRenderNodeRequiredParameters(op, node);
-    // CT-3: a value of the wrong kind, named before the op's parser reads it.
-    checkGraphNodeParameterTypes(op, node);
+    // and a factory alike. OSC lowering supplies its own exact error codes.
+    if (op != "osc.send") {
+        checkRenderNodeRequiredParameters(op, node);
+        // CT-3: a value of the wrong kind, named before the op's parser reads it.
+        checkGraphNodeParameterTypes(op, node);
+    }
     auto contract = registration.factory ? registration.factory(node) : registration.contract;
     if (registration.factory) {
         // The module declares the classification once; a factory supplies ports.
@@ -974,6 +976,12 @@ GraphModuleRegistry makeBuiltinGraphModuleRegistry() {
             {"ui.visible", ui_sink()},
         },
         {"ui.value", "ui.visible"}});
+#if PELICAN_WITH_OSC
+    registry.registerModule(GraphModuleManifest{
+        "pelican.osc", 1,
+        "Sinks that publish graph scalars as Open Sound Control messages.",
+        {}, {{"osc.send", ui_sink()}}, {"osc.send"}});
+#endif
 #if PELICAN_WITH_ANIMATION
     // A module registers the same way whether the engine brings it or not; a
     // build without the animation backend simply never calls this, and a

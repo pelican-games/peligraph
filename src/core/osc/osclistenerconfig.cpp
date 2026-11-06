@@ -102,4 +102,26 @@ parseOscListenerConfig(std::string_view port, std::string_view interface_address
     return config;
 }
 
+OscSendConfig parseOscSendConfig(std::string_view text) {
+    const auto colon = text.find(':');
+    if (colon == std::string_view::npos ||
+        text.find(':', colon + 1) != std::string_view::npos)
+        invalid("--osc-send must be exactly ipv4:port: " + textOf(text));
+    const auto host_text = text.substr(0, colon);
+    const auto port_text = text.substr(colon + 1);
+    std::uint32_t host = 0;
+    if (!parseOscListenerIpv4(host_text, host))
+        invalid("--osc-send host must be dotted-decimal IPv4: " + textOf(text));
+    if ((host >> 24) == 0 || (host >> 24) >= 224)
+        invalid("--osc-send requires a unicast IPv4 destination: " + textOf(text));
+    unsigned port = 0;
+    const auto parsed = std::from_chars(port_text.data(),
+                                        port_text.data() + port_text.size(), port);
+    if (port_text.empty() || parsed.ec != std::errc{} ||
+        parsed.ptr != port_text.data() + port_text.size() || port == 0 || port > 65535)
+        invalid("--osc-send port must be a decimal integer in 1..65535: " +
+                textOf(text));
+    return {textOf(host_text), static_cast<std::uint16_t>(port)};
+}
+
 } // namespace Pelican

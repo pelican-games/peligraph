@@ -10,10 +10,12 @@
 #include "../src/core/os/liveinputrecording.hpp"
 #include "../src/core/osc/osclistener.hpp"
 #include "../src/core/osc/osclistenerconfig.hpp"
+#include "../src/core/osc/oscparser.hpp"
 #include "../src/core/os/inputsequence.hpp"
 #include "../src/core/userpublic/userinput.hpp"
 #include "../src/core/watch/reloadgate.hpp"
 #include "../src/project/projectdocumenttransaction.hpp"
+#include "osc_test_udp.hpp"
 #include "vulkan_test_support.hpp"
 
 #include <catch2/catch_approx.hpp>
@@ -28,6 +30,7 @@
 #include <fstream>
 #include <iterator>
 #include <iostream>
+#include <map>
 #include <nlohmann/json.hpp>
 #include <bit>
 #include <sstream>
@@ -158,6 +161,29 @@ std::filesystem::path copyLiveProject(const TempDir &dir,
     writeFile(root / "passes" / "main.json", graph.dump(2));
     return root;
 }
+
+#if PELICAN_WITH_OSC
+void addOscSendNodes(const std::filesystem::path &root) {
+    auto graph = Json::parse(readFile(root / "passes" / "main.json"));
+    graph["nodes"].push_back({
+        {"id", "osc_phase"}, {"op", "osc.send"},
+        {"parameters", {{"address", "/out/phase"}}},
+        {"inputs", {{"value", {{"node", "clock"}, {"port", "value"}}}}},
+        {"outputs", Json::array()},
+    });
+    graph["nodes"].push_back({
+        {"id", "live_steps"}, {"op", "value.input"},
+        {"parameters", {{"name", "live:steps"}}}, {"outputs", Json::array({"value"})},
+    });
+    graph["nodes"].push_back({
+        {"id", "osc_steps"}, {"op", "osc.send"},
+        {"parameters", {{"address", "/out/steps"}, {"type", "int"}}},
+        {"inputs", {{"value", {{"node", "live_steps"}, {"port", "value"}}}}},
+        {"outputs", Json::array()},
+    });
+    writeFile(root / "passes" / "main.json", graph.dump(2));
+}
+#endif
 
 void configureHeadless(const std::filesystem::path &root) {
     GET_MODULE(PathResolver).setup(root, false);
@@ -784,6 +810,166 @@ TEST_CASE("OSC-2c the real --osc-port option listens and freezes a packet",
         std::this_thread::sleep_for(std::chrono::milliseconds{10});
     }
     REQUIRE(phase == Catch::Approx(0.375));
+}
+#endif
+
+#if defined(PELICAN_OSC2C_PLAYER) && PELICAN_WITH_OSC
+TEST_CASE("OSC-5b the real player publishes graph scalars over UDP",
+          "[osc5b][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc5b_rpc_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    addOscSendNodes(root);
+    OscTestUdp::Receiver receiver;
+    REQUIRE(receiver.port() != 0);
+    PlayerProcess player{root, {"--osc-send", "127.0.0.1:" + std::to_string(receiver.port())}};
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+    (void)player.result("set_live_input", {{"values", {{"phase", 0.25}, {"steps", 3}}}});
+    (void)player.result("step_frame");
+
+    bool phase_arrived = false;
+    bool steps_arrived = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (std::chrono::steady_clock::now() < deadline && !(phase_arrived && steps_arrived)) {
+        (void)player.result("step_frame");
+        while (const auto bytes = receiver.receive(std::chrono::milliseconds{50})) {
+            const auto packet = Osc::parsePacket(*bytes);
+            REQUIRE(packet.drop == Osc::PacketDrop::none);
+            REQUIRE(packet.messages.size() == 1);
+            const auto &message = packet.messages[0];
+            if (message.address == "/out/phase" && !message.arguments.empty() &&
+                message.arguments[0].number == Catch::Approx(0.25))
+                phase_arrived = true;
+            if (message.address == "/out/steps" && !message.arguments.empty() &&
+                message.arguments[0].integer == 3)
+                steps_arrived = true;
+            if (phase_arrived && steps_arrived) break;
+        }
+    }
+    REQUIRE(phase_arrived);
+    REQUIRE(steps_arrived);
+    auto status = player.result("get_live_inputs").at("osc").at("send");
+    REQUIRE(status.at("sinks") == 2);
+    const auto sent = status.at("sent").get<std::uint64_t>();
+    for (int frame = 0; frame < 5; ++frame) (void)player.result("step_frame");
+    status = player.result("get_live_inputs").at("osc").at("send");
+    REQUIRE(status.at("sent").get<std::uint64_t>() == sent);
+}
+
+TEST_CASE("OSC-5b opening a project without the player option sends nothing",
+          "[osc5b][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc5b_no_flag_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    addOscSendNodes(root);
+    PlayerProcess player{root};
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+    (void)player.result("step_frame");
+    const auto status = player.result("get_live_inputs").at("osc").at("send");
+    REQUIRE(status.at("state") == "inactive");
+    REQUIRE(status.at("socket_open") == false);
+    REQUIRE(status.at("destination") == "");
+    REQUIRE(status.at("sent") == 0);
+}
+
+TEST_CASE("OSC-5b CLI live replay keeps the sender offline",
+          "[osc5b][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc5b_offline_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    addOscSendNodes(root);
+    const auto recording = dir.root / "offline.live_seq";
+    {
+        PlayerProcess recorder{root, {"--record-live", recording.generic_string()}};
+        (void)recorder.result("load_scene", {{"name", "default_scene"}});
+        (void)recorder.result("render_frame");
+        for (const double phase : {0.1, 0.2, 0.3}) {
+            (void)recorder.result("set_live_input", {{"values", {{"phase", phase}}}});
+            (void)recorder.result("step_frame");
+        }
+    }
+    REQUIRE(std::filesystem::exists(recording));
+    OscTestUdp::Receiver receiver;
+    REQUIRE(receiver.port() != 0);
+    PlayerProcess player{root, {"--replay-live", recording.generic_string(),
+                                "--osc-send", "127.0.0.1:" + std::to_string(receiver.port())}};
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+    std::size_t datagrams = 0;
+    for (int frame = 0; frame < 10; ++frame) {
+        (void)player.result("step_frame");
+        if (receiver.receive(std::chrono::milliseconds{50})) ++datagrams;
+    }
+    const auto status = player.result("get_live_inputs").at("osc").at("send");
+    REQUIRE(status.at("state") == "offline");
+    REQUIRE(status.at("socket_open") == false);
+    REQUIRE(status.at("sent") == 0);
+    REQUIRE(datagrams == 0);
+}
+
+TEST_CASE("OSC-5b RPC replay quiesces taken work and a fresh frame resumes",
+          "[osc5b][osc][liveinputs][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc5b_replay_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    addOscSendNodes(root);
+    const auto recording = dir.root / "rpc.live_seq";
+    OscTestUdp::Receiver receiver;
+    REQUIRE(receiver.port() != 0);
+    PlayerProcess player{root, {"--record-live", recording.generic_string(),
+                                "--osc-send", "127.0.0.1:" + std::to_string(receiver.port())}};
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+    for (const double phase : {0.1, 0.2, 0.3}) {
+        (void)player.result("set_live_input", {{"values", {{"phase", phase}, {"steps", 2}}}});
+        (void)player.result("step_frame");
+    }
+    (void)player.result("stop_live_record");
+    while (receiver.receive(std::chrono::milliseconds{50})) {}
+
+    (void)player.result("start_live_replay", {{"path", recording.generic_string()}});
+    auto status = player.result("get_live_inputs").at("osc").at("send");
+    REQUIRE(status.at("state") == "replay");
+    const auto sent = status.at("sent").get<std::uint64_t>();
+    const auto resent = status.at("resent").get<std::uint64_t>();
+    std::size_t replay_datagrams = 0;
+    for (int frame = 0; frame < 6; ++frame) {
+        (void)player.result("step_frame");
+        status = player.result("get_live_inputs").at("osc").at("send");
+        REQUIRE(status.at("sent").get<std::uint64_t>() == sent);
+        REQUIRE(status.at("resent").get<std::uint64_t>() == resent);
+        if (receiver.receive(std::chrono::milliseconds{50})) ++replay_datagrams;
+    }
+    REQUIRE(replay_datagrams == 0);
+
+    (void)player.result("stop_live_replay");
+    (void)player.result("set_live_input", {{"values", {{"phase", 0.5}, {"steps", 2}}}});
+    bool recovered = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (std::chrono::steady_clock::now() < deadline && !recovered) {
+        (void)player.result("step_frame");
+        while (const auto bytes = receiver.receive(std::chrono::milliseconds{50})) {
+            const auto packet = Osc::parsePacket(*bytes);
+            if (!packet.messages.empty() && packet.messages[0].address == "/out/phase" &&
+                !packet.messages[0].arguments.empty() &&
+                packet.messages[0].arguments[0].number == Catch::Approx(0.5)) {
+                recovered = true;
+                break;
+            }
+        }
+    }
+    REQUIRE(recovered);
+    REQUIRE(player.result("get_live_inputs").at("osc").at("send").at("state") == "sending");
 }
 #endif
 

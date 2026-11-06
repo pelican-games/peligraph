@@ -1147,6 +1147,9 @@ TEST_CASE("one operation has exactly one registering module",
 #if PELICAN_WITH_VIDEO_OUTPUT
     expected.push_back("pelican.output");
 #endif
+#if PELICAN_WITH_OSC
+    expected.push_back("pelican.osc");
+#endif
     std::sort(expected.begin(), expected.end());
     REQUIRE(namespaces == expected);
 }
@@ -1269,6 +1272,7 @@ TEST_CASE("CT-3 the catalog lists each op's parameters with their kinds and a wr
         {"audio.pitch", Json::array({Json{{"one_of", Json::array({"target", "voice"})}}})},
         {"ui.value", Json::array({Json{{"name", "node"}}})},
         {"ui.visible", Json::array({Json{{"name", "node"}}})},
+        {"osc.send", Json::array({Json{{"name", "address"}}})},
         {"pose.clip_sample", Json::array({Json{{"name", "rig"}}, Json{{"name", "clip"}}})},
         {"pose.state_machine", Json::array({Json{{"name", "rig"}}, Json{{"name", "graph"}}})},
         {"pose.retarget", Json::array({Json{{"name", "profile"}}})},

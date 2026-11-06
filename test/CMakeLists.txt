@@ -2056,6 +2056,9 @@ pelican_define_test(osc_fuzz_test pelican_core)
 pelican_define_test(osc_listener_test NO_DISCOVERY pelican_core)
 add_test(NAME osc_listener COMMAND pelican_test_osc_listener_test "[osc2b]")
 set_tests_properties(osc_listener PROPERTIES LABELS cpu TIMEOUT 120)
+pelican_define_test(osc_sender_test NO_DISCOVERY pelican_core)
+add_test(NAME osc_sender COMMAND pelican_test_osc_sender_test "[osc5b]")
+set_tests_properties(osc_sender PROPERTIES LABELS cpu TIMEOUT 120)
 # OSC-2b: the player's option layer, not just the parser, must name bad
 # combinations.  These fail before a project or a window is opened.
 if(TARGET pelican_player)
@@ -2067,6 +2070,11 @@ if(TARGET pelican_player)
   add_test(NAME osc_listener_cli_bad_port
     COMMAND pelican_player --headless --osc-port 99999)
   set_tests_properties(osc_listener_cli_bad_port PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "osc.config_invalid@1")
+  add_test(NAME osc_sender_cli_bad_destination
+    COMMAND pelican_player --headless --osc-send nope)
+  set_tests_properties(osc_sender_cli_bad_destination PROPERTIES
     LABELS cpu TIMEOUT 30
     PASS_REGULAR_EXPRESSION "osc.config_invalid@1")
 endif()
@@ -2084,6 +2092,11 @@ if(TARGET pelican_player)
   add_test(NAME osc_listener_off_cli_interface
     COMMAND pelican_player --headless --osc-interface 127.0.0.1)
   set_tests_properties(osc_listener_off_cli_interface PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "osc.module_unavailable@1")
+  add_test(NAME osc_sender_off_cli
+    COMMAND pelican_player --headless --osc-send 127.0.0.1:9000)
+  set_tests_properties(osc_sender_off_cli PROPERTIES
     LABELS cpu TIMEOUT 30
     PASS_REGULAR_EXPRESSION "osc.module_unavailable@1")
 endif()
@@ -3731,6 +3744,7 @@ add_test(
         -DWITH_AUDIO=$<BOOL:${PELICAN_WITH_AUDIO}>
         -DWITH_CANVAS=$<BOOL:${PELICAN_WITH_CANVAS}>
         -DWITH_VIDEO_OUTPUT=$<BOOL:${PELICAN_WITH_VIDEO_OUTPUT}>
+        -DWITH_OSC=$<BOOL:${PELICAN_WITH_OSC}>
         -P ${CMAKE_CURRENT_SOURCE_DIR}/run_devcli_graph_catalog.cmake
 )
 

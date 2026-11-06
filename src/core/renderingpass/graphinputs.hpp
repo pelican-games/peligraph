@@ -10,5 +10,6 @@ void validateCurrentLiveInputReplay(bool offline_required = false);
 
 // Resolve external values on the owner thread against the current scene.
 ValueGraph::Inputs collectGraphInputs(const ValueGraph::Graph &graph, const SceneLoader &scene,
-    const ValueGraph::InactiveScopes &inactive, double time, double delta_time);
+    const ValueGraph::InactiveScopes &inactive, double time, double delta_time,
+    bool *replaying = nullptr);
 }

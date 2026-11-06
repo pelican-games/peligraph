@@ -1,6 +1,7 @@
 #include "osclistener.hpp"
 
 #include "oscinput.hpp"
+#include "oscsocket.hpp"
 
 #include "../log.hpp"
 
@@ -20,85 +21,18 @@
 #include <thread>
 #include <utility>
 
-#if defined(_WIN32)
-#define WIN32_LEAN_AND_MEAN
-#define NOMINMAX
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#else
+#if !defined(_WIN32)
 #include <arpa/inet.h>
-#include <fcntl.h>
 #include <netinet/in.h>
 #include <poll.h>
-#include <sys/socket.h>
-#include <unistd.h>
 #endif
 
 namespace Pelican {
 namespace {
 
-#if defined(_WIN32)
-using SocketHandle = SOCKET;
-inline constexpr SocketHandle invalid_socket = INVALID_SOCKET;
-#else
-using SocketHandle = int;
-inline constexpr SocketHandle invalid_socket = -1;
-#endif
+using namespace Osc;
 
 constexpr unsigned receive_error_limit = 100;
-
-int lastSocketError() noexcept {
-#if defined(_WIN32)
-    return WSAGetLastError();
-#else
-    return errno;
-#endif
-}
-
-std::string socketErrorText(int code) {
-    if (code == 0) return "unknown socket error";
-    return std::error_code{code, std::system_category()}.message() + " (" +
-           std::to_string(code) + ")";
-}
-
-bool interruptedError(int code) noexcept {
-#if defined(_WIN32)
-    return code == WSAEINTR;
-#else
-    return code == EINTR;
-#endif
-}
-
-bool wouldBlockError(int code) noexcept {
-#if defined(_WIN32)
-    return code == WSAEWOULDBLOCK;
-#else
-    return code == EAGAIN || code == EWOULDBLOCK;
-#endif
-}
-
-bool harmlessDatagramError(int code) noexcept {
-#if defined(_WIN32)
-    return code == WSAECONNRESET || code == WSAEMSGSIZE;
-#else
-    return false;
-#endif
-}
-
-void closeSocket(SocketHandle socket) noexcept {
-#if defined(_WIN32)
-    if (socket != invalid_socket) ::closesocket(socket);
-#else
-    if (socket != invalid_socket) ::close(socket);
-#endif
-}
-
-std::string ipv4Text(std::uint32_t host_order) {
-    return std::to_string((host_order >> 24) & 0xffu) + "." +
-           std::to_string((host_order >> 16) & 0xffu) + "." +
-           std::to_string((host_order >> 8) & 0xffu) + "." +
-           std::to_string(host_order & 0xffu);
-}
 
 enum class WaitResult {
     readable,
@@ -331,23 +265,7 @@ bool OscListener::start(const OscListenerConfig &config) {
     winsock_started = true;
 #endif
 
-    SocketHandle socket = invalid_socket;
-#if defined(_WIN32)
-    socket = ::WSASocketW(AF_INET, SOCK_DGRAM, IPPROTO_UDP, nullptr, 0,
-                          WSA_FLAG_NO_HANDLE_INHERIT);
-#else
-    socket = ::socket(AF_INET, SOCK_DGRAM | SOCK_CLOEXEC, IPPROTO_UDP);
-    if (socket < 0) {
-        socket = ::socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-        if (socket >= 0 &&
-            ::fcntl(socket, F_SETFD, FD_CLOEXEC) == -1) {
-            const int code = errno;
-            closeSocket(socket);
-            socket = invalid_socket;
-            errno = code;
-        }
-    }
-#endif
+    SocketHandle socket = createDatagramSocket();
     if (socket == invalid_socket) {
         const int code = lastSocketError();
         if (winsock_started) {

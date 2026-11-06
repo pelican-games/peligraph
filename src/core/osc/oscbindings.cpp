@@ -1,4 +1,5 @@
 #include "oscbindings.hpp"
+#include "oscaddress.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -11,18 +12,6 @@ namespace {
 
 [[noreturn]] void refuse(const std::string &detail) {
     throw std::runtime_error("osc.binding_invalid@1: " + detail);
-}
-
-bool isExactAddress(std::string_view address) noexcept {
-    if (address.size() < 2 || address.front() != '/') return false;
-    for (const char value : address) {
-        const auto byte = static_cast<unsigned char>(value);
-        if (byte < 0x21 || byte > 0x7e) return false;
-        if (value == '*' || value == '?' || value == '[' || value == ']' ||
-            value == '{' || value == '}')
-            return false;
-    }
-    return true;
 }
 
 const std::string &requireKey(const nlohmann::json &object, const char *key,
@@ -70,7 +59,7 @@ parseOscBindings(const nlohmann::json &profile,
         }
         OscBinding binding;
         binding.address = requireKey(entry, "address", "live binding");
-        if (!isExactAddress(binding.address))
+        if (!isExactOscAddress(binding.address))
             refuse("live binding address '" + binding.address +
                    "' must be an exact, printable OSC address starting with '/'");
         binding.input = requireKey(entry, "input", "live binding '" +

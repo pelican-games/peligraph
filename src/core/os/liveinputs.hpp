@@ -115,7 +115,7 @@ DECLARE_MODULE(LiveInputs) {
     void endLiveReplay();
     void setLiveRecording(bool active);
 
-    ValueGraph::Inputs frozenInputs() const;
+    ValueGraph::Inputs frozenInputs(bool *replaying = nullptr) const;
     std::vector<LiveInputSnapshot> snapshot() const;
 
     bool isReplaying() const;

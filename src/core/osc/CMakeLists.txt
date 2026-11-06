@@ -4,6 +4,9 @@ target_sources(pelican_core PRIVATE
     oscinput.cpp
     osclistenerconfig.cpp
     osclistener.cpp
+    oscencoder.cpp
+    oscsendtable.cpp
+    oscsender.cpp
 )
 
 if(WIN32)

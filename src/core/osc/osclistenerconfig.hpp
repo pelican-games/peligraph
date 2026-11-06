@@ -11,6 +11,12 @@ namespace Pelican {
 // OSC-2b: the UDP listener is configured process-wide from player options,
 // never from a project file.  Every field is already validated; the listener
 // only repeats the checks because the module also has a public start().
+struct OscSendConfig {
+    std::string host;
+    std::uint16_t port = 0;
+    bool operator==(const OscSendConfig &) const = default;
+};
+
 struct OscListenerConfig {
     std::uint16_t port = 0;
     std::string interface_address = "127.0.0.1";
@@ -32,5 +38,7 @@ bool parseOscListenerIpv4(std::string_view text,
 OscListenerConfig
 parseOscListenerConfig(std::string_view port, std::string_view interface_address,
                        std::optional<std::string_view> allow);
+
+OscSendConfig parseOscSendConfig(std::string_view text);
 
 } // namespace Pelican

@@ -52,6 +52,7 @@
 #include "oscbindingsrpc.hpp"
 #include "../osc/oscinput.hpp"
 #include "../osc/osclistener.hpp"
+#include "../osc/oscsender.hpp"
 #endif
 #if PELICAN_WITH_JOYSTICK_INPUT
 #include "../joystick/joystickruntime.hpp"
@@ -408,6 +409,7 @@ struct EngineRpcModules {
 #if PELICAN_WITH_OSC
     OscInput &osc_input;
     OscListener &osc_listener;
+    OscSender &osc_sender;
 #endif
 #if PELICAN_WITH_JOYSTICK_INPUT
     JoystickRuntime &joystick_runtime;
@@ -453,6 +455,7 @@ EngineRpcModules resolveEngineRpcModules() {
 #if PELICAN_WITH_OSC
         GET_MODULE(OscInput),
         GET_MODULE(OscListener),
+        GET_MODULE(OscSender),
 #endif
 #if PELICAN_WITH_JOYSTICK_INPUT
         GET_MODULE(JoystickRuntime),
@@ -2172,6 +2175,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
 #if PELICAN_WITH_OSC
         auto osc = modules.osc_input.snapshotJson();
         osc["listener"] = modules.osc_listener.statusJson();
+        osc["send"] = modules.osc_sender.statusJson();
         result["osc"] = std::move(osc);
 #endif
         return result;
@@ -2239,6 +2243,9 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
                 LiveInputRecording::loadFile(path));
             const auto mode = modules.launch_config.headless || modules.input_sequence.isReplaying()
                 ? EngineTime::Mode::fixed_step : EngineTime::Mode::realtime;
+#if PELICAN_WITH_OSC
+            modules.osc_sender.pauseForReplay();
+#endif
             modules.live_recording.startReplay(recording,
                 liveRecordingClock(modules.engine_time, mode));
             started = true;

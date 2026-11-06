@@ -197,6 +197,7 @@ void prepareInputActionsRuntime();
 // launch named --osc-port.  A bind or thread failure is non-fatal; the
 // listener reports state=failed and the engine runs on.
 void prepareOscListener();
+void prepareOscSender();
 
 // Phase 3 of the frame contract. Later Actions queries read this frozen frame
 // instead of re-evaluating the bindings.

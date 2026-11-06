@@ -275,6 +275,7 @@ void prepareRuntimeModuleGraph(LoopModules &modules) {
     // OSC-2b: after the profile load above has installed the live bindings, so
     // an early datagram can only be staged and applied on the next freeze.
     internal::prepareOscListener();
+    internal::prepareOscSender();
     modules.renderer.prepareRuntimeModules();
 
     // Public GameContext services are legal at any point in game code, so

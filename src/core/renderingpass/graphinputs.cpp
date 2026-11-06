@@ -135,13 +135,14 @@ void validateGraphInputs(const ValueGraph::Graph &graph) {
 }
 
 ValueGraph::Inputs collectGraphInputs(const ValueGraph::Graph &graph, const SceneLoader &scene,
-    const ValueGraph::InactiveScopes &inactive, double time, double delta_time) {
+    const ValueGraph::InactiveScopes &inactive, double time, double delta_time,
+    bool *replaying) {
     checkLiveInputReads(graph);
     ValueGraph::Inputs inputs{{"time", time}, {"delta_time", delta_time},
         {"scene_time", time - scene.sceneStartTime()}, {"audio_time", frameAudioTime(time)}};
     // OSC-1a: every evaluation of this frame reads the same frozen snapshot;
     // pending RPC writes are invisible until the next freeze.
-    for (auto &[name, value] : GET_MODULE(LiveInputs).frozenInputs())
+    for (auto &[name, value] : GET_MODULE(LiveInputs).frozenInputs(replaying))
         inputs.emplace(std::move(name), value);
     for (const auto &[node, source] : graph.morphSources()) {
         if (!graph.nodeActive(node, inactive)) continue;

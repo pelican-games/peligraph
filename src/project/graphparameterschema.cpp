@@ -481,6 +481,15 @@ Table makeTable() {
     for (const auto *op : {"ui.value", "ui.visible"})
         add(table, op, true, {string("node").required().describe("The UI node's path in the project's UI document.")});
 
+#if PELICAN_WITH_OSC
+    // pelican.osc.
+    add(table, "osc.send", true,
+        {string("address").required().describe("The exact OSC address to publish to."),
+         enumeration("type", {"float", "int", "bool"}).fallback("float")
+             .describe("The OSC scalar encoding for the double-valued graph edge."),
+         boolean("enabled").fallback(true).describe("Whether this sink publishes and reserves its address.")});
+#endif
+
     // pelican.render: the publication sink (lowerScalarGraph).
     add(table, "render.scalar", true,
         {string("target").required().choicesFromGraph({"render.buffer", "render.attribute"})

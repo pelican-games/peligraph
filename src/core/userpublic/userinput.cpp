@@ -9,6 +9,7 @@
 #include "../osc/oscbindings.hpp"
 #include "../osc/oscinput.hpp"
 #include "../osc/osclistener.hpp"
+#include "../osc/oscsender.hpp"
 #endif
 #include "../../project/inputactionoverlay.hpp"
 
@@ -584,6 +585,16 @@ void prepareOscListener() {
     }
 #else
     // The OFF build has no listener; the player refuses the options earlier.
+#endif
+}
+
+void prepareOscSender() {
+#if PELICAN_WITH_OSC
+    auto &sender = GET_MODULE(OscSender);
+    const auto &launch = GET_MODULE(EngineLaunchConfig);
+    if (!launch.osc_send) return;
+    if (oscSendOfflineLaunch(launch)) sender.markOffline(*launch.osc_send);
+    else (void)sender.start(*launch.osc_send);
 #endif
 }
 

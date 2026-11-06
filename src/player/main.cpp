@@ -547,6 +547,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("0..65535")
         .help("listen for OSC over UDP on this port (0 chooses a free port)");
+    program.add_argument("--osc-send")
+        .default_value(std::string{})
+        .metavar("ipv4:port")
+        .help("send osc.send graph values to this unicast IPv4 UDP destination");
     program.add_argument("--osc-interface")
         .default_value(std::string{"127.0.0.1"})
         .metavar("ipv4")
@@ -785,13 +789,13 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.input_profile = input_profile;
         }
         const bool osc_port_used = program.is_used("--osc-port");
+        const bool osc_send_used = program.is_used("--osc-send");
         const bool osc_interface_used = program.is_used("--osc-interface");
         const bool osc_allow_used = program.is_used("--osc-allow");
 #if !PELICAN_WITH_OSC
-        if (osc_port_used || osc_interface_used || osc_allow_used) {
+        if (osc_port_used || osc_interface_used || osc_allow_used || osc_send_used) {
             throw std::runtime_error(
-                "osc.module_unavailable@1: OSC input is unavailable in this "
-                "build");
+                "osc.module_unavailable@1: OSC is unavailable in this build");
         }
 #else
         if (!osc_port_used && (osc_interface_used || osc_allow_used)) {
@@ -812,6 +816,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 program.get<std::string>("--osc-port"),
                 program.get<std::string>("--osc-interface"), allow);
         }
+        if (osc_send_used)
+            config.osc_send = Pelican::parseOscSendConfig(
+                program.get<std::string>("--osc-send"));
 #endif
         const bool joystick_monitor = program.get<bool>("--joystick-monitor");
 #if !PELICAN_WITH_JOYSTICK_INPUT

@@ -3,6 +3,9 @@
 #include "../src/core/loader/projectsrc.hpp"
 #include "../src/core/log.hpp"
 #include "../src/core/userpublic/userinput.hpp"
+#include "../src/core/userpublic/valuegraph.hpp"
+#include "../src/project/graphmodule.hpp"
+#include "../src/project/graphparameterschema.hpp"
 
 #include <catch2/catch_test_macros.hpp>
 #include <catch2/matchers/catch_matchers_string.hpp>
@@ -128,4 +131,31 @@ TEST_CASE("OSC-2c OFF refuses a live profile even without an action document",
     REQUIRE_THROWS_WITH(
         Actions::isConfigured(),
         StartsWith("osc.module_unavailable@1: input profile 'liveonly'"));
+}
+
+TEST_CASE("OSC-5b OFF refuses the send operation and hides its schema",
+          "[osc5b][osc][off]") {
+    const nlohmann::json document{
+        {"schema", "pelican.graph"},
+        {"version", 1},
+        {"definitions", nlohmann::json::object()},
+        {"nodes", nlohmann::json::array({
+            nlohmann::json{{"id", "source"}, {"op", "value.constant"},
+                           {"parameters", {{"value", 1.0}}},
+                           {"outputs", nlohmann::json::array({"value"})}},
+            nlohmann::json{{"id", "send"}, {"op", "osc.send"},
+                           {"parameters", {{"address", "/out"}}},
+                           {"inputs", {{"value", {{"node", "source"}, {"port", "value"}}}}},
+                           {"outputs", nlohmann::json::array()}}})},
+        {"outputs", nlohmann::json::object()}};
+    try {
+        const ValueGraph::Graph graph{document.dump()};
+        FAIL("OFF build accepted osc.send");
+    } catch (const GraphRegistryError &error) {
+        REQUIRE(error.code() == "graph.operation_unregistered@1");
+    }
+    const auto catalog = nlohmann::json(builtinGraphModuleRegistry().catalog());
+    for (const auto &module : catalog.at("modules"))
+        REQUIRE(module.at("namespace") != "pelican.osc");
+    REQUIRE(graphOperationParameters("osc.send") == nullptr);
 }

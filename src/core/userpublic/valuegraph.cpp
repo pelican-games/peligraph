@@ -7,6 +7,7 @@
 #include "../container.hpp"
 #include "../loader/pathresolver.hpp"
 #include "../loader/sampletable.hpp"
+#include "../osc/oscaddress.hpp"
 
 #include <algorithm>
 #include <cmath>
@@ -173,7 +174,9 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
     node_scopes.insert(expanded.node_scopes.begin(), expanded.node_scopes.end());
     output_scopes = expanded.output_scopes;
     Json result{{"schema", "pelican.value_graph"}, {"version", 1},
-                {"nodes", Json::array()}, {"outputs", Json::object()}, {"bindings", Json::array()}};
+                {"nodes", Json::array()}, {"outputs", Json::object()},
+                {"bindings", Json::array()}, {"osc_sends", Json::array()}};
+    std::map<std::string, std::string, std::less<>> osc_addresses;
     const auto source = [](const Json &endpoint) {
         if (endpoint.at("port") != "value")
             throw std::invalid_argument("scalar backend requires a value output port");
@@ -253,9 +256,10 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
             output_scopes[output] = node_scopes.at(id);
             continue;
         }
-        for (const auto &[port, contract] : modules.resolveOperation(node).inputs)
-            if (!contract.required && parameters.contains(port))
-                (void)number(parameters.at(port)); // References belong in typed input edges.
+        if (op != "osc.send")
+            for (const auto &[port, contract] : modules.resolveOperation(node).inputs)
+                if (!contract.required && parameters.contains(port))
+                    (void)number(parameters.at(port)); // References belong in typed input edges.
         if (op == "render.scalar" || op == "audio.volume" || op == "audio.pitch") {
             if (op == "render.scalar") keys(parameters, {"target", "value", "offset"});
             else keys(parameters, {"target"});
@@ -338,6 +342,47 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
                 {"target", name(parameters.at("node"))}});
             continue;
         }
+        if (op == "osc.send") {
+            const auto id = name(node.at("id"));
+            const auto invalid_parameter = [&](std::string parameter, std::string reason) {
+                throw GraphRegistryError("osc.parameter_invalid@1",
+                    {{"node", id}, {"parameter", std::move(parameter)},
+                     {"reason", std::move(reason)}});
+            };
+            if (!parameters.is_object()) invalid_parameter("", "unknown_parameter");
+            for (const auto &[key, value] : parameters.items()) {
+                (void)value;
+                if (key != "address" && key != "type" && key != "enabled")
+                    invalid_parameter(key, "unknown_parameter");
+            }
+            if (const auto enabled = parameters.find("enabled");
+                enabled != parameters.end() && !enabled->is_boolean())
+                invalid_parameter("enabled", "not_a_bool");
+            std::string type = "float";
+            if (const auto declared = parameters.find("type"); declared != parameters.end()) {
+                if (!declared->is_string()) invalid_parameter("type", "unknown_type");
+                type = declared->get<std::string>();
+                if (type != "float" && type != "int" && type != "bool")
+                    invalid_parameter("type", "unknown_type");
+            }
+            const auto address_value = parameters.contains("address")
+                ? parameters.at("address") : Json(nullptr);
+            if (!address_value.is_string() ||
+                !Osc::isExactOscAddress(address_value.get_ref<const std::string &>()))
+                throw GraphRegistryError("osc.address_invalid@1",
+                                         {{"node", id}, {"address", address_value}});
+            if (parameters.value("enabled", true)) {
+                const auto address = address_value.get<std::string>();
+                if (const auto [previous, inserted] = osc_addresses.emplace(address, id);
+                    !inserted)
+                    throw GraphRegistryError("osc.address_duplicate@1",
+                        {{"address", address},
+                         {"nodes", Json::array({previous->second, id})}});
+                result["osc_sends"].push_back({{"node", id}, {"address", address},
+                    {"type", type}, {"source", source(inputs.at("value"))}});
+            }
+            continue;
+        }
         if (!parameters.is_object()) throw std::invalid_argument("node parameters must be an object");
         Json lowered = parameters;
         if (lowered.contains("id") || lowered.contains("op"))
@@ -369,7 +414,7 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             (void)value;
             if (!authored.at("outputs").contains(output)) lowered_outputs_.push_back(output);
         }
-    keys(root, {"schema", "version", "nodes", "outputs", "bindings"});
+    keys(root, {"schema", "version", "nodes", "outputs", "bindings", "osc_sends"});
     if (root.at("schema") != "pelican.value_graph" || root.at("version") != 1)
         throw std::invalid_argument("unsupported value graph schema/version");
     const auto &nodes = root.at("nodes");
@@ -708,6 +753,23 @@ Graph::Graph(std::string_view document, const GraphModuleRegistry &modules) : mo
             outputs_[output].push_back(index);
         }
     }
+    if (const auto sends = root.find("osc_sends"); sends != root.end()) {
+        if (!sends->is_array()) throw std::invalid_argument("OSC sends must be an array");
+        std::set<std::string, std::less<>> addresses;
+        for (const auto &send : *sends) {
+            keys(send, {"node", "address", "type", "source"});
+            const auto address = name(send.at("address"));
+            if (!Osc::isExactOscAddress(address) || !addresses.insert(address).second)
+                throw std::invalid_argument("invalid or duplicate OSC send address");
+            const auto type = name(send.at("type"));
+            const auto kind = type == "float" ? OscSendKind::floating
+                : type == "int" ? OscSendKind::integer
+                : type == "bool" ? OscSendKind::boolean
+                : throw std::invalid_argument("unknown OSC send type: " + type);
+            osc_sends_.push_back({name(send.at("node")), address, kind,
+                                  resolve(send.at("source"))});
+        }
+    }
     if (const auto bindings = root.find("bindings"); bindings != root.end()) {
         if (!bindings->is_array()) throw std::invalid_argument("value graph bindings must be an array");
         std::map<std::pair<std::string, std::string>, std::string> targets;
@@ -828,6 +890,19 @@ std::string_view instanceInputSourceName(InstanceInputSource source) {
 
 bool Graph::nodeActive(std::string_view node, const InactiveScopes &inactive) const {
     return active(node_scopes_, node, inactive);
+}
+
+std::vector<OscSendValue> Graph::oscSendValues(
+    const std::vector<std::optional<double>> &node_values,
+    const InactiveScopes &inactive) const {
+    std::vector<OscSendValue> values;
+    if (node_values.size() != nodes_.size()) return values;
+    values.reserve(osc_sends_.size());
+    for (const auto &sink : osc_sends_) {
+        if (!nodeActive(sink.node, inactive) || !node_values[sink.source]) continue;
+        values.push_back({sink.address, sink.kind, *node_values[sink.source]});
+    }
+    return values;
 }
 
 Graph::StateTransfer Graph::transferState(const Graph &previous, const EvaluationState &state) const {

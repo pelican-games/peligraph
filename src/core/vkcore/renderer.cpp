@@ -62,6 +62,10 @@
 #include "../loader/scene.hpp"
 #include "../ecs/core.hpp"
 #include "../os/window.hpp"
+#include "../os/liveinputs.hpp"
+#if PELICAN_WITH_OSC
+#include "../osc/oscsender.hpp"
+#endif
 #include "../shader/pipelinefactory.hpp"
 #include "../shader/raygrouplayout.hpp"
 #include "../shader/shaderlibrary.hpp"
@@ -3361,6 +3365,9 @@ Renderer::Renderer(RendererFramePlanCpuSeam seam,
       flat_rendering_pass_id{rendering_pass_id} {}
 
 Renderer::~Renderer() {
+#if PELICAN_WITH_OSC
+    if (auto *sender = FastModuleContainer::tryGet<OscSender>()) sender->retire();
+#endif
     if (render_pipeline_reload_state != nullptr) {
         const auto staged_generation =
             render_pipeline_reload_state->staged_generation;
@@ -6733,6 +6740,15 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
     retainUserDataScopes("renderer/deformed/", deformed_scopes);
     guardUserData(userDataScope("renderer", "value_graph", invalidGameObjectId,
         std::to_string(runtime_generation->generation)), [&] {
+#if PELICAN_WITH_OSC
+    struct PublicationGuard {
+        bool published = false;
+        ~PublicationGuard() {
+            if (!published)
+                if (auto *sender = FastModuleContainer::tryGet<OscSender>()) sender->retire();
+        }
+    } publication_guard;
+#endif
     if (staged_runtime_generation != 0) {
         auto &scene = GET_MODULE(SceneLoader);
         const auto previous = GET_MODULE(RenderingPassContainer).snapshot();
@@ -6748,8 +6764,9 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
         // Reactivation may still be awaiting a successful GPU publication.
         inactive_graph_scopes.insert(frame_graph.inactive_graph_scopes.begin(),
                                      frame_graph.inactive_graph_scopes.end());
+        bool frame_replaying = false;
         const auto inputs = collectGraphInputs(*frame_graph.value_graph, scene,
-            inactive_graph_scopes, engine_time.now(), engine_time.dt());
+            inactive_graph_scopes, engine_time.now(), engine_time.dt(), &frame_replaying);
         // AU-1: the voices, their sinks and the sound resolver come from the
         // scene, staged into the generation change when there is one.
         const auto audio = scene.graphAudioWriters(frame_graph.value_graph, staged_graph_transfer.get());
@@ -6772,6 +6789,13 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
             });
         if (!published.unavailable.empty())
             throw std::runtime_error("frame graph output is unavailable: " + published.unavailable.front());
+#if PELICAN_WITH_OSC
+        if (auto *sender = FastModuleContainer::tryGet<OscSender>())
+            sender->publishFrame(frame_graph.value_graph->oscSendValues(
+                                     published.node_values, inactive_graph_scopes),
+                                 frame_replaying);
+        publication_guard.published = true;
+#endif
         // Keep what this generation actually fed each instance input port. A
         // reader that evaluated the graph again would advance its clocks and
         // consume its events, so the values leave the draw path here or not at
@@ -6786,6 +6810,11 @@ void Renderer::LogicalFrameRecorder::publishFrameValueGraph() {
                                   // path build a map of them every frame.
                                   .graph = frame_graph.value_graph,
                                   .node_values = std::move(published.node_values)});
+    } else {
+#if PELICAN_WITH_OSC
+        if (auto *sender = FastModuleContainer::tryGet<OscSender>()) sender->retire();
+        publication_guard.published = true;
+#endif
     }
     });
 }
