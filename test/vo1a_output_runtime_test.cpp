@@ -2561,7 +2561,9 @@ TEST_CASE("VO-7 offline video drains through the real sink and closes on engine 
     auto flags = outputFlags(output_dir, 4);
     flags.insert(flags.end(), {"--ffmpeg", PELICAN_FAKE_FFMPEG});
     PlayerRpc player{project, flags, "vo7_offline"};
-    for (int index = 0; index < 8; ++index) {
+    // max_frames is reached in frames, but the encoder exits on its own time.
+    const auto finished_by = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+    while (std::chrono::steady_clock::now() < finished_by) {
         (void)player.result("step_frame");
         const auto sink = oneSink(player.outputStatus());
         if (sink.at("state") == "finished") break;
@@ -2680,7 +2682,9 @@ TEST_CASE("VO-7 reload removal finalizes the retired writer before releasing slo
     REQUIRE(player.settle(player.result("reload_render_documents")).at("status") ==
             "committed");
     CHECK(player.outputStatus().at("sinks").empty());
-    for (int index = 0; index < 32; ++index) {
+    // The retired writer's encoder exits on its own time, not in frames.
+    const auto finalized_by = std::chrono::steady_clock::now() + std::chrono::seconds{60};
+    while (std::chrono::steady_clock::now() < finalized_by) {
         if (fs::exists(output_dir / "movie.mp4") && fs::exists(side_path) &&
             readFile(side_path).find("frames 3") != std::string::npos) break;
         (void)player.result("step_frame");
