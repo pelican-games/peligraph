@@ -9832,7 +9832,7 @@ TEST_CASE("PS-1 schedule and lifetime reach the passes, the targets and the fram
 }
 
 TEST_CASE("PS-1 a once node that writes a transient resource or reads one that changes every frame is refused by name",
-          "[render-feature][graph-composition][ps1]") {
+          "[render-feature][graph-composition][ps1][osc1b]") {
     using Json = nlohmann::json;
     SECTION("a once pass writes a transient image") {
         auto document = ps1Graph();
@@ -9908,6 +9908,59 @@ TEST_CASE("PS-1 a once node that writes a transient resource or reads one that c
         ps1Node(document, "level_value")["parameters"] = {{"value", 0.25}};
         ps1Node(document, "level_value")["op"] = "value.constant";
         CHECK_NOTHROW(lp0aCompose(document));
+    }
+    SECTION("a once pass sees a live input through definition and loop boundaries") {
+        GET_MODULE(LiveInputs).setDeclarationJson(R"({
+            "schema": "pelican.live_inputs", "version": 1,
+            "inputs": [{"name": "ps1_level", "type": "float", "default": 0.0}]
+        })");
+        const Json source{{"id", "source"}, {"op", "value.input"},
+            {"parameters", {{"name", "live:ps1_level"}}}, {"outputs", {"value"}}};
+        const Json input{{"id", "level_source"}, {"op", "graph.input"}, {"default", 0.25}};
+        const Json buffer{{"id", "level"}, {"op", "render.buffer"},
+            {"parameters", {{"element", "float"}}},
+            {"inputs", {{"value", ps1Edge("level_source", "value")}}}, {"outputs", {"resource"}}};
+        const Json level{{"kind", "buffer"}, {"element", "float"}, {"access", "read"}};
+        const Json body{{"nodes", Json::array({input, buffer, ps1Image("h0_image", true),
+            ps1Pass("h0", {{"level", level}, {"color", ps1ColorPort()}},
+                {{"level", ps1Edge("level", "resource")}, {"color", ps1Edge("h0_image", "resource")}}, true)})},
+            {"outputs", {{"color", ps1Edge("h0", "color")}}}};
+        auto document = ps1Graph();
+        document["definitions"] = {{"body", body}};
+        document["nodes"] = Json::array({source,
+            {{"id", "inst"}, {"op", "graph.instance"}, {"definition", "body"},
+                {"inputs", {{"level_source", ps1Edge("source", "value")}}}}});
+        document["outputs"] = {{"color", ps1Edge("inst", "color")}};
+        SECTION("a connected definition input cannot hide behind its default") {
+            const auto [code, fields] = lp0aRefusal(document);
+            CHECK(code == "graph.once_reads_per_frame@1");
+            CHECK(fields == Json{{"node", "inst/h0"}, {"input", "level"}});
+        }
+        SECTION("a parameter and default on a connected input retain the live dependency") {
+            document["nodes"] = Json::array({source,
+                {{"id", "inst"}, {"op", "graph.instance"}, {"definition", "body"},
+                    {"parameters", {{"level_source", 0.5}}},
+                    {"inputs", {{"level_source", ps1Edge("source", "value")}}}}});
+            const auto [code, fields] = lp0aRefusal(document);
+            CHECK(code == "graph.once_reads_per_frame@1");
+            CHECK(fields == Json{{"node", "inst/h0"}, {"input", "level"}});
+        }
+        SECTION("an unconnected numeric default is constant") {
+            document["nodes"] = Json::array({
+                {{"id", "inst"}, {"op", "graph.instance"}, {"definition", "body"}}});
+            CHECK_NOTHROW(lp0aCompose(document));
+        }
+        SECTION("a loop body's live dependency reaches its once pass") {
+            document["nodes"] = Json::array({source,
+                {{"id", "steps"}, {"op", "graph.loop"},
+                    {"parameters", {{"over", {{"range", {{"count", 1}}}}},
+                        {"branches", Json::array({{{"body", "body"}}})}}},
+                    {"inputs", {{"level_source", ps1Edge("source", "value")}}}, {"outputs", {"color"}}}});
+            document["outputs"] = {{"color", ps1Edge("steps", "color")}};
+            const auto [code, fields] = lp0aRefusal(document);
+            CHECK(code == "graph.once_reads_per_frame@1");
+            CHECK(fields == Json{{"node", "steps/0/h0"}, {"input", "level"}});
+        }
     }
     SECTION("a schedule or lifetime the engine does not know is refused when edited") {
         auto document = ps1Graph();

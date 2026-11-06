@@ -539,6 +539,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("path.jsonl")
         .help("replay pelican.live_seq v1; a different clock resamples held values by time and is not frame-identical");
+    program.add_argument("--live-inputs-at-default")
+        .flag()
+        .help("keep every live input at its declared default for the whole run");
     program.add_argument("--input-profile")
         .default_value(std::string{})
         .metavar("name")
@@ -759,6 +762,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             }
             config.output_dir = path;
         }
+        if (config.render_out) {
+            config.output_policy = Pelican::EngineLaunchOutputPolicy::deterministic_snapshot;
+        } else if (config.output_dir) {
+            config.output_policy = Pelican::EngineLaunchOutputPolicy::realtime_saving;
+        }
         config.dump_frame_plan = program.get<bool>("--dump-frame-plan");
         config.gpu = program.get<std::string>("--gpu");
         config.gpu_labels = program.get<bool>("--gpu-labels");
@@ -787,6 +795,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         }
         const auto record_live = program.get<std::string>("--record-live");
         const auto replay_live = program.get<std::string>("--replay-live");
+        config.live_inputs_at_default = program.get<bool>("--live-inputs-at-default");
+        if (config.live_inputs_at_default && !replay_live.empty()) {
+            throw std::runtime_error(
+                "live_input.defaults_replay_conflict@1: --live-inputs-at-default cannot be combined with --replay-live");
+        }
         if (!record_live.empty() && !replay_live.empty()) {
             throw std::runtime_error(
                 "live_input.record_while_replaying@1: --record-live cannot be combined with --replay-live");

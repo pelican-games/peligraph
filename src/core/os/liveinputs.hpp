@@ -123,8 +123,8 @@ DECLARE_MODULE(LiveInputs) {
     bool isLiveRecording() const;
     std::uint64_t droppedDuringReplay() const;
 
-    // Each validation replaces this set, so a project or graph switch cannot
-    // leave a read from the previous graph behind.
+    // Successful graph validations accumulate reads; failed validation restores
+    // the previous set so another active graph can continue unaffected.
     void setGraphLiveReads(std::vector<std::string> names);
     void noteGraphReadsLive(std::string_view name);
     bool graphReadsLive() const;

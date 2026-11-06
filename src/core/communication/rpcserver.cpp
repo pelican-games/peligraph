@@ -1781,6 +1781,7 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
         nlohmann::json live_status{
             {"recording", nullptr},
             {"replaying", modules.live_recording.isReplaying()},
+            {"at_default", modules.launch_config.live_inputs_at_default},
             {"replay_lines", modules.live_recording.replayLines()}};
         if (const auto recording = modules.live_recording.recordStatus()) {
             live_status["recording"] = {
@@ -2281,12 +2282,8 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("stop_live_replay", [&modules](const nlohmann::json &params) {
         requireObjectParams(params, "stop_live_replay");
         try {
-            const bool offline = modules.launch_config.start_time_explicit ||
-                modules.launch_config.start_frames > 0 ||
-                modules.launch_config.camera_bake_output.has_value() ||
-                modules.launch_config.input_replay ||
-                modules.launch_config.input_replay_path.has_value();
-            if (offline && modules.live_inputs.graphReadsLive())
+            if (!modules.launch_config.live_inputs_at_default &&
+                offlineLaunchReadsNoLiveInputs() && modules.live_inputs.graphReadsLive())
                 throw std::runtime_error(
                     "live_input.replay_required@1: offline graph still requires live replay");
             modules.live_recording.stopReplay();

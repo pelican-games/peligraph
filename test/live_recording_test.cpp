@@ -3,6 +3,7 @@
 #include "../src/core/communication/renderconfigeditor.hpp"
 #include "../src/core/loader/sampletable.hpp"
 #include "../src/core/launchconfig.hpp"
+#include "../src/core/communication/graphfoldverify.hpp"
 #include "../src/core/renderingpass/graphinputs.hpp"
 #include "../src/core/watch/problemlist.hpp"
 
@@ -11,6 +12,7 @@
 #include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <filesystem>
@@ -513,6 +515,155 @@ TEST_CASE("OSC-4a input sequence replay alone does not satisfy offline live read
     CHECK(validationError(graph).empty());
     runtime.stopReplay();
     launch.input_replay = false;
+}
+
+TEST_CASE("OSC-1b output policy is independent of headless and RPC [osc1b]",
+          "[osc1b][live_recording]") {
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    const auto previous = launch.output_policy;
+    launch.output_policy = EngineLaunchOutputPolicy::deterministic_snapshot;
+    for (const bool headless : {false, true}) {
+        for (const bool rpc : {false, true}) {
+            launch.headless = headless;
+            launch.rpc = rpc;
+            CHECK(offlineLaunchReadsNoLiveInputs());
+        }
+    }
+    launch.output_policy = EngineLaunchOutputPolicy::realtime_saving;
+    CHECK_FALSE(offlineLaunchReadsNoLiveInputs());
+    launch.output_policy = EngineLaunchOutputPolicy::interactive;
+    CHECK_FALSE(offlineLaunchReadsNoLiveInputs());
+    launch.output_policy = previous;
+}
+
+TEST_CASE("OSC-1b failed graph validation restores earlier live reads [osc1b]",
+          "[osc1b][live_recording]") {
+    FastModuleContainer modules;
+    (void)GET_MODULE(ProblemList);
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    const auto previous_policy = launch.output_policy;
+    launch.output_policy = EngineLaunchOutputPolicy::deterministic_snapshot;
+    auto &live = GET_MODULE(LiveInputs);
+    live.setDeclarationJson(R"({"schema":"pelican.live_inputs","version":1,"inputs":[
+        {"name":"a","type":"float","default":0.0},
+        {"name":"b","type":"float","default":0.0}]})");
+    const ValueGraph::Graph a{liveReadGraph({"live:a"}).dump()};
+    const ValueGraph::Graph b{liveReadGraph({"live:b"}).dump()};
+    const ValueGraph::Graph both{liveReadGraph({"live:a", "live:b"}).dump()};
+    auto &runtime = GET_MODULE(LiveInputRecordingRuntime);
+    auto recording = declarationRecording({{"a", LiveInputType::floating, 0.0, {}, {}}});
+    runtime.startReplay(recording, {LiveRecordingClockMode::fixed, 0.5, 1, 0.5, 0});
+    REQUIRE(validationError(a).empty());
+    CHECK(live.graphLiveReads() == std::vector<std::string>{"live:a"});
+    const auto error = validationError(b);
+    CHECK_THAT(error, ContainsSubstring("live:b"));
+    CHECK(live.graphLiveReads() == std::vector<std::string>{"live:a"});
+    recording = declarationRecording({
+        {"a", LiveInputType::floating, 0.0, {}, {}},
+        {"b", LiveInputType::floating, 0.0, {}, {}}});
+    runtime.stopReplay();
+    runtime.startReplay(recording, {LiveRecordingClockMode::fixed, 0.5, 1, 0.5, 0});
+    CHECK(validationError(both).empty());
+    CHECK(live.graphLiveReads() == std::vector<std::string>{"live:a", "live:b"});
+    CHECK(validationError(a).empty());
+    CHECK(live.graphLiveReads() == std::vector<std::string>{"live:a", "live:b"});
+    runtime.stopReplay();
+    launch.output_policy = previous_policy;
+}
+
+TEST_CASE("OSC-1b at-default refuses every external live write [osc1b]",
+          "[osc1b][live_recording]") {
+    FastModuleContainer modules;
+    auto &launch = GET_MODULE(EngineLaunchConfig);
+    const bool previous = launch.live_inputs_at_default;
+    launch.live_inputs_at_default = true;
+    auto &live = GET_MODULE(LiveInputs);
+    live.setDeclarationJson(R"({"schema":"pelican.live_inputs","version":1,"inputs":[
+        {"name":"a","type":"float","default":0.25}]})");
+    try {
+        (void)live.stageValues(Json{{"a", 3.0}});
+        FAIL("set_live_input was accepted at defaults");
+    } catch (const std::exception &error) {
+        CHECK_THAT(error.what(), ContainsSubstring("live_input.defaults_active@1"));
+    }
+    const std::array<LiveInputUpdate, 1> update{{{"a", 2.0}}};
+    const auto staged = live.stageBatch(update, LiveInputSource::osc);
+    CHECK(staged.applied == 0);
+    CHECK(staged.replay == 1);
+    live.freeze(false, 8);
+    REQUIRE(live.snapshot().size() == 1);
+    CHECK(live.snapshot().at(0).value == Catch::Approx(0.25));
+    CHECK(live.snapshot().at(0).source == LiveInputSource::none);
+    try {
+        live.beginLiveReplay();
+        FAIL("live replay was accepted at defaults");
+    } catch (const std::exception &error) {
+        CHECK_THAT(error.what(), ContainsSubstring("live_input.defaults_active@1"));
+    }
+    launch.live_inputs_at_default = previous;
+}
+
+TEST_CASE("OSC-1b verify_fold children use deterministic live defaults [osc1b]",
+          "[osc1b][live_recording]") {
+    FoldVerifyJob job;
+    job.frames = 2;
+    job.warmup_seconds = 1.5;
+    FoldVerifyProcessOptions options;
+    options.width = 64;
+    options.height = 64;
+    const auto arguments = foldVerifyChildArguments(job, options, "/tmp/project", "/tmp/run");
+    std::vector<std::string> args;
+    for (const auto &argument : arguments) args.push_back(argument.generic_string());
+    CHECK(std::find(args.begin(), args.end(), "--live-inputs-at-default") != args.end());
+    CHECK(std::find(args.begin(), args.end(), "--render-out") != args.end());
+    CHECK(std::find(args.begin(), args.end(), "--start-time") != args.end());
+    CHECK(std::find(args.begin(), args.end(), "1.5") != args.end());
+}
+
+TEST_CASE("OSC-1b live clock controls reevaluate without becoming clocks [osc1b]",
+          "[osc1b][live_recording]") {
+    const Json nodes = Json::array({
+        Json{{"id", "now"}, {"op", "value.input"}, {"parameters", {{"name", "time"}}}},
+        Json{{"id", "phase"}, {"op", "value.input"}, {"parameters", {{"name", "live:phase"}}}},
+        Json{{"id", "clock"}, {"op", "value.trigger_clock"},
+             {"inputs", {{"time", {{"node", "now"}, {"port", "value"}}},
+                         {"paused", {{"node", "phase"}, {"port", "value"}}}}}},
+    });
+    CHECK(ValueGraph::valueClockSources(nodes, nodes.at(2).at("inputs").at("time")) ==
+          std::set<std::string>{"time"});
+    CHECK(ValueGraph::valueClockSources(nodes, nodes.at(2).at("inputs").at("paused")).empty());
+
+    for (const std::string control : {std::string{"paused"}, std::string{"reset"}}) {
+        CAPTURE(control);
+        const Json graph_document{
+            {"schema", "pelican.value_graph"}, {"version", 1},
+            {"nodes", Json::array({
+                Json{{"id", "now"}, {"op", "input"}, {"name", "time"}},
+                Json{{"id", "phase"}, {"op", "input"}, {"name", "live:phase"}},
+                Json{{"id", "gate"}, {"op", "constant"}, {"value", 1.0}},
+                Json{{"id", "clock"}, {"op", "trigger_clock"},
+                     {"time", "now"}, {"trigger", "gate"}, {control, "phase"}}})},
+            {"outputs", {{"elapsed", Json::array({"clock"})}}}, {"bindings", Json::array()}};
+        const ValueGraph::Graph graph{graph_document.dump()};
+        auto state = graph.createState();
+        const auto evaluate = [&](double time, double live) {
+            return graph.evaluate({{"time", time}, {"live:phase", live}}, {}, {}, &state)
+                .at("elapsed").at(0);
+        };
+        if (control == "paused") {
+            CHECK(evaluate(1.0, 0.0) == Catch::Approx(0.0));
+            CHECK(evaluate(2.0, 0.0) == Catch::Approx(1.0));
+            CHECK(evaluate(2.0, 1.0) == Catch::Approx(1.0));
+            CHECK(evaluate(3.0, 1.0) == Catch::Approx(1.0));
+            CHECK(evaluate(3.0, 0.0) == Catch::Approx(1.0));
+        } else {
+            CHECK(evaluate(1.0, 0.0) == Catch::Approx(0.0));
+            CHECK(evaluate(2.0, 0.0) == Catch::Approx(1.0));
+            CHECK(evaluate(2.0, 1.0) == Catch::Approx(0.0));
+            CHECK(evaluate(2.0, 0.0) == Catch::Approx(0.0));
+        }
+    }
 }
 } // namespace Pelican
 

@@ -130,7 +130,7 @@ FoldVerifyVerdict judgeFoldVerifyRuns(const std::string &group, const FoldVerify
 // the system temp directory (everything but a top-level .git), writes the
 // documents, and starts `executable` three times, one after the other:
 //   --headless --project <copy> --frames N --fps F [--size WxH] [--start-time S]
-//   --render-out <run>/frame_%d.png --vulkan-validation on
+//   --render-out <run>/frame_%d.png --live-inputs-at-default --vulkan-validation on
 //   --log-file <run>/pelican.log  <extra_arguments...>
 // with stdout and stderr going to files in the run's directory. A child that
 // outlives `run_timeout`, or that is still running when `cancelled` turns
@@ -147,6 +147,9 @@ struct FoldVerifyProcessOptions {
     std::chrono::seconds run_timeout{900};
     std::chrono::milliseconds stop_grace{3000};
 };
+std::vector<std::filesystem::path> foldVerifyChildArguments(const FoldVerifyJob &job,
+    const FoldVerifyProcessOptions &options, const std::filesystem::path &project,
+    const std::filesystem::path &run_directory);
 FoldVerifyRuns runFoldVerifyProcesses(const FoldVerifyJob &job, const FoldVerifyProcessOptions &options,
                                       const std::atomic<bool> &cancelled);
 

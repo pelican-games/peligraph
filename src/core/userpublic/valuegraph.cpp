@@ -155,6 +155,36 @@ Json lowerAudioPlayback(const Json &node, const Json &parameters, const Json &in
     return lowered;
 }
 
+} // namespace
+
+std::set<std::string> valueClockSources(const Json &expanded_nodes, const Json &endpoint) {
+    std::map<std::string, const Json *, std::less<>> nodes;
+    for (const auto &node : expanded_nodes) nodes.emplace(name(node.at("id")), &node);
+    std::set<std::string> clocks;
+    std::set<std::string> seen;
+    std::vector<std::string> pending{name(endpoint.at("node"))};
+    while (!pending.empty()) {
+        auto id = std::move(pending.back());
+        pending.pop_back();
+        if (!seen.insert(id).second) continue;
+        const auto found = nodes.find(id);
+        if (found == nodes.end()) continue;
+        const auto &upstream = *found->second;
+        if (upstream.at("op") == "value.input") {
+            const auto input = upstream.value("parameters", Json::object()).value("name", std::string{});
+            if (input == "time" || input == "scene_time" || input == "audio_time") clocks.insert(input);
+        }
+        const auto upstream_inputs = upstream.value("inputs", Json::object());
+        for (const auto &[port, edge] : upstream_inputs.items()) {
+            (void)port;
+            pending.push_back(name(edge.at("node")));
+        }
+    }
+    return clocks;
+}
+
+namespace {
+
 Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
                       GraphInstanceOwners &owners,
                       ScopeDependencies &node_scopes, ScopeDependencies &output_scopes,
@@ -190,31 +220,8 @@ Json lowerScalarGraph(const Json &authored, const GraphModuleRegistry &modules,
     // The graph's own buffers, which a render.scalar may name (RS-15).
     std::map<std::string, const Json *, std::less<>> rendering_nodes;
     for (const auto &node : partitions.rendering.nodes) rendering_nodes.emplace(name(node.at("id")), &node);
-    // The engine clocks an edge reads, however far upstream: the names of the
-    // value.input nodes it reaches among time, scene_time and (AT-1 decision
-    // 3) audio_time.
     const auto clockSources = [&](const Json &endpoint) {
-        std::set<std::string> clocks;
-        std::set<std::string> seen;
-        std::vector<std::string> pending{name(endpoint.at("node"))};
-        while (!pending.empty()) {
-            auto id = std::move(pending.back());
-            pending.pop_back();
-            if (!seen.insert(id).second) continue;
-            const auto found = expanded_nodes.find(id);
-            if (found == expanded_nodes.end()) continue;
-            const auto &upstream = *found->second;
-            if (upstream.at("op") == "value.input") {
-                const auto input = upstream.value("parameters", Json::object()).value("name", std::string{});
-                if (input == "time" || input == "scene_time" || input == "audio_time") clocks.insert(input);
-            }
-            const auto upstream_inputs = upstream.value("inputs", Json::object());
-            for (const auto &[port, edge] : upstream_inputs.items()) {
-                (void)port;
-                pending.push_back(name(edge.at("node")));
-            }
-        }
-        return clocks;
+        return valueClockSources(expanded.nodes, endpoint);
     };
     for (const auto &node : expanded.nodes) {
         const auto op = name(node.at("op"));

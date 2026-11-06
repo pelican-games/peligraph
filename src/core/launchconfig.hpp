@@ -47,6 +47,12 @@ enum class EngineStartState {
     edit,
 };
 
+enum class EngineLaunchOutputPolicy {
+    interactive,
+    deterministic_snapshot,
+    realtime_saving,
+};
+
 // A monitor index is present when the option was given; size is absent for
 // the borderless full-monitor default. The pattern switch selects the
 // diagnostic instead of the rendered picture.
@@ -142,6 +148,8 @@ DECLARE_MODULE(EngineLaunchConfig) {
     std::optional<std::filesystem::path> input_replay_path;
     std::optional<std::filesystem::path> live_record;
     std::optional<std::filesystem::path> live_replay_path;
+    bool live_inputs_at_default = false;
+    EngineLaunchOutputPolicy output_policy = EngineLaunchOutputPolicy::interactive;
     std::optional<std::string> input_profile;
     // OSC-2b: the process-wide UDP listener. Absent means no socket is opened.
     // Configured only by player options, never by the project file.

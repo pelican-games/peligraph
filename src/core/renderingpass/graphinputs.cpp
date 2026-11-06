@@ -16,7 +16,11 @@
 #include "../audio/audio.hpp"
 #endif
 
+#include <mutex>
+#include <set>
 #include <stdexcept>
+
+#include "../log.hpp"
 
 namespace Pelican {
 namespace {
@@ -30,42 +34,72 @@ double frameAudioTime(double time) {
 #endif
     return time;
 }
-bool offlineLaunchReadsNoLiveInputs() {
-    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
-    if (launch == nullptr) return false;
-    return launch->start_time_explicit || launch->start_frames > 0 ||
-           launch->camera_bake_output.has_value() || launch->input_replay ||
-           launch->input_replay_path.has_value();
-}
-
 std::string liveName(std::string_view input) {
     return std::string{input.substr(std::string_view{"live:"}.size())};
 }
 
+void logLiveInputPolicy(std::string_view input) {
+    static std::mutex mutex;
+    static std::set<std::string, std::less<>> logged;
+    std::scoped_lock lock{mutex};
+    if (!logged.emplace(input).second) return;
+    const auto &launch = GET_MODULE(EngineLaunchConfig);
+    if (launch.live_inputs_at_default) {
+        LOG_INFO(logger, "live input '{}' held at its declared default for this run", input);
+    } else {
+        LOG_INFO(logger, "live input '{}' read during real-time output saving", input);
+    }
+}
+
 void checkLiveInputReads(const ValueGraph::Graph &graph) {
-    std::vector<std::string> reads;
+    auto &live = GET_MODULE(LiveInputs);
+    const auto previous = live.graphLiveReads();
+    std::vector<std::string> reads = previous;
     for (const auto &input : graph.inputNames()) {
         if (!input.starts_with("live:")) continue;
-        if (!GET_MODULE(LiveInputs).isDeclared(liveName(input)))
+        if (!live.isDeclared(liveName(input)))
             throw std::runtime_error("live_input.unknown@1: graph reads undeclared live input '" +
                                      liveName(input) + "'");
         reads.push_back(input);
     }
-    GET_MODULE(LiveInputs).setGraphLiveReads(std::move(reads));
-    validateCurrentLiveInputReplay();
+    live.setGraphLiveReads(std::move(reads));
+    try {
+        validateCurrentLiveInputReplay();
+    } catch (...) {
+        live.setGraphLiveReads(previous);
+        throw;
+    }
+    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    if (launch != nullptr && (launch->live_inputs_at_default ||
+        launch->output_policy == EngineLaunchOutputPolicy::realtime_saving)) {
+        for (const auto &input : graph.inputNames()) {
+            if (input.starts_with("live:")) logLiveInputPolicy(input);
+        }
+    }
 }
 } // namespace
+
+bool offlineLaunchReadsNoLiveInputs() {
+    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    if (launch == nullptr) return false;
+    return launch->output_policy == EngineLaunchOutputPolicy::deterministic_snapshot ||
+           launch->start_time_explicit || launch->start_frames > 0 ||
+           launch->camera_bake_output.has_value() || launch->input_replay ||
+           launch->input_replay_path.has_value();
+}
 
 void validateCurrentLiveInputReplay(bool offline_required) {
     auto &live = GET_MODULE(LiveInputs);
     const auto reads = live.graphLiveReads();
     const auto &runtime = GET_MODULE(LiveInputRecordingRuntime);
     const auto *recording = runtime.recordingData();
+    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    const bool at_default = launch != nullptr && launch->live_inputs_at_default;
     nlohmann::json warnings = nlohmann::json::array();
     for (const auto &input : reads) {
         const auto name = liveName(input);
         if (recording == nullptr) {
-            if (offline_required || offlineLaunchReadsNoLiveInputs())
+            if (!at_default && (offline_required || offlineLaunchReadsNoLiveInputs()))
                 throw std::runtime_error(
                     "offline.live_input_unrecorded@1: rendering graph reads " + input);
             continue;

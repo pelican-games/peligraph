@@ -14,6 +14,7 @@
 #include <string>
 #include <string_view>
 #include <vector>
+#include <nlohmann/json.hpp>
 
 namespace Pelican { class GameContext; class GraphModuleRegistry; struct SampleTable; }
 namespace Pelican::Animation { class BezierCurve; }
@@ -30,6 +31,8 @@ using Inputs = std::map<std::string, double, std::less<>>;
 using ParameterValues = Inputs;
 using InactiveScopes = std::set<std::string>;
 using ScopeDependencies = std::map<std::string, std::set<std::string>>;
+std::set<std::string> valueClockSources(const nlohmann::json &expanded_nodes,
+                                        const nlohmann::json &endpoint);
 using Outputs = std::map<std::string, std::vector<double>, std::less<>>;
 using SoundBindings = std::map<std::string, SoundHandle, std::less<>>;
 using RenderValueWriter = std::function<bool(std::string_view, std::span<const float>)>;

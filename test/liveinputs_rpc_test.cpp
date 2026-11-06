@@ -90,8 +90,8 @@ struct TempDir {
 // posegraph_demo, with its animation clock driven by a declared live input
 // instead of scene_time, so the published pose is a visible function of the
 // frozen snapshot.
-std::filesystem::path copyLiveProject(const TempDir &dir,
-                                      bool with_actions = true) {
+std::filesystem::path copyLiveProject(const TempDir &dir, bool with_actions = true,
+                                      bool with_output_sink = false) {
     const auto shipped = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} / "projects" / "posegraph_demo";
     const auto root = dir.root / "live_posegraph_demo";
     std::filesystem::create_directories(root);
@@ -158,6 +158,35 @@ std::filesystem::path copyLiveProject(const TempDir &dir,
     for (auto &node : graph["nodes"])
         if (node["id"] == "clock")
             node["parameters"]["name"] = "live:phase";
+    if (with_output_sink) {
+        const Json color_type{{"semantic", "pelican.render.color_signal@1"},
+            {"arguments", {{"reference", "scene"}, {"transfer", "linear"}, {"range", "extended"}}}};
+        graph["nodes"].push_back({{"id", "osc1b_target"}, {"op", "render.image"},
+            {"parameters", {{"type", color_type}, {"format", "R8G8B8A8_UNORM"},
+                {"width", 64}, {"height", 64}, {"extent_scale", 1.0},
+                {"usage", Json::array({"COLOR_ATTACHMENT", "SAMPLED"})}}},
+            {"outputs", Json::array({"resource"})}});
+        graph["nodes"].push_back({{"id", "osc1b_fill"}, {"op", "render.fullscreen"},
+            {"parameters", {{"pass_set", "main_render"},
+                {"shader", {{"vertex", "engine://fullscreen"},
+                            {"fragment", "project://shaders/osc1b_fill"}}},
+                {"ports", {{"color", {{"kind", "image"}, {"type", color_type},
+                    {"access", "write"}, {"attachment", "color"}, {"location", 0}}}}}}},
+            {"inputs", {{"color", {{"node", "osc1b_target"}, {"port", "resource"}}}}},
+            {"outputs", Json::array({"color"})}});
+        graph["nodes"].push_back({{"id", "osc1b_sink"}, {"op", "output.file"},
+            {"parameters", {{"name", "shot"}, {"every_n", 1}, {"enabled", true}, {"format", "png"}}},
+            {"inputs", {{"source", {{"node", "osc1b_fill"}, {"port", "color"}}}}},
+            {"outputs", Json::array()}});
+        writeFile(root / "shaders" / "osc1b_fill.frag", R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+void main() { outColor = vec4(inUV.x, inUV.y, 0.25, 1.0); }
+)glsl");
+    }
     writeFile(root / "passes" / "main.json", graph.dump(2));
     return root;
 }
@@ -265,6 +294,9 @@ class PlayerProcess {
         player_arguments.insert(player_arguments.end(),
             {"--input-profile", "live", "--project", project.string()});
         arguments.insert(arguments.begin(), player_arguments.begin(), player_arguments.end());
+        log_path_ = std::filesystem::temp_directory_path() /
+            ("pelican_osc2c_player_" + std::to_string(
+                std::chrono::steady_clock::now().time_since_epoch().count()) + ".log");
 #if defined(_WIN32)
         SECURITY_ATTRIBUTES attributes{};
         attributes.nLength = sizeof(attributes);
@@ -275,14 +307,7 @@ class PlayerProcess {
         }
         ::SetHandleInformation(stdin_write_, HANDLE_FLAG_INHERIT, 0);
         ::SetHandleInformation(stdout_read_, HANDLE_FLAG_INHERIT, 0);
-        const auto log_path =
-            (std::filesystem::temp_directory_path() /
-             ("pelican_osc2c_player_" +
-              std::to_string(std::chrono::steady_clock::now()
-                                 .time_since_epoch()
-                                 .count()) +
-              ".log"));
-        log_ = ::CreateFileW(log_path.wstring().c_str(), GENERIC_WRITE,
+        log_ = ::CreateFileW(log_path_.wstring().c_str(), GENERIC_WRITE,
                              FILE_SHARE_READ, &attributes, CREATE_ALWAYS,
                              FILE_ATTRIBUTE_NORMAL, nullptr);
 
@@ -322,14 +347,7 @@ class PlayerProcess {
         if (pid_ == 0) {
             (void)::dup2(input_pipe[0], STDIN_FILENO);
             (void)::dup2(output_pipe[1], STDOUT_FILENO);
-            const auto log_path =
-                (std::filesystem::temp_directory_path() /
-                 ("pelican_osc2c_player_" +
-                  std::to_string(std::chrono::steady_clock::now()
-                                     .time_since_epoch()
-                                     .count()) +
-                  ".log"));
-            const int log_fd = ::open(log_path.c_str(),
+            const int log_fd = ::open(log_path_.c_str(),
                                       O_WRONLY | O_CREAT | O_TRUNC, 0644);
             if (log_fd >= 0) {
                 (void)::dup2(log_fd, STDERR_FILENO);
@@ -349,6 +367,56 @@ class PlayerProcess {
 
     PlayerProcess(const PlayerProcess &) = delete;
     PlayerProcess &operator=(const PlayerProcess &) = delete;
+
+    int finish() {
+        int exit_code = 0;
+#if defined(_WIN32)
+        if (stdin_write_ != INVALID_HANDLE_VALUE) {
+            ::CloseHandle(stdin_write_);
+            stdin_write_ = INVALID_HANDLE_VALUE;
+        }
+        if (::WaitForSingleObject(process_.hProcess, 120000) == WAIT_TIMEOUT) {
+            (void)::TerminateProcess(process_.hProcess, 124);
+            exit_code = 124;
+        }
+        DWORD code = 1;
+        (void)::GetExitCodeProcess(process_.hProcess, &code);
+        if (exit_code == 0) exit_code = static_cast<int>(code);
+        ::CloseHandle(process_.hThread);
+        ::CloseHandle(process_.hProcess);
+        process_ = {};
+        while (!readLine().empty()) {}
+#else
+        if (write_fd_ >= 0) {
+            (void)::close(write_fd_);
+            write_fd_ = -1;
+        }
+        int status = 0;
+        pid_t waited = 0;
+        for (int attempt = 0; attempt < 1200 && waited == 0; ++attempt) {
+            waited = ::waitpid(pid_, &status, WNOHANG);
+            if (waited == 0) std::this_thread::sleep_for(std::chrono::milliseconds{100});
+        }
+        if (waited == 0) {
+            (void)::kill(pid_, SIGTERM);
+            (void)::waitpid(pid_, &status, 0);
+            exit_code = 124;
+        } else if (waited < 0) {
+            throw std::runtime_error("player wait failed");
+        } else if (WIFEXITED(status)) {
+            exit_code = WEXITSTATUS(status);
+        } else if (WIFSIGNALED(status)) {
+            exit_code = 128 + WTERMSIG(status);
+        }
+        pid_ = -1;
+        while (!readLine().empty()) {}
+        (void)::close(read_fd_);
+        read_fd_ = -1;
+#endif
+        return exit_code;
+    }
+
+    const std::filesystem::path &logPath() const { return log_path_; }
 
     ~PlayerProcess() {
 #if defined(_WIN32)
@@ -486,6 +554,7 @@ class PlayerProcess {
     }
 
     std::uint64_t next_id_ = 4200;
+    std::filesystem::path log_path_;
 #if defined(_WIN32)
     HANDLE stdin_read_ = INVALID_HANDLE_VALUE;
     HANDLE stdin_write_ = INVALID_HANDLE_VALUE;
@@ -499,6 +568,80 @@ class PlayerProcess {
     pid_t pid_ = -1;
 #endif
 };
+
+struct PlayerRun {
+    int exit_code = -1;
+    std::filesystem::path log_path;
+};
+
+PlayerRun runPlayer(const std::filesystem::path &project,
+                    std::vector<std::string> arguments) {
+    arguments.insert(arguments.begin(), {"--headless", "--size", "64x64", "--frames", "6",
+        "--fps", "60", "--input-profile", "plain", "--project", project.string()});
+    const auto log_path = std::filesystem::temp_directory_path() /
+        ("pelican_osc1b_player_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()) + ".log");
+#if defined(_WIN32)
+    SECURITY_ATTRIBUTES attributes{};
+    attributes.nLength = sizeof(attributes);
+    attributes.bInheritHandle = TRUE;
+    const auto log = ::CreateFileW(log_path.wstring().c_str(), GENERIC_WRITE,
+        FILE_SHARE_READ, &attributes, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+    if (log == INVALID_HANDLE_VALUE) throw std::runtime_error("player log creation failed");
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    startup.dwFlags = STARTF_USESTDHANDLES;
+    startup.hStdInput = ::GetStdHandle(STD_INPUT_HANDLE);
+    startup.hStdOutput = log;
+    startup.hStdError = log;
+    std::wstring command = L"\"" + std::filesystem::path{PELICAN_LIVEINPUTS_PLAYER}.wstring() + L"\"";
+    for (const auto &argument : arguments) {
+        command += L" \"";
+        command += std::filesystem::path{argument}.wstring();
+        command += L"\"";
+    }
+    PROCESS_INFORMATION process{};
+    const auto created = ::CreateProcessW(nullptr, command.data(), nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &startup, &process);
+    ::CloseHandle(log);
+    if (!created) throw std::runtime_error("CreateProcessW failed");
+    const auto waited = ::WaitForSingleObject(process.hProcess, 120000);
+    if (waited == WAIT_TIMEOUT) (void)::TerminateProcess(process.hProcess, 124);
+    DWORD exit_code = 1;
+    (void)::GetExitCodeProcess(process.hProcess, &exit_code);
+    ::CloseHandle(process.hThread);
+    ::CloseHandle(process.hProcess);
+    return {static_cast<int>(exit_code), log_path};
+#else
+    std::vector<char *> child_arguments;
+    child_arguments.push_back(const_cast<char *>(PELICAN_LIVEINPUTS_PLAYER));
+    for (auto &argument : arguments) child_arguments.push_back(argument.data());
+    child_arguments.push_back(nullptr);
+    const auto pid = ::fork();
+    if (pid == 0) {
+        const int log_fd = ::open(log_path.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (log_fd >= 0) {
+            (void)::dup2(log_fd, STDOUT_FILENO);
+            (void)::dup2(log_fd, STDERR_FILENO);
+            (void)::close(log_fd);
+        }
+        ::execv(PELICAN_LIVEINPUTS_PLAYER, child_arguments.data());
+        ::_exit(127);
+    }
+    if (pid < 0) throw std::runtime_error("fork failed");
+    int status = 0;
+    for (int attempt = 0; attempt < 1200; ++attempt) {
+        if (::waitpid(pid, &status, WNOHANG) == pid) {
+            if (WIFEXITED(status)) return {WEXITSTATUS(status), log_path};
+            if (WIFSIGNALED(status)) return {128 + WTERMSIG(status), log_path};
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds{100});
+    }
+    (void)::kill(pid, SIGTERM);
+    (void)::waitpid(pid, nullptr, 0);
+    return {124, log_path};
+#endif
+}
 #endif
 
 void appendOscString(std::vector<std::uint8_t> &bytes, std::string_view text) {
@@ -813,7 +956,7 @@ TEST_CASE("OSC-2c the real --osc-port option listens and freezes a packet",
 }
 #endif
 
-#if defined(PELICAN_OSC2C_PLAYER) && PELICAN_WITH_OSC
+#if defined(PELICAN_LIVEINPUTS_PLAYER) && PELICAN_WITH_OSC
 TEST_CASE("OSC-5b the real player publishes graph scalars over UDP",
           "[osc5b][osc][liveinputs][rpc][gpu]") {
     setupLogger(true);
@@ -1369,6 +1512,239 @@ TEST_CASE("OSC-4b baked tables reproduce fixed-step replay pixels without live i
             CHECK(readFile(capture) == replay_pixels[index]);
         }
     }
+}
+
+TEST_CASE("OSC-1b deterministic snapshots and real-time output follow the launch table",
+          "[osc1b][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc1b_launch_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    const auto recording_path = dir.root / "complete.live_seq";
+    LiveInputRecording recording;
+    recording.inputs = {{"phase", LiveInputType::floating, 0.0, 0.0, 4.0}};
+    recording.clock = {LiveRecordingClockMode::fixed, 1.0 / 60.0, 1, 1.0 / 60.0, 0};
+    recording.frames = {{1, 1.0 / 60.0, {{"phase", 1.0}}},
+                        {2, 2.0 / 60.0, {{"phase", 1.0}}}};
+    recording.end = {2, 2.0 / 60.0, 2};
+    writeFile(recording_path, recording.toJsonLines());
+    const auto missing_path = dir.root / "missing.live_seq";
+    LiveInputRecording missing = recording;
+    missing.inputs = {{"steps", LiveInputType::integer, 1.0, 0.0, 8.0}};
+    for (auto &frame : missing.frames) frame.values = {{"steps", 1.0}};
+    writeFile(missing_path, missing.toJsonLines());
+
+    const auto snapshot = [&](std::string_view name, std::vector<std::string> extra) {
+        INFO("launch case: " + std::string{name});
+        const auto path = dir.root / (std::string{name} + ".png");
+        extra.insert(extra.begin(), {"--render-out", path.generic_string()});
+        const auto run = runPlayer(root, std::move(extra));
+        INFO(readFile(run.log_path));
+        return std::tuple{run, path, readFile(path)};
+    };
+    const auto refused = [&](std::string_view name, std::vector<std::string> extra) {
+        INFO("refused launch case: " + std::string{name});
+        auto [run, path, pixels] = snapshot(name, std::move(extra));
+        CHECK(run.exit_code != 0);
+        CHECK_THAT(readFile(run.log_path), ContainsSubstring("offline.live_input_unrecorded@1"));
+        CHECK_THAT(readFile(run.log_path), ContainsSubstring("live:phase"));
+        CHECK_FALSE(std::filesystem::exists(path));
+        CHECK(pixels.empty());
+        std::filesystem::remove(run.log_path);
+    };
+    const auto allowed = [&](std::string_view name, std::vector<std::string> extra, bool defaults = false) {
+        auto [run, path, pixels] = snapshot(name, std::move(extra));
+        CHECK(run.exit_code == 0);
+        REQUIRE(std::filesystem::exists(path));
+        REQUIRE(pixels.size() > 8);
+        CHECK(pixels.substr(1, 3) == "PNG");
+        if (defaults) {
+            CHECK_THAT(readFile(run.log_path), ContainsSubstring("declared default"));
+            CHECK_THAT(readFile(run.log_path), ContainsSubstring("live:phase"));
+        }
+        std::filesystem::remove(run.log_path);
+        return pixels;
+    };
+
+    refused("snapshot", {});
+    refused("snapshot-rpc", {"--rpc"});
+    refused("snapshot-missing-replay", {"--replay-live", missing_path.generic_string()});
+    const auto replay_pixels = allowed("snapshot-replay", {"--replay-live", recording_path.generic_string()});
+    const auto default_pixels = allowed("snapshot-defaults", {"--live-inputs-at-default"}, true);
+    const auto default_pixels_again = allowed("snapshot-defaults-again", {"--live-inputs-at-default"}, true);
+    CHECK(replay_pixels.substr(1, 3) == "PNG");
+    CHECK(default_pixels == default_pixels_again);
+    {
+        const auto run = runPlayer(root, {"--render-out", (dir.root / "conflict.png").generic_string(),
+            "--replay-live", recording_path.generic_string(), "--live-inputs-at-default"});
+        INFO(readFile(run.log_path));
+        CHECK(run.exit_code != 0);
+        CHECK_THAT(readFile(run.log_path), ContainsSubstring("live_input.defaults_replay_conflict@1"));
+        CHECK_FALSE(std::filesystem::exists(dir.root / "conflict.png"));
+        std::filesystem::remove(run.log_path);
+    }
+
+    auto plain = Json::parse(readFile(root / "passes" / "main.json"));
+    for (auto &[name, definition] : plain["definitions"].items()) {
+        (void)name;
+        for (auto &node : definition["nodes"])
+            if (node["id"] == "clock") node["parameters"]["name"] = "scene_time";
+    }
+    for (auto &node : plain["nodes"])
+        if (node["id"] == "clock") node["parameters"]["name"] = "scene_time";
+    const auto plain_root = dir.root / "plain_project";
+    std::filesystem::copy(root, plain_root, std::filesystem::copy_options::recursive);
+    writeFile(plain_root / "passes" / "main.json", plain.dump(2));
+
+    const auto saveOutput = [&](const std::filesystem::path &project,
+                                const std::filesystem::path &out, bool rpc) {
+        std::filesystem::create_directories(out);
+        if (!rpc) return runPlayer(project, {"--output-dir", out.generic_string()});
+        PlayerProcess player{project, {"--fps", "60", "--output-dir", out.generic_string()}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        for (int index = 0; index < 4; ++index) (void)player.result("step_frame");
+        return PlayerRun{player.finish(), player.logPath()};
+    };
+    (void)copyLiveProject(dir, false, true);
+    for (const bool rpc : {false, true}) {
+        CAPTURE(rpc);
+        const auto out = dir.root / (rpc ? "output-rpc" : "output");
+        const auto run = saveOutput(root, out, rpc);
+        INFO(readFile(run.log_path));
+        CHECK(run.exit_code == 0);
+        CHECK_THAT(readFile(run.log_path), ContainsSubstring("real-time output saving"));
+        CHECK_THAT(readFile(run.log_path), ContainsSubstring("live:phase"));
+        std::filesystem::path output;
+        for (const auto &entry : std::filesystem::directory_iterator{out})
+            if (entry.path().extension() == ".png") output = entry.path();
+        REQUIRE(!output.empty());
+        const auto pixels = readFile(output);
+        REQUIRE(pixels.size() > 8);
+        CHECK(pixels.substr(1, 3) == "PNG");
+        std::filesystem::remove(run.log_path);
+    }
+
+    for (const std::vector<std::string> extra : {
+        std::vector<std::string>{}, {"--rpc"},
+        {"--replay-live", recording_path.generic_string()}, {"--live-inputs-at-default"}}) {
+        auto args = extra;
+        const auto path = dir.root / ("plain-" + std::to_string(args.size()) + "-" +
+            std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()) + ".png");
+        args.insert(args.begin(), {"--render-out", path.generic_string()});
+        PlayerRun run;
+        if (std::find(args.begin(), args.end(), "--rpc") != args.end()) {
+            PlayerProcess player{plain_root, {"--render-out", path.generic_string()}};
+            (void)player.result("load_scene", {{"name", "default_scene"}});
+            (void)player.result("render_frame");
+            (void)player.result("capture", {{"path", path.generic_string()}});
+            run = PlayerRun{player.finish(), player.logPath()};
+        } else {
+            run = runPlayer(plain_root, std::move(args));
+        }
+        INFO(readFile(run.log_path));
+        CHECK(run.exit_code == 0);
+        REQUIRE(std::filesystem::exists(path));
+        const auto pixels = readFile(path);
+        REQUIRE(pixels.size() > 8);
+        CHECK(pixels.substr(1, 3) == "PNG");
+        std::filesystem::remove(run.log_path);
+    }
+    {
+        const auto run = runPlayer(plain_root, {"--replay-live", recording_path.generic_string(),
+                                                "--live-inputs-at-default"});
+        INFO(readFile(run.log_path));
+        CHECK(run.exit_code != 0);
+        CHECK_THAT(readFile(run.log_path), ContainsSubstring("live_input.defaults_replay_conflict@1"));
+        std::filesystem::remove(run.log_path);
+    }
+    auto plain_output = Json::parse(readFile(root / "passes" / "main.json"));
+    for (auto &[name, definition] : plain_output["definitions"].items()) {
+        (void)name;
+        for (auto &node : definition["nodes"])
+            if (node["id"] == "clock") node["parameters"]["name"] = "scene_time";
+    }
+    for (auto &node : plain_output["nodes"])
+        if (node["id"] == "clock") node["parameters"]["name"] = "scene_time";
+    std::filesystem::copy_file(root / "shaders" / "osc1b_fill.frag",
+        plain_root / "shaders" / "osc1b_fill.frag",
+        std::filesystem::copy_options::overwrite_existing);
+    writeFile(plain_root / "passes" / "main.json", plain_output.dump(2));
+    for (const bool rpc : {false, true}) {
+        CAPTURE(rpc);
+        const auto out = dir.root / (rpc ? "plain-output-rpc" : "plain-output");
+        const auto run = saveOutput(plain_root, out, rpc);
+        INFO(readFile(run.log_path));
+        CHECK(run.exit_code == 0);
+        std::filesystem::path output;
+        for (const auto &entry : std::filesystem::directory_iterator{out})
+            if (entry.path().extension() == ".png") output = entry.path();
+        REQUIRE(!output.empty());
+        const auto pixels = readFile(output);
+        REQUIRE(pixels.size() > 8);
+        CHECK(pixels.substr(1, 3) == "PNG");
+        std::filesystem::remove(run.log_path);
+    }
+}
+
+TEST_CASE("OSC-1b live edits redraw identical stopped times in Pause and edit",
+          "[osc1b][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc1b_stopped_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir);
+    for (const std::string state : {std::string{"paused"}, std::string{"edit"}}) {
+        CAPTURE(state);
+        PlayerProcess player{root, {"--start-state", state == "edit" ? "edit" : "playing"}};
+        (void)player.result("load_scene", {{"name", "default_scene"}});
+        (void)player.result("render_frame");
+        if (state == "paused") (void)player.result("set_play_state", {{"state", "paused"}});
+        (void)player.result("step_frame");
+        const auto before_status = player.result("get_status");
+        const auto before_path = dir.root / (state + "-before.png");
+        (void)player.result("capture", {{"path", before_path.generic_string()}});
+        REQUIRE(player.result("set_live_input", {{"values", {{"phase", 0.25}}}}).at("accepted") == 1);
+        (void)player.result("step_frame");
+        const auto after_status = player.result("get_status");
+        const auto after_path = dir.root / (state + "-after.png");
+        (void)player.result("capture", {{"path", after_path.generic_string()}});
+        REQUIRE(after_status.at("time") == before_status.at("time"));
+        REQUIRE(after_status.at("frame").get<std::uint64_t>() >
+                before_status.at("frame").get<std::uint64_t>());
+        const auto before = readFile(before_path);
+        const auto after = readFile(after_path);
+        REQUIRE(before.size() > 8);
+        REQUIRE(after.size() > 8);
+        CHECK(before != after);
+    }
+}
+
+TEST_CASE("OSC-1b at-default locks RPC replay and OSC in a real player",
+          "[osc1b][live_recording][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_osc1b_locked_" + std::to_string(
+            std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    PlayerProcess player{root, {"--live-inputs-at-default"}};
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+    CHECK(player.result("get_status").at("live_inputs").at("at_default") == true);
+    auto snapshot = player.result("get_live_inputs");
+    REQUIRE(snapshot.at("osc").at("listener").at("state").get<std::string>() == "listening");
+    const auto port = snapshot.at("osc").at("listener").at("port").get<std::uint16_t>();
+    const auto response = player.call("set_live_input", {{"values", {{"phase", 2.0}}}});
+    REQUIRE(response.contains("error"));
+    CHECK_THAT(response.at("error").at("message").get<std::string>(),
+               ContainsSubstring("live_input.defaults_active@1"));
+    REQUIRE(sendOscPhase(port, 2.0f));
+    for (int index = 0; index < 3; ++index) (void)player.result("step_frame");
+    snapshot = player.result("get_live_inputs");
+    CHECK(inputNamed(snapshot, "phase").at("value") == Catch::Approx(0.0));
+    CHECK(inputNamed(snapshot, "phase").at("source").get<std::string>() == "default");
+    CHECK(snapshot.at("osc").at("received").get<std::uint64_t>() >= 1);
 }
 #endif
 

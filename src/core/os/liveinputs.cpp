@@ -1,5 +1,6 @@
 #include "liveinputs.hpp"
 
+#include "../launchconfig.hpp"
 #include "../loader/basicconfig.hpp"
 
 #include <algorithm>
@@ -13,6 +14,11 @@ namespace {
 
 constexpr std::string_view declaration_schema = "pelican.live_inputs";
 constexpr std::int64_t declaration_version = 1;
+
+bool liveInputsAtDefault() {
+    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    return launch != nullptr && launch->live_inputs_at_default;
+}
 
 [[noreturn]] void refuse(std::string_view code, std::string_view detail) {
     throw std::runtime_error(std::string{code} + ": " + std::string{detail});
@@ -308,6 +314,11 @@ bool LiveInputs::normalizeValue(const LiveInputSpec &spec, double value,
 
 std::size_t LiveInputs::stageValues(const nlohmann::json &values) {
     std::scoped_lock lock{mutex_};
+    if (liveInputsAtDefault()) {
+        ++dropped_during_replay_;
+        refuse("live_input.defaults_active@1",
+               "set_live_input cannot be combined with --live-inputs-at-default");
+    }
     if (live_replaying_) {
         ++dropped_during_replay_;
         refuse("live_input.replay_active@1",
@@ -369,7 +380,7 @@ LiveStageResult LiveInputs::stageBatch(std::span<const LiveInputUpdate> updates,
                                        LiveInputSource source) {
     LiveStageResult result;
     std::scoped_lock lock{mutex_};
-    if (replaying_) {
+    if (replaying_ || liveInputsAtDefault()) {
         result.replay = updates.size();
         dropped_during_replay_ += updates.size();
         return result;
@@ -405,6 +416,14 @@ void LiveInputs::freeze(
     bool input_sequence_replaying, std::uint64_t frame,
     const std::map<std::string, double, std::less<>> *live_replay) {
     std::scoped_lock lock{mutex_};
+    if (liveInputsAtDefault()) {
+        dropped_during_replay_ += pending_.size();
+        pending_.clear();
+        replaying_ = input_sequence_replaying;
+        live_replaying_ = false;
+        resetFrozenLocked();
+        return;
+    }
     const bool replaying = input_sequence_replaying || live_replay != nullptr;
     if (replaying != replaying_) {
         replaying_ = replaying;
@@ -450,6 +469,9 @@ void LiveInputs::freeze(
 
 void LiveInputs::beginLiveReplay() {
     std::scoped_lock lock{mutex_};
+    if (liveInputsAtDefault())
+        refuse("live_input.defaults_active@1",
+               "start_live_replay cannot be combined with --live-inputs-at-default");
     live_replaying_ = true;
     replaying_ = true;
     dropped_during_replay_ = 0;

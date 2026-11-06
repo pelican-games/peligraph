@@ -531,12 +531,31 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
             std::map<std::string, const Json *> value_nodes;
             for (const auto &node : partitions.values.nodes)
                 value_nodes.emplace(node.at("id").get<std::string>(), &node);
-            const auto clocked = [&](const std::string &buffer) {
+            const auto clocked = [&](const std::string &buffer, const std::string &once_id) {
                 std::vector<std::string> pending;
+                std::string expanded_node = once_id;
                 for (const auto &node : partitions.values.nodes) {
                     if (node.at("op") != "render.scalar") continue;
                     const auto parameters = node.value("parameters", Json::object());
-                    if (!parameters.is_object() || parameters.value("target", Json{}) != buffer) continue;
+                    if (!parameters.is_object()) continue;
+                    const auto target = parameters.value("target", std::string{});
+                    if (target != buffer) {
+                        bool copied = false;
+                        for (const auto &[loop, expansion] : graph.loops) {
+                            const auto elements = graphLoopElements(expansion.shape, graphLoopCount(expansion.shape, {}), {});
+                            for (const auto &element : elements) {
+                                const auto &branch = expansion.branches.at(element.branch);
+                                if (!branch || !buffer.starts_with(branch->prefix) || !once_id.starts_with(branch->prefix)) continue;
+                                const auto prefix = loop + "/" + std::to_string(element.element) + "/";
+                                if (target != prefix + buffer.substr(branch->prefix.size())) continue;
+                                expanded_node = prefix + once_id.substr(branch->prefix.size());
+                                copied = true;
+                                break;
+                            }
+                            if (copied) break;
+                        }
+                        if (!copied) continue;
+                    }
                     const auto scalar_inputs = node.value("inputs", Json::object());
                     if (!scalar_inputs.is_object()) continue;
                     if (const auto value = scalar_inputs.find("value");
@@ -557,7 +576,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                         // AT-1b: and the audio clock (AT-1's audio_time) moves
                         // every frame too. OSC-1a: a declared live input is
                         // frozen once per frame, so it is not once-stable.
-                        if (graphInputVariesPerFrame(name)) return true;
+                        if (graphInputVariesPerFrame(name)) return expanded_node;
                     }
                     const auto upstream_inputs = upstream.value("inputs", Json::object());
                     if (!upstream_inputs.is_object()) continue;
@@ -567,7 +586,7 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                             pending.push_back(edge.at("node").get<std::string>());
                     }
                 }
-                return false;
+                return std::string{};
             };
             for (const auto &node : graph.nodes) {
                 const auto id = node.at("id").get<std::string>();
@@ -612,7 +631,10 @@ LoweredRenderGraphDocument lowerRenderGraphDocumentForComposition(const Json &do
                     if (const auto found = writers.find(resource_id); found != writers.end())
                         for (const auto &writer : found->second)
                             if (writer != id && !onceNode(*nodes.at(writer))) refuseRead();
-                    if (resource->at("op") != "render.image" && clocked(resource_id)) refuseRead();
+                    if (resource->at("op") != "render.image")
+                        if (const auto expanded_node = clocked(resource_id, id); !expanded_node.empty())
+                            throw GraphRegistryError("graph.once_reads_per_frame@1",
+                                                     {{"node", expanded_node}, {"input", port}});
                 }
             }
         }

@@ -278,16 +278,11 @@ ChildResult runChild(const std::filesystem::path &executable, const std::vector<
 
 #endif
 
-FoldVerifyRun drawOnce(const FoldVerifyJob &job, const FoldVerifyProcessOptions &options,
-                       const std::filesystem::path &project, const std::filesystem::path &run_directory,
-                       const std::atomic<bool> &cancelled, bool &was_cancelled) {
-    FoldVerifyRun run;
-    std::error_code error;
-    std::filesystem::create_directories(run_directory, error);
-    if (error) {
-        run.message = "could not create " + pathUtf8(run_directory) + ": " + error.message();
-        return run;
-    }
+} // namespace
+
+std::vector<std::filesystem::path> foldVerifyChildArguments(const FoldVerifyJob &job,
+    const FoldVerifyProcessOptions &options, const std::filesystem::path &project,
+    const std::filesystem::path &run_directory) {
     std::vector<std::filesystem::path> arguments{
         "--headless", "--project", project, "--frames", std::to_string(job.frames), "--fps", decimal(options.fps)};
     if (options.width > 0 && options.height > 0) {
@@ -300,11 +295,28 @@ FoldVerifyRun drawOnce(const FoldVerifyJob &job, const FoldVerifyProcessOptions 
     }
     arguments.emplace_back("--render-out");
     arguments.emplace_back(run_directory / "frame_%d.png");
+    arguments.emplace_back("--live-inputs-at-default");
     arguments.emplace_back("--vulkan-validation");
     arguments.emplace_back("on");
     arguments.emplace_back("--log-file");
     arguments.emplace_back(run_directory / "pelican.log");
     for (const auto &argument : options.extra_arguments) arguments.emplace_back(argument);
+    return arguments;
+}
+
+namespace {
+
+FoldVerifyRun drawOnce(const FoldVerifyJob &job, const FoldVerifyProcessOptions &options,
+                       const std::filesystem::path &project, const std::filesystem::path &run_directory,
+                       const std::atomic<bool> &cancelled, bool &was_cancelled) {
+    FoldVerifyRun run;
+    std::error_code error;
+    std::filesystem::create_directories(run_directory, error);
+    if (error) {
+        run.message = "could not create " + pathUtf8(run_directory) + ": " + error.message();
+        return run;
+    }
+    const auto arguments = foldVerifyChildArguments(job, options, project, run_directory);
     const auto stdout_path = run_directory / "stdout.txt";
     const auto stderr_path = run_directory / "stderr.txt";
 #ifdef _WIN32

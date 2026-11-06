@@ -292,7 +292,8 @@ extern "C" void android_main(android_app *app) {
                 "--log-file", (internal / "engine.log").string(),
                 "--vulkan-validation", "on"};
             if (headless) {
-                args.insert(args.end(), {"--size", "960x540", "--render-out", (internal / "sa1_posegraph.png").string()});
+                args.insert(args.end(), {"--size", "960x540", "--render-out", (internal / "sa1_posegraph.png").string(),
+                    "--live-inputs-at-default"});
             }
             bool frames_given = false;
             for (size_t i = 0; i < extra_args.size(); ++i) {
