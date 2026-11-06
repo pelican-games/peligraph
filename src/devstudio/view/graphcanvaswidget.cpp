@@ -2236,7 +2236,7 @@ QString GraphCanvasScene::layerBandText(const std::string &id) const {
     for (const auto &note : model_->planNotes(id))
         if (!parts.contains(qtext(note.band))) parts.push_back(qtext(note.band));
     // Decision 2: the node's GPU time, the sum of its passes'.
-    if (model_->layersShown()) {
+    if (model_->planFactsShown()) {
         bool timed = false;
         double total = 0.0;
         for (const auto &pass : model_->planNodesOf(id))

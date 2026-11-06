@@ -1,0 +1,21 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "graph_time_band_other_domain",
+  "description": "GB-1: a render node's GPU time remains in its Graph band when the canvas domain is shown too. Read-only.",
+  "tab": "graph",
+  "probe_no_automation": false,
+  "steps": [
+    {"label": "the fixture's engine is up", "cmd": "wait_engine", "timeout_ms": 180000},
+    {"label": "the Graph tab is in front", "cmd": "action", "name": "pelican.view.renderTools.graph"},
+    {"label": "tint is drawn", "cmd": "wait", "name": "pelican.graphCanvasView::graph_node#tint", "visible": true, "timeout_ms": 120000},
+    {"label": "read tint's band before changing the filter", "expect": "result", "command": {"cmd": "text", "name": "pelican.graphCanvasView::graph_layer_band#tint"}, "path": "text", "remember": "band_before_canvas"},
+    {"label": "a project with a canvas node starts with Canvas on, and the time is there", "expect": "result", "command": {"cmd": "list", "pattern": "pelican.graphCanvasShow.canvas"}, "path": "widgets[0].checked", "value": true},
+    {"label": "turn Canvas off", "cmd": "click", "name": "pelican.graphCanvasShow.canvas"},
+    {"label": "Canvas is off", "expect": "result", "command": {"cmd": "list", "pattern": "pelican.graphCanvasShow.canvas"}, "path": "widgets[0].checked", "value": false, "retry_ms": 10000},
+    {"label": "turn Canvas on again", "cmd": "click", "name": "pelican.graphCanvasShow.canvas"},
+    {"label": "Canvas is on beside Render", "expect": "result", "command": {"cmd": "list", "pattern": "pelican.graphCanvasShow.canvas"}, "path": "widgets[0].checked", "value": true, "retry_ms": 10000},
+    {"label": "the same node still has a GPU time", "expect": "result", "command": {"cmd": "text", "name": "pelican.graphCanvasView::graph_layer_band#tint"}, "path": "text", "op": "contains", "value": " ms", "retry_ms": 30000},
+    {"label": "read the same band with Canvas shown", "expect": "result", "command": {"cmd": "text", "name": "pelican.graphCanvasView::graph_layer_band#tint"}, "path": "text", "remember": "band_with_canvas"}
+  ]
+}

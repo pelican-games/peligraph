@@ -2856,6 +2856,8 @@ class GraphCanvasModel {
     // Decision 2: bands and the Layers section are shown on the real root,
     // while the domain filter shows one domain only (3.3).
     [[nodiscard]] bool layersShown() const;
+    // Render-plan diagnostics and GPU times remain available beside other domains.
+    [[nodiscard]] bool planFactsShown() const;
     // The band under a root node: `×3 copies · 2 barriers · aliased`,
     // `deactivated: <reason> (<feature>)`.
     // Only what differs from the default; empty for nothing to say.
@@ -2880,7 +2882,7 @@ class GraphCanvasModel {
     }
     // UX-6b, decision 4: what the plan's unread_output and unused_binding
     // diagnostics say of a root node's passes, once each (a loop's copies
-    // say it once). Empty where the bands are not shown.
+    // say it once). Empty outside the real root's render plan.
     [[nodiscard]] std::vector<GraphCanvasPlanNote> planNotes(std::string_view canvas_node) const;
     // Whether a diagnostic is one of those two, which the bands and the
     // details carry rather than the diagnostics line.

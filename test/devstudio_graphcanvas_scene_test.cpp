@@ -569,17 +569,20 @@ qreal nodeHeight(QGraphicsScene &scene, const QString &name) {
 // pass does for nothing, then its GPU time -- which changes in place, on the
 // band that is there.
 TEST_CASE("UX-6b a root node's band carries its unread output and its GPU time",
-          "[devstudio][graph-canvas][scene][ux6b]") {
+          "[devstudio][graph-canvas][scene][ux6b][gb1]") {
     (void)application();
     GraphCanvasModel model;
     GraphCanvasScene scene;
     model.setConnected(true);
     const Json document{{"schema", "pelican.graph"}, {"version", 1},
-                        {"definitions", Json::object()}, {"outputs", Json::object()},
+                        {"definitions", {{"nested", {{"nodes", Json::array()}, {"outputs", Json::object()}}}}},
+                        {"outputs", Json::object()},
                         {"nodes", Json::array({{{"id", "blur"},
                                                 {"op", "render.fullscreen"},
                                                 {"parameters", Json::object()},
-                                                {"outputs", Json::array({"color"})}}})}};
+                                                {"outputs", Json::array({"color"})}},
+                                               {{"id", "nested"}, {"op", "graph.instance"},
+                                                {"definition", "nested"}}})}};
     answer(model, document);
     const Json plan{
         {"schema", "pelican.frame_plan"},
@@ -590,7 +593,12 @@ TEST_CASE("UX-6b a root node's band carries its unread output and its GPU time",
                                 {"source", "engine"}, {"reads", Json::array()},
                                 {"writes", Json::array({"blur__color"})},
                                 {"reads_history", Json::array()}, {"declaration_index", 0},
-                                {"origin", {{"graph", "passes/main.json"}, {"node", "blur"}}}}})},
+                                {"origin", {{"graph", "passes/main.json"}, {"node", "blur"}}}},
+                               {{"name", "present"}, {"kind", "render"}, {"order", 1}, {"level", 0},
+                                {"source", "engine"}, {"reads", Json::array({"blur__color"})},
+                                {"writes", Json::array()}, {"reads_history", Json::array()},
+                                {"declaration_index", 1},
+                                {"shader_resolution", {{"state", "material_owned"}}}}})},
         {"barriers", Json::array()},
         {"diagnostics", Json::array({{{"kind", "unread_output"},
                                       {"subject", "blur"},
@@ -607,9 +615,10 @@ TEST_CASE("UX-6b a root node's band carries its unread output and its GPU time",
         model.setDomainShown(domain, domain == "render");
     scene.setModel(&model);
     const auto band = [&]() -> QString {
-        const auto bands = itemsOfKind(scene, PelicanStudio::GraphCanvasLayerBandItem);
-        if (bands.size() != 1) return QStringLiteral("<%1 bands>").arg(bands.size());
-        return dynamic_cast<QGraphicsSimpleTextItem *>(bands.front())->text();
+        for (auto *item : itemsOfKind(scene, PelicanStudio::GraphCanvasLayerBandItem))
+            if (item->data(PelicanStudio::NodeGraphNameRole).toString() == QStringLiteral("blur"))
+                return dynamic_cast<QGraphicsSimpleTextItem *>(item)->text();
+        return {};
     };
     CHECK(band() == QStringLiteral("output unread"));
     const auto *node = nodeItem(scene, QStringLiteral("blur"));
@@ -618,7 +627,30 @@ TEST_CASE("UX-6b a root node's band carries its unread output and its GPU time",
     CHECK(band() == QStringLiteral("output unread \u00b7 0.02 ms"));
     // In place: the node is the one that was drawn.
     CHECK(nodeItem(scene, QStringLiteral("blur")) == node);
+    for (const auto *domain : {"canvas", "value"}) {
+        REQUIRE(model.setDomainShown(domain, true));
+        scene.repopulate();
+        CHECK(band() == QStringLiteral("output unread \u00b7 0.02 ms"));
+    }
+    REQUIRE(model.setDomainShown("render", false));
+    scene.repopulate();
+    CHECK(nodeItem(scene, QStringLiteral("blur")) == nullptr);
+    CHECK(band().isEmpty());
+    REQUIRE(model.setDomainShown("render", true));
+    scene.repopulate();
+    CHECK(band() == QStringLiteral("output unread \u00b7 0.02 ms"));
+    REQUIRE(model.enterInstance("nested"));
+    scene.repopulate();
+    CHECK_FALSE(model.planFactsShown());
+    CHECK(band().isEmpty());
+    model.leaveScope();
+    scene.repopulate();
+    CHECK(band() == QStringLiteral("output unread \u00b7 0.02 ms"));
+    REQUIRE(scene.enterFolded("present"));
+    CHECK(band().isEmpty());
     scene.setPlanNodeTimes({});
+    model.leaveFolded();
+    scene.repopulate();
     CHECK(band() == QStringLiteral("output unread"));
 }
 

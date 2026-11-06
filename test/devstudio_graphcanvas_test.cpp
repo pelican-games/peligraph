@@ -3480,7 +3480,7 @@ TEST_CASE("UX-15b a feature every pass of which a graph node replaced says so in
 // shader never reads are said on the node that made the pass -- the band's
 // words and one sentence each, once for all of a loop's copies.
 TEST_CASE("UX-6b unread outputs and unused bindings are said on the graph node that made the pass",
-          "[studio][graph-canvas][ux6b]") {
+          "[studio][graph-canvas][ux6b][gb1]") {
     using PelicanStudio::GraphCanvasPlanNote;
     Harness h;
     h.open(gl2bDocument());
@@ -3515,9 +3515,11 @@ TEST_CASE("UX-6b unread outputs and unused bindings are said on the graph node t
           }) == 2);
     // The GL-2b band is not changed by them; the canvas adds the words.
     CHECK(model.layerBand("tint") == "1 barrier \xC2\xB7 aliased");
-    // Two domains: no bands, no notes.
+    // Two domains: the domain-specific band is hidden, but render-plan notes stay.
     model.setDomainShown("value", true);
-    CHECK(model.planNotes("tint").empty());
+    CHECK(model.layerBand("tint").empty());
+    REQUIRE(model.planNotes("tint").size() == 1);
+    CHECK(model.planNotes("tint").front().band == "output unread");
 }
 
 // --- GL-1f (engine RS-4): a material pass, a shadow_depth and a

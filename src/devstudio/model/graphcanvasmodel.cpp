@@ -6936,6 +6936,10 @@ bool GraphCanvasModel::layersShown() const {
            domains_shown_.contains("render") && !plan_passes_.empty();
 }
 
+bool GraphCanvasModel::planFactsShown() const {
+    return currentScope().empty() && !folded_stash_ && domainShown("render") && !plan_passes_.empty();
+}
+
 const GraphCanvasDeactivatedNode *GraphCanvasModel::deactivatedNode(std::string_view node) const {
     const auto found = std::ranges::find(deactivated_nodes_, node, &GraphCanvasDeactivatedNode::node);
     return found == deactivated_nodes_.end() ? nullptr : &*found;
@@ -6986,7 +6990,7 @@ bool GraphCanvasModel::nodeNoteDiagnostic(const GraphCanvasPlanDiagnostic &diagn
 
 std::vector<GraphCanvasPlanNote> GraphCanvasModel::planNotes(std::string_view canvas_node) const {
     std::vector<GraphCanvasPlanNote> notes;
-    if (!layersShown()) return notes;
+    if (!planFactsShown()) return notes;
     const auto nodes = planNodesOf(canvas_node);
     for (const auto &diagnostic : plan_diagnostics_) {
         if (!nodeNoteDiagnostic(diagnostic) || !listed(nodes, diagnostic.subject)) continue;
