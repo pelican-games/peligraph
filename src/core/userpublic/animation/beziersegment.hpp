@@ -30,8 +30,9 @@ struct BezierSegmentSplit {
 namespace bezier_detail {
 
 inline double cubic(double p0, double p1, double p2, double p3, double u) {
-    const double v = 1.0 - u;
-    return v * v * v * p0 + 3.0 * v * v * u * p1 + 3.0 * v * u * u * p2 + u * u * u * p3;
+    const long double v = 1.0L - u;
+    return static_cast<double>(v * v * v * p0 + 3.0L * v * v * u * p1 +
+                               3.0L * v * u * u * p2 + u * u * u * p3);
 }
 
 inline double cubicDerivative(double p0, double p1, double p2, double p3, double u) {
@@ -43,7 +44,7 @@ inline double lerp(double a, double b, double u) { return a + (b - a) * u; }
 
 // Solve x(u) = s on [0, 1], where x is the normalised time coordinate of a
 // segment with control x values 0, x1, x2, 1. The bracket always contains the
-// root; Newton is used only when its candidate stays inside it.
+// root; bisection keeps every approximation inside that bracket.
 inline std::optional<double> solveNormalised(double x1, double x2, double s) {
     if (!std::isfinite(x1) || !std::isfinite(x2) || !std::isfinite(s)) return std::nullopt;
     if (s <= 0.0) return 0.0;
@@ -53,22 +54,12 @@ inline std::optional<double> solveNormalised(double x1, double x2, double s) {
         return 3.0L * v * v * u * static_cast<long double>(x1) +
                3.0L * v * u * u * static_cast<long double>(x2) + u * u * u;
     };
-    const auto slope_at = [=](long double u) {
-        const long double v = 1.0L - u;
-        return 3.0L * (v * v * x1 + 2.0L * v * u * (x2 - x1) + u * u * (1.0L - x2));
-    };
     long double lo = 0.0L;
     long double hi = 1.0L;
     const long double wanted = s;
     for (int iteration = 0; iteration < 64; ++iteration) {
-        if (hi - lo <= 1.0e-14L) break;
-        const long double midpoint = 0.5L * (lo + hi);
-        long double u = midpoint;
-        const long double slope = slope_at(midpoint);
-        if (slope > 0.0L && std::isfinite(slope)) {
-            const long double candidate = midpoint - (x_at(midpoint) - wanted) / slope;
-            if (candidate > lo && candidate < hi) u = candidate;
-        }
+        const long double u = 0.5L * (lo + hi);
+        if (u == lo || u == hi) break;
         const long double xu = x_at(u);
         if (xu < wanted) lo = u;
         else if (xu > wanted) hi = u;
@@ -111,14 +102,17 @@ inline std::array<double, 2> bezierSegmentPointAtU(
     if (!(b_time > a_time) || !std::isfinite(u)) return {a_time, a_value};
     if (u < 0.0) u = 0.0;
     if (u > 1.0) u = 1.0;
-    const double width = b_time - a_time;
+    const long double width = static_cast<long double>(b_time) - a_time;
     if (!std::isfinite(out_dt)) out_dt = 0.0;
     if (!std::isfinite(in_dt)) in_dt = 0.0;
     if (!std::isfinite(out_dv)) out_dv = 0.0;
     if (!std::isfinite(in_dv)) in_dv = 0.0;
-    out_dt = std::clamp(out_dt, 0.0, width);
-    in_dt = std::clamp(in_dt, -width, 0.0);
-    return {a_time + bezier_detail::cubic(0.0, out_dt, width + in_dt, width, u),
+    const long double out_x = std::clamp(static_cast<long double>(out_dt), 0.0L, width);
+    const long double in_x = std::clamp(static_cast<long double>(in_dt), -width, 0.0L);
+    const long double v = 1.0L - u;
+    const long double x = 3.0L * v * v * u * out_x +
+                          3.0L * v * u * u * (width + in_x) + u * u * u * width;
+    return {static_cast<double>(static_cast<long double>(a_time) + x),
             bezier_detail::cubic(a_value, a_value + out_dv, b_value + in_dv, b_value, u)};
 }
 
@@ -186,33 +180,43 @@ inline std::optional<BezierSegmentSplit> splitBezierSegment(
     const auto u = bezier_detail::solveNormalised(out_dt / width, 1.0 + in_dt / width, s);
     if (!u || !std::isfinite(*u)) return std::nullopt;
 
-    const std::array<double, 4> x{0.0, out_dt, width + in_dt, width};
-    const std::array<double, 4> y{a_value, a_value + out_dv, b_value + in_dv, b_value};
-    const double t = *u;
-    const std::array<double, 4> ax{bezier_detail::lerp(x[0], x[1], t),
-                                   bezier_detail::lerp(x[1], x[2], t),
-                                   bezier_detail::lerp(x[2], x[3], t)};
-    const std::array<double, 4> ay{bezier_detail::lerp(y[0], y[1], t),
-                                   bezier_detail::lerp(y[1], y[2], t),
-                                   bezier_detail::lerp(y[2], y[3], t)};
-    const std::array<double, 4> bx{bezier_detail::lerp(ax[0], ax[1], t),
-                                   bezier_detail::lerp(ax[1], ax[2], t)};
-    const std::array<double, 4> by{bezier_detail::lerp(ay[0], ay[1], t),
-                                   bezier_detail::lerp(ay[1], ay[2], t)};
-    const double middle_y = bezier_detail::lerp(by[0], by[1], t);
+    const std::array<long double, 4> x{0.0L, out_dt,
+                                       static_cast<long double>(width) + in_dt, width};
+    const std::array<long double, 4> y{a_value, static_cast<long double>(a_value) + out_dv,
+                                       static_cast<long double>(b_value) + in_dv, b_value};
+    const long double t = *u;
+    const auto interpolate = [t](long double a, long double b) {
+        return a + (b - a) * t;
+    };
+    const std::array<long double, 4> ax{interpolate(x[0], x[1]), interpolate(x[1], x[2]),
+                                        interpolate(x[2], x[3])};
+    const std::array<long double, 4> ay{interpolate(y[0], y[1]), interpolate(y[1], y[2]),
+                                        interpolate(y[2], y[3])};
+    const std::array<long double, 4> bx{interpolate(ax[0], ax[1]), interpolate(ax[1], ax[2])};
+    const std::array<long double, 4> by{interpolate(ay[0], ay[1]), interpolate(ay[1], ay[2])};
+    const long double middle_y = interpolate(by[0], by[1]);
 
     BezierSegmentSplit result;
     result.u = t;
     result.time = time;
-    result.value = middle_y;
+    result.value = static_cast<double>(middle_y);
     // The middle key's stored time is `time`; its sub-segments' endpoints have
     // to use that same x coordinate, not the solver's last bit.
-    result.a_out_handle = {std::clamp(ax[0], 0.0, width_left), ay[0] - a_value};
-    result.middle_in_handle = {std::clamp(bx[0] - width_left, -width_left, 0.0),
-                               by[0] - middle_y};
-    result.middle_out_handle = {std::clamp(bx[1] - width_left, 0.0, width_right),
-                                by[1] - middle_y};
-    result.b_in_handle = {std::clamp(ax[2] - width, -width_right, 0.0), ay[2] - b_value};
+    result.a_out_handle = {static_cast<double>(std::clamp(ax[0], 0.0L,
+                                                          static_cast<long double>(width_left))),
+                           static_cast<double>(ay[0] - a_value)};
+    result.middle_in_handle = {
+        static_cast<double>(std::clamp(bx[0] - width_left,
+                                       -static_cast<long double>(width_left), 0.0L)),
+        static_cast<double>(by[0] - middle_y)};
+    result.middle_out_handle = {
+        static_cast<double>(std::clamp(bx[1] - width_left, 0.0L,
+                                       static_cast<long double>(width_right))),
+        static_cast<double>(by[1] - middle_y)};
+    result.b_in_handle = {
+        static_cast<double>(std::clamp(ax[2] - width,
+                                       -static_cast<long double>(width_right), 0.0L)),
+        static_cast<double>(ay[2] - b_value)};
     if (!std::isfinite(result.value) || !std::isfinite(result.u) ||
         !std::isfinite(result.a_out_handle[0]) || !std::isfinite(result.a_out_handle[1]) ||
         !std::isfinite(result.middle_in_handle[0]) || !std::isfinite(result.middle_in_handle[1]) ||

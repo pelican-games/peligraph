@@ -431,6 +431,8 @@ if(TARGET pelican_studio_inspector_model)
   # GF-1a: graph_filters.json read strictly and evaluated, without Qt.
   pelican_define_test(devstudio_graph_filters_test pelican_studio_inspector_model)
   pelican_define_test(devstudio_graph_filters_edit_test pelican_studio_inspector_model)
+  target_sources(pelican_test_devstudio_graph_filters_test PRIVATE
+    devstudio_read_fuzz_test.cpp)
   # RU-1: the render edit history over a list of what was sent -- no Qt, no
   # engine; the test answers each request as the engine does.
   pelican_define_test(devstudio_render_history_test pelican_studio_inspector_model)
@@ -1969,6 +1971,7 @@ else()
 pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
+pelican_define_test(read_fuzz_test GROUP core_foundation pelican_core)
 # OSC-1a: declared live inputs, the frame freeze, and graph read validation.
 pelican_define_test(liveinputs_test pelican_core)
 if(PELICAN_WITH_OSC)
