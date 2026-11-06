@@ -90,13 +90,14 @@ void outputSpoutSwapRedBlue(std::uint8_t *pixels, std::size_t bytes);
 // has found it never will. A new sender with the same name waits on this.
 class OutputSpoutRelease {
   public:
+    OutputSpoutRelease();
     void acknowledge();
     void wait() const;
     bool done() const;
 
   private:
     struct State;
-    std::shared_ptr<State> state_ = std::make_shared<State>();
+    std::shared_ptr<State> state_;
 };
 
 struct OutputSpoutStatus {

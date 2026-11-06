@@ -153,6 +153,7 @@ struct OutputSpoutRelease::State {
     mutable std::condition_variable cv;
     bool done = false;
 };
+OutputSpoutRelease::OutputSpoutRelease() : state_(std::make_shared<State>()) {}
 void OutputSpoutRelease::acknowledge() {
     {
         std::lock_guard lock{state_->mutex};
