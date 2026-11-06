@@ -460,6 +460,10 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .default_value(std::string{})
         .metavar("dir")
         .help("existing directory for output.file sinks (default: sinks inactive)");
+    program.add_argument("--ffmpeg")
+        .default_value(std::string{})
+        .metavar("path")
+        .help("external ffmpeg executable for output.video (default: search PATH)");
     program.add_argument("--output-max-frames")
         .default_value(std::string{"1000"})
         .metavar("n")
@@ -715,6 +719,8 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         if (!render_out.empty()) {
             config.render_out = std::filesystem::path{render_out};
         }
+        const auto ffmpeg = program.get<std::string>("--ffmpeg");
+        if (!ffmpeg.empty()) config.ffmpeg = std::filesystem::path{ffmpeg};
         config.output_max_frames = parseOutputFrameLimit(
             program.get<std::string>("--output-max-frames"));
         config.output_max_bytes = parsePositiveUint64(

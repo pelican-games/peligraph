@@ -2,14 +2,17 @@
 
 #include "../launchconfig.hpp"
 #include "../log.hpp"
+#include "../appflow/enginetime.hpp"
 #include "../vkcore/buf.hpp"
 #include "../vkcore/core.hpp"
 #include "../vkcore/renderer.hpp"
 #include "../watch/problemlist.hpp"
 #include "outputslotqueue.hpp"
+#include "outputvideo.hpp"
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstring>
 #include <deque>
@@ -29,6 +32,27 @@ bool sameIdentity(const OutputSinks::State &state, const OutputSinkSpec &sink) {
     return state.name == sink.name && state.kind == sink.kind &&
            state.graph == sink.graph && state.target == sink.target;
 }
+bool rateMatches(double rate, std::uint64_t num, std::uint64_t den) {
+    if (rate <= 0.0 || !std::isfinite(rate)) return false;
+    std::uint64_t previous_num = 0, current_num = 1;
+    std::uint64_t previous_den = 1, current_den = 0;
+    double remainder = rate;
+    for (int step = 0; step < 32; ++step) {
+        const auto coefficient = static_cast<std::uint64_t>(std::floor(remainder));
+        const auto next_num = coefficient * current_num + previous_num;
+        const auto next_den = coefficient * current_den + previous_den;
+        if (next_den == 0 || next_den > (std::numeric_limits<std::uint32_t>::max)())
+            return false;
+        previous_num = current_num; current_num = next_num;
+        previous_den = current_den; current_den = next_den;
+        if (current_num * den == current_den * num) return true;
+        const auto fraction = remainder - std::floor(remainder);
+        if (fraction <= 0.0) break;
+        remainder = 1.0 / fraction;
+    }
+    return false;
+}
+
 std::string problemCode(std::string_view error, std::string_view fallback) {
     const auto colon = error.find(':');
     auto code = error.substr(0, colon);
@@ -92,6 +116,7 @@ struct OutputSinks::Impl {
         OutputSinkSpec spec;
         std::shared_ptr<State> state;
         std::shared_ptr<Pool> pool;
+        std::shared_ptr<OutputVideoWriter> video;
         std::uint64_t generation = 0;
     };
     struct SlotResource {
@@ -122,6 +147,7 @@ struct OutputSinks::Impl {
         bool discard = false;
         bool wait_for_fence = false;
         bool submitted = false;
+        std::shared_ptr<OutputVideoFrame> video_frame;
     };
 
     struct CaptureTiming {
@@ -139,6 +165,7 @@ struct OutputSinks::Impl {
     std::shared_ptr<const OutputSinkTable> table;
     std::vector<std::shared_ptr<Runtime>> current;
     std::vector<std::shared_ptr<Pool>> retired;
+    std::vector<std::shared_ptr<OutputVideoWriter>> retired_videos;
     std::deque<Work> work;
     std::thread worker;
     bool active = false;
@@ -161,8 +188,27 @@ struct OutputSinks::Impl {
     std::optional<Clock::time_point> resume_at;
     std::vector<CaptureTiming> capture_timings;
     std::uint64_t maximum_queue_depth = 0;
+    std::optional<std::filesystem::path> ffmpeg;
+    bool headless = false;
+    double fps = 60.0;
 
     void syncCounters(const std::shared_ptr<Runtime> &runtime) {
+        if (runtime->video) {
+            const auto video = runtime->video->status();
+            runtime->state->state = video.state;
+            runtime->state->stop_reason = video.stop_reason;
+            runtime->state->stop_value = video.stop_value;
+            runtime->state->last_error = video.last_error;
+            runtime->state->frames_written = video.frames_written;
+            runtime->state->frames_repeated = video.frames_repeated;
+            runtime->state->frames_dropped = video.frames_dropped;
+            runtime->state->frames_discarded = video.frames_discarded;
+            runtime->state->queue_depth = video.queue_depth;
+            runtime->state->encoder_pid = video.encoder_pid;
+            runtime->state->encoder_state = video.encoder_state;
+            runtime->state->final_bytes = video.final_bytes;
+            return;
+        }
         runtime->state->frames_dropped = runtime->pool->queue.framesDropped();
         runtime->state->frames_discarded = runtime->pool->queue.framesDiscarded();
         runtime->state->queue_depth = runtime->pool->queue.queueDepth();
@@ -194,6 +240,9 @@ OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
         config != nullptr) {
         impl_->max_frames = config->output_max_frames;
         impl_->max_bytes = config->output_max_bytes;
+        impl_->ffmpeg = config->ffmpeg;
+        impl_->headless = config->headless;
+        impl_->fps = config->fps;
         if (config->output_dir) {
             impl_->active = true;
             impl_->directory = *config->output_dir;
@@ -229,6 +278,15 @@ OutputSinks::~OutputSinks() {
         }
     }
     if (impl_->worker.joinable()) impl_->worker.join();
+    std::vector<std::shared_ptr<OutputVideoWriter>> videos;
+    {
+        std::lock_guard lock{impl_->mutex};
+        for (const auto &runtime : impl_->current)
+            if (runtime->video) videos.push_back(runtime->video);
+        videos.insert(videos.end(), impl_->retired_videos.begin(),
+                      impl_->retired_videos.end());
+    }
+    for (const auto &video : videos) video->requestStop();
 }
 
 void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
@@ -239,7 +297,7 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
         ++impl_->generation;
         installed_generation = impl_->generation;
         for (auto &entry : impl_->work) {
-            if (entry.generation == impl_->generation) continue;
+            if (entry.generation == impl_->generation || entry.video_frame) continue;
             const auto *queued = entry.pool->queue.entry(entry.slot);
             if (queued == nullptr ||
                 entry.pool->queue.state(entry.slot) != OutputSlotState::sending) {
@@ -264,24 +322,47 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
                 state->target = sink.target;
                 state->format = sink.format;
                 state->when_full = sink.when_full;
+                state->mode = sink.mode;
                 runtime->state = state;
                 runtime->pool = std::make_shared<Impl::Pool>();
                 for (const auto &old : previous) {
                     if (!sameIdentity(*old->state, sink)) continue;
+                    if (sink.kind == "video" && old->spec != sink) continue;
                     runtime->state = old->state;
                     runtime->pool = old->pool;
                     runtime->pool->retired = false;
+                    runtime->video = old->video;
                     state = old->state;
                     state->format = sink.format;
                     state->when_full = sink.when_full;
+                    state->mode = sink.mode;
                     state->stop_reason = "none";
                     state->stop_value = 0;
                     state->last_error.clear();
                     break;
                 }
+                if (sink.kind == "video" && impl_->active && !runtime->video) {
+                    runtime->video = std::make_shared<OutputVideoWriter>(sink.name,
+                        impl_->directory, impl_->ffmpeg, sink.fps_num, sink.fps_den,
+                        sink.mode == "live",
+                        impl_->headless && rateMatches(impl_->fps, sink.fps_num,
+                                                       sink.fps_den),
+                        impl_->max_frames, impl_->max_bytes);
+                }
                 impl_->current.push_back(runtime);
             }
         }
+        for (const auto &old : previous) {
+            if (!old->video) continue;
+            const auto reused = std::any_of(impl_->current.begin(), impl_->current.end(),
+                [&](const auto &runtime) { return runtime->video == old->video; });
+            if (!reused) {
+                old->video->requestStop();
+                impl_->retired_videos.push_back(old->video);
+            }
+        }
+        std::erase_if(impl_->retired_videos,
+                      [](const auto &video) { return video->finished(); });
         std::vector<std::shared_ptr<State>> states;
         for (auto &runtime : impl_->current) {
             auto &state = *runtime->state;
@@ -469,7 +550,7 @@ void OutputSinks::Impl::process(Work entry) {
         pixels.resize(static_cast<std::size_t>(bytes));
         std::memcpy(pixels.data(), info.pMappedData, pixels.size());
         std::unique_lock lock{mutex};
-        if (max_bytes != 0) {
+        if (!entry.video_frame && max_bytes != 0) {
             if (bytes_written >= max_bytes) {
                 lock.unlock();
                 finishSlot(entry, false, 0,
@@ -479,6 +560,15 @@ void OutputSinks::Impl::process(Work entry) {
             }
             budget = max_bytes - bytes_written;
         }
+    }
+    if (entry.video_frame) {
+        if (ready && !entry.discard && !device_error && error.empty()) {
+            entry.runtime->video->complete(entry.video_frame, std::move(pixels));
+        } else {
+            entry.runtime->video->cancel(entry.video_frame);
+        }
+        finishSlot(entry, false, 0, std::move(error), false, device_error);
+        return;
     }
     if ((!entry.discard && !device_error) && (ready || !error.empty())) {
         if (ready) {
@@ -564,11 +654,17 @@ void OutputSinks::Impl::run() {
         try {
             process(*selected);
         } catch (const vk::DeviceLostError &) {
+            if (selected->video_frame)
+                selected->runtime->video->cancel(selected->video_frame);
             finishSlot(*selected, false, 0, {}, false, true);
         } catch (const std::exception &e) {
+            if (selected->video_frame)
+                selected->runtime->video->cancel(selected->video_frame);
             finishSlot(*selected, false, 0,
                 std::string{"output.write_failed@1: "} + e.what(), false, false);
         } catch (...) {
+            if (selected->video_frame)
+                selected->runtime->video->cancel(selected->video_frame);
             finishSlot(*selected, false, 0,
                 "output.write_failed@1: unknown output worker error", false, false);
         }
@@ -637,6 +733,27 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             continue;
         }
         const auto drop = runtime->spec.when_full == "drop";
+        std::shared_ptr<OutputVideoFrame> video_frame;
+        if (runtime->video) {
+            const auto &time = GET_MODULE(EngineTime);
+            video_frame = runtime->video->reserve({
+                .capture = frame,
+                .monotonic_nanoseconds = std::chrono::duration_cast<
+                    std::chrono::nanoseconds>(capture_begin.time_since_epoch()).count(),
+                .time_revision = time.timeSetRevision(),
+                .playing = time.playState() == EngineTime::PlayState::playing,
+                .width = read.extent.width,
+                .height = read.extent.height,
+                .bgra = read.format == vk::Format::eB8G8R8A8Unorm ||
+                        read.format == vk::Format::eB8G8R8A8Srgb,
+            }, !drop);
+            if (!video_frame) {
+                std::lock_guard lock{impl_->mutex};
+                impl_->syncCounters(runtime);
+                impl_->noteProblem(*runtime);
+                continue;
+            }
+        }
         OutputCaptureChoice choice = OutputCaptureChoice::full;
         std::size_t slot = 0;
         const auto selection_begin = Clock::now();
@@ -645,7 +762,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             while (true) {
                 if (runtime->generation != impl_->generation ||
                     impl_->stopping || runtime->state->state != "running") break;
-                if (impl_->max_frames != 0 &&
+                if (!runtime->video && impl_->max_frames != 0 &&
                     runtime->state->frames_written + runtime->pool->queue.size() >=
                         impl_->max_frames) break;
                 if (runtime->pool->queue.queueDepth() == output_slot_count) {
@@ -675,7 +792,11 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                                 return queued.pool == runtime->pool &&
                                        queued.slot == candidate;
                             });
-                        if (found != impl_->work.end()) impl_->work.erase(found);
+                        if (found != impl_->work.end()) {
+                            if (found->video_frame)
+                                found->runtime->video->cancel(found->video_frame);
+                            impl_->work.erase(found);
+                        }
                         impl_->syncCounters(runtime);
                         impl_->free_cv.notify_all();
                     }
@@ -716,6 +837,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                 choice = selected.choice;
                 if (selected.slot) slot = *selected.slot;
                 if (choice == OutputCaptureChoice::dropped_new) {
+                    if (video_frame) runtime->video->cancel(video_frame);
                     impl_->syncCounters(runtime);
                     break;
                 }
@@ -725,7 +847,11 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                         impl_->work.end(), [&](const Impl::Work &entry) {
                             return entry.pool == runtime->pool && entry.slot == slot;
                         });
-                    if (found != impl_->work.end()) impl_->work.erase(found);
+                    if (found != impl_->work.end()) {
+                        if (found->video_frame)
+                            found->runtime->video->cancel(found->video_frame);
+                        impl_->work.erase(found);
+                    }
                     runtime->pool->resources[slot]->source_lease.reset();
                 }
                 auto &resource = runtime->pool->resources[slot];
@@ -741,13 +867,18 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                 impl_->work.push_back({runtime, runtime->pool, slot, frame,
                     capture_generation, read.extent, read.format,
                     runtime->spec.format == "png" ? OutputFileEncoding::png
-                                                 : OutputFileEncoding::raw});
+                                                 : OutputFileEncoding::raw,
+                    false, false, false, video_frame});
                 impl_->syncCounters(runtime);
                 break;
             }
+            if (choice == OutputCaptureChoice::full && video_frame)
+                runtime->video->cancel(video_frame);
         } catch (const vk::DeviceLostError &) {
+            if (video_frame) runtime->video->cancel(video_frame);
             throw;
         } catch (const std::exception &e) {
+            if (video_frame) runtime->video->cancel(video_frame);
             std::lock_guard lock{impl_->mutex};
             runtime->state->state = "refused";
             runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
@@ -767,9 +898,22 @@ void OutputSinks::captureFrame(Renderer &renderer) {
         };
         if (choice == OutputCaptureChoice::dropped_new ||
             choice == OutputCaptureChoice::full) {
+            if (video_frame && choice == OutputCaptureChoice::full)
+                runtime->video->cancel(video_frame);
             record_timing();
             continue;
         }
+        const auto cancel_work = [&] {
+            const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
+                [&](const Impl::Work &entry) {
+                    return entry.pool == runtime->pool && entry.slot == slot;
+                });
+            if (found != impl_->work.end()) {
+                if (found->video_frame)
+                    found->runtime->video->cancel(found->video_frame);
+                impl_->work.erase(found);
+            }
+        };
         auto &resource = *runtime->pool->resources[slot];
         const auto record_begin = Clock::now();
         try {
@@ -781,13 +925,12 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                 std::lock_guard lock{impl_->mutex};
                 runtime->pool->queue.cancel(slot);
                 resource.source_lease.reset();
-                const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
-                    [&](const Impl::Work &entry) {
-                        return entry.pool == runtime->pool && entry.slot == slot;
-                    });
-                if (found != impl_->work.end()) impl_->work.erase(found);
-                runtime->state->state = "refused";
-                runtime->state->last_error = submitted.error;
+                cancel_work();
+                if (runtime->video) runtime->video->abort(submitted.error);
+                else {
+                    runtime->state->state = "refused";
+                    runtime->state->last_error = submitted.error;
+                }
                 impl_->noteProblem(*runtime);
                 impl_->syncCounters(runtime);
                 impl_->free_cv.notify_all();
@@ -804,11 +947,9 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             std::lock_guard lock{impl_->mutex};
             runtime->pool->queue.cancel(slot);
             resource.source_lease.reset();
-            const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
-                [&](const Impl::Work &entry) {
-                    return entry.pool == runtime->pool && entry.slot == slot;
-                });
-            if (found != impl_->work.end()) impl_->work.erase(found);
+            cancel_work();
+            if (runtime->video)
+                runtime->video->abort("output.video_encoder_failed@1: device lost");
             impl_->device_lost = true;
             impl_->syncCounters(runtime);
             impl_->work_cv.notify_all();
@@ -818,13 +959,13 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             std::lock_guard lock{impl_->mutex};
             runtime->pool->queue.cancel(slot);
             resource.source_lease.reset();
-            const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
-                [&](const Impl::Work &entry) {
-                    return entry.pool == runtime->pool && entry.slot == slot;
-                });
-            if (found != impl_->work.end()) impl_->work.erase(found);
-            runtime->state->state = "refused";
-            runtime->state->last_error = std::string{"output.read_failed@1: "} + e.what();
+            cancel_work();
+            const auto error = std::string{"output.read_failed@1: "} + e.what();
+            if (runtime->video) runtime->video->abort(error);
+            else {
+                runtime->state->state = "refused";
+                runtime->state->last_error = error;
+            }
             impl_->noteProblem(*runtime);
             impl_->syncCounters(runtime);
             impl_->free_cv.notify_all();
@@ -861,6 +1002,14 @@ nlohmann::json OutputSinks::status() const {
                    impl_->paused || impl_->stopping;
         });
     }
+    for (const auto &runtime : impl_->current) {
+        const auto previous = runtime->state->state + runtime->state->last_error +
+                              runtime->state->stop_reason;
+        impl_->syncCounters(runtime);
+        const auto now = runtime->state->state + runtime->state->last_error +
+                         runtime->state->stop_reason;
+        if (previous != now) impl_->noteProblem(*runtime);
+    }
     std::vector<nlohmann::json> problems;
     std::uint64_t generation = impl_->generation;
     std::uint64_t revision = impl_->problems_revision;
@@ -881,16 +1030,25 @@ nlohmann::json OutputSinks::status() const {
     nlohmann::json sinks = nlohmann::json::array();
     for (const auto &runtime : impl_->current) {
         const auto &state = *runtime->state;
-        sinks.push_back({{"name", state.name}, {"kind", state.kind},
+        auto item = nlohmann::json{{"name", state.name}, {"kind", state.kind},
             {"format", state.format}, {"when_full", state.when_full},
             {"state", state.state}, {"stop_reason", state.stop_reason},
             {"stop_value", state.stop_value},
             {"frames_written", state.frames_written},
             {"last_error", state.last_error},
-            {"queue_depth", runtime->pool->queue.queueDepth()},
-            {"frames_dropped", runtime->pool->queue.framesDropped()},
-            {"frames_discarded", runtime->pool->queue.framesDiscarded()},
-            {"render_wait_ms", state.render_wait_ms}});
+            {"queue_depth", runtime->video ? state.queue_depth
+                                          : runtime->pool->queue.queueDepth()},
+            {"frames_dropped", state.frames_dropped},
+            {"frames_discarded", state.frames_discarded},
+            {"render_wait_ms", state.render_wait_ms}};
+        if (runtime->video) {
+            item["mode"] = state.mode;
+            item["frames_repeated"] = state.frames_repeated;
+            item["encoder_pid"] = state.encoder_pid;
+            item["encoder_state"] = state.encoder_state;
+            item["final_bytes"] = state.final_bytes;
+        }
+        sinks.push_back(std::move(item));
     }
     return {{"active", impl_->active}, {"sinks", std::move(sinks)},
         {"frames_skipped_inactive", impl_->frames_skipped_inactive},

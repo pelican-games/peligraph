@@ -4135,6 +4135,12 @@ if(PELICAN_WITH_VIDEO_OUTPUT)
     pelican_define_test(output_lowering_test pelican_project pelican_core)
     target_link_libraries(pelican_test_output_lowering_test PRIVATE stb)
     pelican_define_test(output_slot_queue_test pelican_core)
+    pelican_define_test(vo7_video_test pelican_core)
+    add_executable(pelican_fake_ffmpeg fake_ffmpeg.cpp)
+    set_target_properties(pelican_fake_ffmpeg PROPERTIES CXX_STANDARD 20)
+    target_compile_definitions(pelican_test_vo7_video_test PRIVATE
+        PELICAN_FAKE_FFMPEG="$<TARGET_FILE:pelican_fake_ffmpeg>")
+    add_dependencies(pelican_test_vo7_video_test pelican_fake_ffmpeg)
 endif()
 
 if(PELICAN_WITH_CANVAS)
@@ -4447,9 +4453,10 @@ if(PELICAN_WITH_RPC AND PELICAN_WITH_VIDEO_OUTPUT)
     # VO-1a: output.file through a real headless --rpc player.
     pelican_define_test(vo1a_output_runtime_test GPU pelican_project pelican_core)
     target_compile_definitions(pelican_test_vo1a_output_runtime_test PRIVATE
-        PELICAN_VO1A_PLAYER="$<TARGET_FILE:pelican_player>")
+        PELICAN_VO1A_PLAYER="$<TARGET_FILE:pelican_player>"
+        PELICAN_FAKE_FFMPEG="$<TARGET_FILE:pelican_fake_ffmpeg>")
     target_link_libraries(pelican_test_vo1a_output_runtime_test PRIVATE stb)
-    add_dependencies(pelican_test_vo1a_output_runtime_test pelican_player)
+    add_dependencies(pelican_test_vo1a_output_runtime_test pelican_player pelican_fake_ffmpeg)
 endif()
 
 add_test(

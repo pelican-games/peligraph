@@ -22,12 +22,20 @@ void registerOutputGraphModule(GraphModuleRegistry &registry) {
                               {"enabled", GraphParameterChange::rebuild},
                               {"format", GraphParameterChange::rebuild},
                               {"when_full", GraphParameterChange::rebuild}};
+    GraphOperationContract video = file;
+    video.parameter_changes = {{"name", GraphParameterChange::rebuild},
+                               {"enabled", GraphParameterChange::rebuild},
+                               {"fps_num", GraphParameterChange::rebuild},
+                               {"fps_den", GraphParameterChange::rebuild},
+                               {"codec", GraphParameterChange::rebuild},
+                               {"mode", GraphParameterChange::rebuild}};
     registry.registerModule(GraphModuleManifest{
         "pelican.output", 1,
-        "Removable render-target sinks that write raw or PNG frames while the engine runs.",
+        "Removable render-target sinks that write image or video frames while the engine runs.",
         {},
-        {{"output.file", GraphOperationRegistration{file, {}}}},
-        {"output.file"}});
+        {{"output.file", GraphOperationRegistration{file, {}}},
+         {"output.video", GraphOperationRegistration{video, {}}}},
+        {"output.file", "output.video"}});
 }
 
 } // namespace Pelican

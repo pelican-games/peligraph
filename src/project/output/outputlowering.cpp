@@ -194,6 +194,11 @@ struct ParsedSink {
     bool enabled = true;
     std::string format = "raw";
     std::string when_full = "wait";
+    std::string mode = "offline";
+    std::string codec = "h264";
+    std::uint64_t fps_num = 0;
+    std::uint64_t fps_den = 0;
+    bool video = false;
     SourceTarget source;
     std::string source_node;
     std::string source_port;
@@ -217,8 +222,10 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         if (!id.empty()) nodes.emplace(id, &node);
     }
     for (const auto &node : *root) {
-        if (stringAt(node, "op") != "output.file") continue;
+        const auto operation = stringAt(node, "op");
+        if (operation != "output.file" && operation != "output.video") continue;
         ParsedSink sink;
+        sink.video = operation == "output.video";
         sink.node = &node;
         sink.id = stringAt(node, "id");
         const auto parameters = node.find("parameters");
@@ -226,15 +233,20 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
                                  ? emptyObject()
                                  : *parameters;
         const auto invalid = [&](std::string_view key, std::string_view reason) {
-            throw GraphRegistryError("output.parameter_invalid@1",
+            throw GraphRegistryError(sink.video ? "output.video_parameter_invalid@1"
+                                                : "output.parameter_invalid@1",
                                      {{"node", sink.id},
                                       {"parameter", std::string{key}},
                                       {"reason", std::string{reason}}});
         };
         for (const auto &[key, value] : values.items()) {
             (void)value;
-            if (key != "name" && key != "every_n" && key != "enabled" &&
-                key != "format" && key != "when_full")
+            const bool common = key == "name" || key == "enabled";
+            const bool file_parameter = key == "every_n" || key == "format" ||
+                                        key == "when_full";
+            const bool video_parameter = key == "fps_num" || key == "fps_den" ||
+                                         key == "codec" || key == "mode";
+            if (!common && (sink.video ? !video_parameter : !file_parameter))
                 invalid(key, "unknown_parameter");
         }
         sink.name = stringAt(values, "name");
@@ -290,6 +302,40 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
                     {{"node", sink.id}, {"when_full", *when_full}});
             }
             sink.when_full = when_full->get<std::string>();
+        }
+        if (sink.video) {
+            const auto positiveInteger = [&](std::string_view key) {
+                const auto found = values.find(std::string{key});
+                if (found == values.end() ||
+                    (!found->is_number_integer() && !found->is_number_unsigned()))
+                    invalid(key, "required_positive_integer");
+                std::uint64_t value = 0;
+                if (found->is_number_unsigned()) {
+                    value = found->get<std::uint64_t>();
+                } else {
+                    const auto signed_value = found->get<std::int64_t>();
+                    if (signed_value < 1) invalid(key, "required_positive_integer");
+                    value = static_cast<std::uint64_t>(signed_value);
+                }
+                if (value == 0 || value > (std::numeric_limits<std::uint32_t>::max)())
+                    invalid(key, "required_positive_integer");
+                return value;
+            };
+            sink.fps_num = positiveInteger("fps_num");
+            sink.fps_den = positiveInteger("fps_den");
+            if (const auto codec = values.find("codec"); codec != values.end()) {
+                if (!codec->is_string() || codec->get<std::string>() != "h264")
+                    invalid("codec", "unknown_codec");
+                sink.codec = codec->get<std::string>();
+            }
+            if (const auto mode = values.find("mode"); mode != values.end()) {
+                if (!mode->is_string() ||
+                    (mode->get<std::string>() != "live" &&
+                     mode->get<std::string>() != "offline"))
+                    invalid("mode", "unknown_mode");
+                sink.mode = mode->get<std::string>();
+            }
+            sink.when_full = sink.mode == "live" ? "drop" : "wait";
         }
         parsed.push_back(std::move(sink));
     }
@@ -415,24 +461,35 @@ OutputLoweringResult lowerOutputNodes(const nlohmann::json &document) {
         if (!sink.enabled) continue;
         OutputSinkSpec spec;
         spec.name = sink.name;
-        spec.kind = "file";
+        spec.kind = sink.video ? "video" : "file";
         spec.every_n = sink.every_n;
         spec.enabled = true;
         spec.format = sink.format;
         spec.when_full = sink.when_full;
+        spec.mode = sink.mode;
+        spec.codec = sink.codec;
+        spec.fps_num = sink.fps_num;
+        spec.fps_den = sink.fps_den;
         spec.graph = sink.source.graph;
         spec.target = sink.source.target;
         spec.source_node = sink.source_node;
         spec.source_port = sink.source_port;
         result.sinks.sinks.push_back(std::move(spec));
         addRetain(result.document, sink.source.graph, sink.source.target);
-        result.report["sinks"].push_back(
-            {{"name", sink.name},
-             {"kind", "file"},
-             {"every_n", sink.every_n},
-             {"format", sink.format},
-             {"graph", sink.source.graph},
-             {"target", sink.source.target}});
+        Json report{{"name", sink.name},
+                    {"kind", sink.video ? "video" : "file"},
+                    {"graph", sink.source.graph},
+                    {"target", sink.source.target}};
+        if (sink.video) {
+            report["fps_num"] = sink.fps_num;
+            report["fps_den"] = sink.fps_den;
+            report["codec"] = sink.codec;
+            report["mode"] = sink.mode;
+        } else {
+            report["every_n"] = sink.every_n;
+            report["format"] = sink.format;
+        }
+        result.report["sinks"].push_back(std::move(report));
     }
     return result;
 }

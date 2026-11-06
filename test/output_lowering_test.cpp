@@ -904,3 +904,57 @@ TEST_CASE("VO-1b a refused sink's code is the runtime's own code",
     CHECK(problems.at(0).at("message") ==
           "output.format_unsupported@1: VK_FORMAT_R16G16B16A16_SFLOAT");
 }
+
+TEST_CASE("VO-7 output.video lowers defaults and rational live rates",
+          "[vo7][output-lowering]") {
+    auto graph = document(Json{{"name", "movie"}, {"fps_num", 60000},
+                               {"fps_den", 1001}});
+    node(graph, "sink").at("op") = "output.video";
+    const auto lowered = Pelican::lowerOutputNodes(graph);
+    REQUIRE(lowered.sinks.sinks.size() == 1);
+    const auto &sink = lowered.sinks.sinks.front();
+    CHECK(sink.kind == "video");
+    CHECK(sink.fps_num == 60000);
+    CHECK(sink.fps_den == 1001);
+    CHECK(sink.codec == "h264");
+    CHECK(sink.mode == "offline");
+    CHECK(sink.when_full == "wait");
+    const auto &report = lowered.report.at("sinks").front();
+    CHECK(report.at("kind") == "video");
+    CHECK(report.at("fps_num") == 60000);
+    CHECK(report.at("fps_den") == 1001);
+    CHECK(report.at("mode") == "offline");
+    CHECK(Pelican::builtinGraphModuleRegistry().isSink("output.video"));
+
+    auto live_graph = document(Json{{"name", "live"}, {"fps_num", 30},
+        {"fps_den", 1}, {"mode", "live"}, {"codec", "h264"}});
+    node(live_graph, "sink").at("op") = "output.video";
+    const auto live = Pelican::lowerOutputNodes(live_graph);
+    CHECK(live.sinks.sinks.front().when_full == "drop");
+    CHECK(live.sinks.sinks.front().mode == "live");
+}
+
+TEST_CASE("VO-7 invalid video parameters refuse with the video code",
+          "[vo7][output-lowering]") {
+    const auto invalid = [](Json parameters) {
+        auto graph = document(std::move(parameters));
+        node(graph, "sink").at("op") = "output.video";
+        return refusal(graph);
+    };
+    CHECK(invalid(Json{{"name", "movie"}, {"fps_den", 1}}) ==
+          "output.video_parameter_invalid@1");
+    CHECK(invalid(Json{{"name", "movie"}, {"fps_num", 30}}) ==
+          "output.video_parameter_invalid@1");
+    for (const auto &value : {Json{0}, Json{-1}, Json{30.5}}) {
+        CHECK(invalid(Json{{"name", "movie"}, {"fps_num", value}, {"fps_den", 1}}) ==
+              "output.video_parameter_invalid@1");
+    }
+    CHECK(invalid(Json{{"name", "movie"}, {"fps_num", 4294967296ULL},
+                       {"fps_den", 1}}) == "output.video_parameter_invalid@1");
+    CHECK(invalid(Json{{"name", "movie"}, {"fps_num", 30}, {"fps_den", 1},
+                       {"codec", "vp9"}}) == "output.video_parameter_invalid@1");
+    CHECK(invalid(Json{{"name", "movie"}, {"fps_num", 30}, {"fps_den", 1},
+                       {"mode", "automatic"}}) == "output.video_parameter_invalid@1");
+    CHECK(invalid(Json{{"name", "movie"}, {"fps_num", 30}, {"fps_den", 1},
+                       {"every_n", 2}}) == "output.video_parameter_invalid@1");
+}

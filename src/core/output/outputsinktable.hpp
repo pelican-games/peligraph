@@ -21,6 +21,10 @@ struct OutputSinkSpec {
     // VO-2: "wait" preserves every frame and is the file sink's default;
     // "drop" bounds render-thread latency when all four slots are busy.
     std::string when_full = "wait";
+    std::string mode = "offline";
+    std::string codec = "h264";
+    std::uint64_t fps_num = 0;
+    std::uint64_t fps_den = 0;
     std::string graph;
     std::string target;
     std::string source_node;

@@ -34,6 +34,11 @@ DECLARE_MODULE(OutputSinks) {
         std::string last_error;
         std::uint64_t frames_dropped = 0;
         std::uint64_t frames_discarded = 0;
+        std::string mode = "offline";
+        std::uint64_t frames_repeated = 0;
+        std::uint64_t encoder_pid = 0;
+        std::string encoder_state = "not_started";
+        std::uint64_t final_bytes = 0;
         std::uint64_t queue_depth = 0;
         double render_wait_ms = 0.0;
     };

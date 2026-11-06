@@ -216,6 +216,17 @@ Json sinkNode(std::string name, std::string source = "fill",
     return node;
 }
 
+Json videoSink(std::string name, std::string mode = "offline") {
+    return {{"id", "sink"},
+            {"op", "output.video"},
+            {"parameters",
+             {{"name", std::move(name)}, {"fps_num", 60},
+              {"fps_den", 1}, {"mode", std::move(mode)}}},
+            {"inputs",
+             {{"source", {{"node", "fill"}, {"port", "color"}}}}},
+            {"outputs", Json::array()}};
+}
+
 void attachMainGraph(Json &root, Json target, Json fill, Json sink) {
     auto &nodes = root["nodes"];
     nodes.push_back(std::move(target));
@@ -2010,4 +2021,157 @@ TEST_CASE("VO-2 explicit asynchronous capture benchmark",
         });
     }
     writeFile(result_path, measurements.dump(2) + "\n");
+}
+
+TEST_CASE("VO-7 offline video drains through the real sink and closes on engine exit",
+          "[vo7][gpu]") {
+    TempProject project{"vo7_offline"};
+    project.writeExactPatternShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"),
+                    videoSink("movie"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    const auto side_path = output_dir / "encoder.txt";
+#ifdef _WIN32
+    REQUIRE(_putenv_s("PELICAN_FAKE_FFMPEG_SIDE", side_path.string().c_str()) == 0);
+#else
+    REQUIRE(setenv("PELICAN_FAKE_FFMPEG_SIDE", side_path.string().c_str(), 1) == 0);
+#endif
+    auto flags = outputFlags(output_dir, 4);
+    flags.insert(flags.end(), {"--ffmpeg", PELICAN_FAKE_FFMPEG});
+    PlayerRpc player{project, flags, "vo7_offline"};
+    for (int index = 0; index < 8; ++index) {
+        (void)player.result("step_frame");
+        const auto sink = oneSink(player.outputStatus());
+        if (sink.at("state") == "finished") break;
+    }
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(sink.at("kind") == "video");
+    CHECK(sink.at("mode") == "offline");
+    CHECK(sink.at("state") == "finished");
+    CHECK(sink.at("stop_reason") == "max_frames");
+    CHECK(sink.at("frames_written") == 4);
+    CHECK(sink.at("frames_repeated") == 0);
+    CHECK(sink.at("encoder_state") == "exited");
+    player.close();
+    CHECK(fs::exists(output_dir / "movie.mp4"));
+    REQUIRE(fs::exists(side_path));
+    const auto side = readFile(side_path);
+    CHECK(side.find("bytes 256") != std::string::npos);
+    CHECK(side.find("frames 4") != std::string::npos);
+#ifdef _WIN32
+    (void)_putenv_s("PELICAN_FAKE_FFMPEG_SIDE", "");
+#else
+    (void)unsetenv("PELICAN_FAKE_FFMPEG_SIDE");
+#endif
+}
+
+TEST_CASE("VO-7 an invalid offline rate and odd extent are refused at runtime",
+          "[vo7][gpu]") {
+    TempProject project{"vo7_refusal"};
+    project.writeExactPatternShader();
+    auto root = project.readRoot();
+    auto sink = videoSink("movie");
+    sink.at("parameters").at("fps_num") = 30;
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"), sink);
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    auto flags = outputFlags(output_dir);
+    flags.insert(flags.end(), {"--ffmpeg", PELICAN_FAKE_FFMPEG});
+    PlayerRpc player{project, flags, "vo7_refusal"};
+    (void)player.result("step_frame");
+    const auto state = oneSink(player.outputStatus());
+    CHECK(state.at("state") == "refused");
+    CHECK(state.at("last_error") == "output.video_rate_mismatch@1");
+    CHECK(outputProblems(player).at(0).at("code") == "output.video_rate_mismatch@1");
+    CHECK(!fs::exists(output_dir / "movie.mp4"));
+}
+
+TEST_CASE("VO-7 encoder death does not kill the engine or stall a file sink",
+          "[vo7][gpu]") {
+    TempProject project{"vo7_early"};
+    project.writeExactPatternShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"), videoSink("movie"));
+    auto file = sinkNode("shot");
+    file.at("id") = "file_sink";
+    root.at("nodes").push_back(file);
+    project.writeRoot(root);
+#ifdef _WIN32
+    REQUIRE(_putenv_s("PELICAN_FAKE_FFMPEG_EARLY_EXIT", "23") == 0);
+#else
+    REQUIRE(setenv("PELICAN_FAKE_FFMPEG_EARLY_EXIT", "23", 1) == 0);
+#endif
+    const auto output_dir = project.outputPath();
+    auto flags = outputFlags(output_dir);
+    flags.insert(flags.end(), {"--ffmpeg", PELICAN_FAKE_FFMPEG});
+    PlayerRpc player{project, flags, "vo7_early"};
+    for (int index = 0; index < 8; ++index) (void)player.result("step_frame");
+    const auto status = player.outputStatus();
+    REQUIRE(status.at("sinks").size() == 2);
+    const auto &video = status.at("sinks").at(0);
+    const auto &file_state = status.at("sinks").at(1);
+    CHECK(video.at("state") == "refused");
+    CHECK(video.at("last_error").get<std::string>().find("exit_code=23") !=
+          std::string::npos);
+    CHECK(file_state.at("frames_written").get<std::uint64_t>() >= 2);
+    const auto problems = outputProblems(player);
+    CHECK(problems.at(0).at("code") == "output.video_encoder_failed@1");
+    CHECK(player.result("get_frame_plan").is_object());
+    player.close();
+#ifdef _WIN32
+    (void)_putenv_s("PELICAN_FAKE_FFMPEG_EARLY_EXIT", "");
+#else
+    (void)unsetenv("PELICAN_FAKE_FFMPEG_EARLY_EXIT");
+#endif
+    CHECK(!fs::exists(output_dir / "movie.mp4"));
+    CHECK(fs::exists(output_dir / "shot_000000.rgba"));
+    CHECK(fs::exists(output_dir / "shot_000001.rgba"));
+}
+
+TEST_CASE("VO-7 reload removal finalizes the retired writer before releasing slots",
+          "[vo7][gpu]") {
+    TempProject project{"vo7_remove"};
+    project.writeExactPatternShader();
+    auto root = project.readRoot();
+    attachMainGraph(root, targetNode("fill_target", "R8G8B8A8_UNORM"),
+                    fillNode("fill", "fill_target", "fill_target"), videoSink("movie"));
+    project.writeRoot(root);
+    const auto output_dir = project.outputPath();
+    const auto side_path = output_dir / "retired.txt";
+#ifdef _WIN32
+    REQUIRE(_putenv_s("PELICAN_FAKE_FFMPEG_SIDE", side_path.string().c_str()) == 0);
+#else
+    REQUIRE(setenv("PELICAN_FAKE_FFMPEG_SIDE", side_path.string().c_str(), 1) == 0);
+#endif
+    auto flags = outputFlags(output_dir);
+    flags.insert(flags.end(), {"--ffmpeg", PELICAN_FAKE_FFMPEG});
+    PlayerRpc player{project, flags, "vo7_remove"};
+    for (int index = 0; index < 3; ++index) (void)player.result("step_frame");
+    auto changed = project.readRoot();
+    auto &nodes = changed.at("nodes");
+    nodes.erase(std::find_if(nodes.begin(), nodes.end(),
+        [](const Json &node) { return node.at("op") == "output.video"; }));
+    project.writeRoot(changed);
+    REQUIRE(player.settle(player.result("reload_render_documents")).at("status") ==
+            "committed");
+    CHECK(player.outputStatus().at("sinks").empty());
+    for (int index = 0; index < 32; ++index) {
+        if (fs::exists(output_dir / "movie.mp4") && fs::exists(side_path) &&
+            readFile(side_path).find("frames 3") != std::string::npos) break;
+        (void)player.result("step_frame");
+    }
+    CHECK(fs::exists(output_dir / "movie.mp4"));
+    CHECK(readFile(side_path).find("frames 3") != std::string::npos);
+    player.close();
+#ifdef _WIN32
+    (void)_putenv_s("PELICAN_FAKE_FFMPEG_SIDE", "");
+#else
+    (void)unsetenv("PELICAN_FAKE_FFMPEG_SIDE");
+#endif
 }

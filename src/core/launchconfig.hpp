@@ -98,6 +98,8 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // raw frames into. Absent means no sink is active, although the lowered
     // document still retains their targets for the report's cost.
     std::optional<std::filesystem::path> output_dir;
+    // External H.264 encoder. Absent searches PATH at the first video frame.
+    std::optional<std::filesystem::path> ffmpeg;
     // Per sink; a sink that reaches it becomes finished.
     std::uint32_t output_max_frames = 1000;
     // Across every sink of the run; a write that would pass it leaves the sink
