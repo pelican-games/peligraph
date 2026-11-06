@@ -299,7 +299,7 @@ TEST_CASE("VO-5a the real facts on this machine", "[vo5a][gpu]") {
     auto &vulkan = Pelican::TestSupport::requireVulkanDevice("VO-5a");
     const auto physical_device = static_cast<VkPhysicalDevice>(vulkan.getPhysDevice());
 
-    const auto report = Pelican::outputSpoutGpuPathForRun(true, vulkan);
+    const auto report = Pelican::outputSpoutGpuPathForRun(true, false, vulkan);
     const auto json = Pelican::outputSpoutGpuPathJson(report);
     WARN(json.dump(2));
     REQUIRE(report.facts.has_value());

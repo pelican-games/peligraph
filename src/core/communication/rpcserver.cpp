@@ -39,6 +39,7 @@
 #if PELICAN_WITH_VIDEO_OUTPUT
 #include "../output/outputsinks.hpp"
 #include "../output/outputspout.hpp"
+#include "../output/outputbridgecommands.hpp"
 #include "../output/outputspoutgpupath.hpp"
 #endif
 #include "../material/materialcontainer.hpp"
@@ -1692,6 +1693,18 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
     server.setHandler("test_output_spout_backend", [](const nlohmann::json &params) {
         return outputSpoutTestBackendControl(params);
     });
+#if PELICAN_OUTPUT_TEST_SEAMS
+    server.setHandler("test_output_bridge_submits", [](const nlohmann::json &params) {
+        requireObjectParams(params, "test_output_bridge_submits");
+        auto submits = nlohmann::json::array();
+        for (const auto &submit : takeOutputBridgeSubmitsForTesting()) {
+            submits.push_back({{"wait_semaphores", submit.wait_semaphores},
+                               {"signal_semaphores", submit.signal_semaphores},
+                               {"signal_value", submit.signal_value}});
+        }
+        return submits;
+    });
+#endif
     server.setHandler("test_output_capture_timings", [](const nlohmann::json &params) {
         requireObjectParams(params, "test_output_capture_timings");
         auto *sinks = FastModuleContainer::tryGet<OutputSinks>();

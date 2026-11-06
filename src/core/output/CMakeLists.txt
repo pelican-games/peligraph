@@ -6,6 +6,7 @@ target_sources(pelican_core PRIVATE
     outputvideoprocess.cpp
     outputspout.cpp
     outputspoutgpupath.cpp
+    outputbridgecommands.cpp
 )
 
 # VO-4: only the seven sources spoutDX needs, from the pinned and patched tag.

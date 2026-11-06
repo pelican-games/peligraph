@@ -5551,6 +5551,20 @@ OutputCaptureResult Renderer::submitOutputCapture(
     std::string_view name, std::string_view graph,
     vk::Buffer staging_buffer, vk::CommandBuffer command_buffer,
     vk::Fence fence) {
+    return captureOutputTarget(name, graph, staging_buffer, nullptr, command_buffer, fence);
+}
+
+OutputCaptureResult Renderer::submitOutputCaptureToImage(
+    std::string_view name, std::string_view graph,
+    const OutputCaptureImageTarget &target,
+    vk::CommandBuffer command_buffer, vk::Fence fence) {
+    return captureOutputTarget(name, graph, {}, &target, command_buffer, fence);
+}
+
+OutputCaptureResult Renderer::captureOutputTarget(
+    std::string_view name, std::string_view graph,
+    vk::Buffer staging_buffer, const OutputCaptureImageTarget *target,
+    vk::CommandBuffer command_buffer, vk::Fence fence) {
     const auto generation = GET_MODULE(FrameGraphRuntimeContainer).snapshot();
     if (generation == nullptr) return {};
     const CompiledRenderProgram *program =
@@ -5596,12 +5610,17 @@ OutputCaptureResult Renderer::submitOutputCapture(
     leases->push_back(generation);
     const auto target_leases = targets.resourceLeases();
     leases->insert(leases->end(), target_leases.begin(), target_leases.end());
-    if (!staging_buffer) {
+    if (!staging_buffer && target == nullptr) {
         return {.status = OutputReadStatus::ready,
                 .extent = extent,
                 .format = toVulkanFormat(metadata.format),
                 .source_lease = std::move(leases)};
     }
+    // The bridge was reserved for this frame's first answer. A reload in between
+    // can only make the frame stale, not wrong.
+    if (target != nullptr && (target->extent.width != extent.width ||
+                              target->extent.height != extent.height))
+        return {};
     auto &vulkan = GET_MODULE(VulkanManageCore);
     auto &utils = GET_MODULE(VulkanUtils);
     command_buffer.reset();
@@ -5610,6 +5629,20 @@ OutputCaptureResult Renderer::submitOutputCapture(
     render_target_layout_tracker.transition(
         command_buffer, targets, utils, target_id,
         vk::ImageLayout::eTransferSrcOptimal);
+    if (target != nullptr) {
+        recordOutputBridgeCopy(command_buffer, targets.getImage(target_id).image.get(),
+                               *target, vulkan.getGraphicsQueueFamilyIndex());
+        render_target_layout_tracker.transition(
+            command_buffer, targets, utils, target_id, previous_layout);
+        command_buffer.end();
+        vulkan.getDevice().resetFences(fence);
+        submitOutputBridgeCommands(vulkan.getGraphicsQueue(), command_buffer, fence,
+                                   target->semaphore, target->signal_value);
+        return {.status = OutputReadStatus::ready,
+                .extent = extent,
+                .format = toVulkanFormat(metadata.format),
+                .source_lease = std::move(leases)};
+    }
     vk::BufferImageCopy copy;
     copy.imageSubresource = {vk::ImageAspectFlagBits::eColor, 0, 0, 1};
     copy.imageExtent = vk::Extent3D{extent.width, extent.height, 1};

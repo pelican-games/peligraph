@@ -8,6 +8,8 @@
 #endif
 
 #include <catch2/catch_test_macros.hpp>
+#include <catch2/generators/catch_generators.hpp>
+#include <catch2/matchers/catch_matchers_string.hpp>
 
 #include <nlohmann/json.hpp>
 #include <stb_image.h>
@@ -26,6 +28,7 @@
 #include <limits>
 #include <mutex>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -141,6 +144,64 @@ void main() {
     outColor = vec4(float(10 + x) / 255.0,
                     float(20 + y) / 255.0,
                     float(30 + x * y) / 255.0,
+                    float(40 + x + y) / 255.0);
+}
+)glsl");
+    }
+    // VO-5b: the frame number in the pixels. Sixteen cells, all different, alpha not
+    // opaque, every byte a function of the frame and the cell: a whole received image
+    // decodes as exactly one frame or not at all. With `srgb`, the shader undoes
+    // the target's encoding, so the stored bytes are the same values.
+    void writeFramePatternShader(bool srgb) const {
+        writeFile(root / "shaders" / "vo1a_frame.frag", std::string{R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+#include "pelican_frame.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);
+
+float channel(int value) {
+    float v = float(value) / 255.0;
+)glsl"} + (srgb ? R"glsl(    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+)glsl" : R"glsl(    return v;
+)glsl") + R"glsl(}
+
+void main() {
+    int x = min(int(inUV.x * 4.0), 3);
+    int y = min(int(inUV.y * 4.0), 3);
+    int n = int(pelicanFrame.frame_index.x % 251u);
+    outColor = vec4(channel(n),
+                    channel(x * 16 + y + 1),
+                    channel((n + x * 7 + y * 13) % 256),
+                    float(64 + (n + x + y) % 128) / 255.0);
+}
+)glsl");
+    }
+    // writeExactPatternShader's bytes, on a target that encodes sRGB when asked.
+    void writeExactPatternShaderFor(bool srgb) const {
+        writeFile(root / "shaders" / "vo1a_frame.frag", std::string{R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+#include "pelican_frame.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);
+
+float channel(int value) {
+    float v = float(value) / 255.0;
+)glsl"} + (srgb ? R"glsl(    return v <= 0.04045 ? v / 12.92 : pow((v + 0.055) / 1.055, 2.4);
+)glsl" : R"glsl(    return v;
+)glsl") + R"glsl(}
+
+void main() {
+    int x = int(inUV.x * 4.0);
+    int y = int(inUV.y * 4.0);
+    outColor = vec4(channel(10 + x), channel(20 + y), channel(30 + x * y),
                     float(40 + x + y) / 255.0);
 }
 )glsl");
@@ -575,6 +636,18 @@ class PlayerRpc {
         REQUIRE(response.contains("result"));
         return response.at("result");
     }
+
+#ifdef _WIN32
+    // Kernel and user time of the player so far.
+    double processCpuMs() const {
+        FILETIME created{}, exited{}, kernel{}, user{};
+        REQUIRE(::GetProcessTimes(process_.hProcess, &created, &exited, &kernel, &user));
+        const auto ticks = [](const FILETIME &time) {
+            return (static_cast<std::uint64_t>(time.dwHighDateTime) << 32) | time.dwLowDateTime;
+        };
+        return static_cast<double>(ticks(kernel) + ticks(user)) / 10000.0;
+    }
+#endif
 
     Json outputStatus() {
         const auto status = result("get_status");
@@ -2842,5 +2915,788 @@ TEST_CASE("VO-5a the sink behaves as in VO-4, with the extensions on", "[vo5a][g
           exactPatternBgra());
     // The GPU path's answer makes no Problem, whichever it is.
     CHECK(outputProblems(player).empty());
+}
+#endif
+
+// VO-5b: the GPU route in a real player, read by a real receiver.
+#if PELICAN_WITH_SPOUT
+namespace {
+
+bool vo5bExpectsGpu() { return std::getenv("PELICAN_VO5B_EXPECT_GPU") != nullptr; }
+
+struct SpoutGpuFault {
+    explicit SpoutGpuFault(const char *fault) { set(fault); }
+    ~SpoutGpuFault() { set(""); }
+    static void set(const char *value) {
+        REQUIRE(_putenv_s("PELICAN_OUTPUT_SPOUT_GPU_FAULT", value) == 0);
+    }
+};
+
+std::string vo5bName(std::string_view base) {
+    return "pelican_vo5b_" + std::string{base} + "_" +
+           std::to_string(std::chrono::steady_clock::now().time_since_epoch().count());
+}
+
+void attachSizedSpoutGraph(TempProject &project, std::string format, std::string name,
+                           std::uint32_t width = 4, std::uint32_t height = 4) {
+    auto root = project.readRoot();
+    auto &nodes = root["nodes"];
+    auto target = targetNode("fill_target", std::move(format));
+    target["parameters"]["width"] = width;
+    target["parameters"]["height"] = height;
+    nodes.push_back(std::move(target));
+    nodes.push_back(fillNode("fill", "fill_target", "fill_target"));
+    nodes.push_back(spoutSink(std::move(name)));
+    project.writeRoot(root);
+}
+
+// One received 4x4 image: the frame it holds if it's whole and exact, in full.
+std::optional<int> decodeFrame(const std::vector<std::uint8_t> &pixels) {
+    if (pixels.size() != 4 * 4 * 4) return std::nullopt;
+    const int n = pixels[2];
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            const auto *pixel = pixels.data() + (y * 4 + x) * 4;
+            if (pixel[2] != n || pixel[1] != x * 16 + y + 1 ||
+                pixel[0] != (n + x * 7 + y * 13) % 256 ||
+                pixel[3] != 64 + (n + x + y) % 128) return std::nullopt;
+        }
+    }
+    return n;
+}
+
+std::vector<std::uint8_t> framePatternBgra(int n) {
+    std::vector<std::uint8_t> bytes;
+    for (int y = 0; y < 4; ++y) {
+        for (int x = 0; x < 4; ++x) {
+            bytes.push_back(static_cast<std::uint8_t>((n + x * 7 + y * 13) % 256));
+            bytes.push_back(static_cast<std::uint8_t>(x * 16 + y + 1));
+            bytes.push_back(static_cast<std::uint8_t>(n));
+            bytes.push_back(static_cast<std::uint8_t>(64 + (n + x + y) % 128));
+        }
+    }
+    return bytes;
+}
+
+// When validation was asked for, it was on, and it said nothing.
+void vo5bCheckLog(const TempProject &project, std::string_view name, const Json &status) {
+    if (std::getenv("PELICAN_VO1A_VULKAN_VALIDATION") != nullptr) {
+        REQUIRE(status.at("vulkan_validation").at("enabled") == true);
+    }
+    const auto log = readFile(project.logPath(name));
+    CHECK(log.find("VUID-") == std::string::npos);
+    CHECK(log.find("SYNC-") == std::string::npos);
+    CHECK(log.find("Validation Error") == std::string::npos);
+}
+
+struct FrameRun {
+    std::set<int> seen;
+    int stale_or_torn = 0;
+    int went_back = 0;
+    int polls_with_new_image = 0;
+};
+
+// Steps until `distinct` different frames have been decoded whole. Repeating an
+// image is a legitimate receiver skip; going backwards is not, and neither is
+// an image that decodes as no frame.
+FrameRun runFrames(PlayerRpc &player, SpoutTestReceiver &receiver, int steps, std::size_t distinct) {
+    FrameRun run;
+    std::optional<int> last;
+    for (int step = 0; step < steps; ++step) {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        if (receiver.width() != 4 || receiver.height() != 4) continue;
+        if (receiver.pixels().empty()) continue;
+        // Before the first frame is copied, the receiver's buffer is still zero.
+        const auto decoded = decodeFrame(receiver.pixels());
+        if (!decoded) {
+            const auto all_zero = std::all_of(receiver.pixels().begin(), receiver.pixels().end(),
+                                              [](std::uint8_t byte) { return byte == 0; });
+            if (!all_zero || last) ++run.stale_or_torn;
+            continue;
+        }
+        if (last && *decoded != *last) {
+            // Forward on a clock of 251.
+            if ((*decoded - *last + 251) % 251 >= 125) ++run.went_back;
+            ++run.polls_with_new_image;
+        }
+        last = decoded;
+        run.seen.insert(*decoded);
+        if (run.seen.size() >= distinct && step >= 300) break;
+    }
+    return run;
+}
+
+} // namespace
+
+TEST_CASE("VO-5b whole frames arrive through the GPU route, in order, for each source format",
+          "[vo5b][gpu]") {
+    struct Source { const char *format; bool srgb; };
+    const auto source = GENERATE(Source{"R8G8B8A8_UNORM", false}, Source{"B8G8R8A8_UNORM", false},
+                                 Source{"B8G8R8A8_SRGB", true});
+    CAPTURE(source.format);
+    const auto name = vo5bName("frames");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_frames"};
+    project.writeFramePatternShader(source.srgb);
+    attachSizedSpoutGraph(project, source.format, name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_frames"};
+    const auto run = runFrames(player, receiver, 1500, 100);
+    const auto status = player.result("get_status");
+    const auto sink = oneSink(status.at("output"));
+    INFO(sink.dump());
+    WARN(std::string{source.format} + " distinct frames " + std::to_string(run.seen.size()) +
+         ", new images " + std::to_string(run.polls_with_new_image) + ", " + sink.dump());
+    CHECK(run.stale_or_torn == 0);
+    CHECK(run.went_back == 0);
+    CHECK(run.seen.size() >= 100);
+    CHECK(sink.at("state") == "running");
+    CHECK(sink.at("frames_written").get<std::uint64_t>() ==
+          sink.at("frames_gpu").get<std::uint64_t>() + sink.at("frames_cpu").get<std::uint64_t>());
+    if (vo5bExpectsGpu()) {
+        CHECK(sink.at("transport") == "gpu");
+        CHECK(sink.at("transport_reason") == "none");
+        CHECK(sink.at("frames_gpu").get<std::uint64_t>() >= 100);
+        CHECK(sink.at("gpu_fallbacks") == 0);
+        // The route was in use: readback stopped once the bridges existed.
+        CHECK(sink.at("frames_gpu").get<std::uint64_t>() >
+              20 * sink.at("frames_cpu").get<std::uint64_t>());
+    }
+    const auto submits = player.result("test_output_bridge_submits");
+    for (const auto &submit : submits) {
+        CHECK(submit.at("wait_semaphores") == 0);
+        CHECK(submit.at("signal_semaphores") == 1);
+    }
+    player.close();
+    vo5bCheckLog(project, "vo5b_frames", status);
+}
+
+TEST_CASE("VO-5b a fixed frame's bytes are the same by both routes", "[vo5b][gpu]") {
+    struct Source { const char *format; bool srgb; };
+    const auto source = GENERATE(Source{"R8G8B8A8_UNORM", false}, Source{"B8G8R8A8_UNORM", false},
+                                 Source{"B8G8R8A8_SRGB", true}, Source{"R8G8B8A8_SRGB", true});
+    CAPTURE(source.format);
+    const auto read = [&](std::vector<std::string> flags, std::string_view label) {
+        const auto name = vo5bName(label);
+        SpoutTestReceiver receiver{name};
+        if (!receiver.deviceAvailable())
+            SKIP("no D3D11 device in this session: the integration test did not run");
+        TempProject project{label};
+        project.writeExactPatternShaderFor(source.srgb);
+        attachSizedSpoutGraph(project, source.format, name);
+        PlayerRpc player{project, std::move(flags), label};
+        std::vector<std::uint8_t> pixels;
+        // The first frames go by CPU. Read only what was sent after several by the
+        // route under test: status first, then the receiver, which lags one image.
+        const auto route_ready = [&] {
+            const auto sink = oneSink(player.outputStatus());
+            return sink.at("transport") != "gpu" ||
+                   sink.at("frames_gpu").get<std::uint64_t>() > 8;
+        };
+        const auto received = waitFor([&] {
+            (void)player.result("step_frame");
+            if (!route_ready()) return false;
+            (void)receiver.poll();
+            (void)player.result("step_frame");
+            (void)receiver.poll();
+            pixels = receiver.pixels();
+            return pixels == exactPatternBgra();
+        }, std::chrono::seconds(30));
+        CHECK(received);
+        const auto status = player.outputStatus();
+        const auto sink = oneSink(status);
+        player.close();
+        return std::make_pair(pixels, sink);
+    };
+    const auto cpu = read({"--output-spout", "--output-spout-transport", "cpu"}, "vo5b_bytes_cpu");
+    const auto automatic = read({"--output-spout"}, "vo5b_bytes_auto");
+    CHECK(cpu.first == automatic.first);
+    INFO(cpu.second.dump());
+    INFO(automatic.second.dump());
+    CHECK(cpu.second.at("transport") == "cpu");
+    CHECK(cpu.second.at("transport_reason") == "cpu_requested");
+    if (std::string_view{source.format} == "R8G8B8A8_SRGB") {
+        CHECK(automatic.second.at("transport") == "cpu");
+        CHECK(automatic.second.at("transport_reason") == "format_needs_cpu");
+    } else if (vo5bExpectsGpu()) {
+        CHECK(automatic.second.at("transport") == "gpu");
+    }
+}
+
+TEST_CASE("VO-5b all 256 values of every channel survive the RGBA8 route, separate from presentation",
+          "[vo5b][gpu]") {
+    // Six rows of 256: each channel running through everything, then all four at once.
+    const auto value = [](int x, int y, int channel) -> int {
+        const std::array<std::array<int, 4>, 6> rows{{
+            {x, 17, 200, 99}, {201, x, 18, 98}, {19, 202, x, 97}, {96, 203, 20, x},
+            {x, 255 - x, (x * 3) % 256, (x * 7 + 1) % 256},
+            {(x * 5) % 256, x ^ 0x5A, 255 - x, x},
+        }};
+        return rows[static_cast<std::size_t>(y)][static_cast<std::size_t>(channel)];
+    };
+    TempProject project{"vo5b_all_values"};
+    writeFile(project.root / "shaders" / "vo1a_frame.frag", R"glsl(#version 460
+#extension GL_GOOGLE_include_directive : enable
+#include "pelican_sets.glsl"
+#include "pelican_view.glsl"
+#include "pelican_frame.glsl"
+
+layout(location = 0) in vec2 inUV;
+layout(location = 0) out vec4 outColor;
+PELICAN_DECLARE_VARIADIC_INPUTS(0, 8);
+
+void main() {
+    int x = min(int(inUV.x * 256.0), 255);
+    int y = min(int(inUV.y * 6.0), 5);
+    ivec4 v;
+    if (y == 0) v = ivec4(x, 17, 200, 99);
+    else if (y == 1) v = ivec4(201, x, 18, 98);
+    else if (y == 2) v = ivec4(19, 202, x, 97);
+    else if (y == 3) v = ivec4(96, 203, 20, x);
+    else if (y == 4) v = ivec4(x, 255 - x, (x * 3) % 256, (x * 7 + 1) % 256);
+    else v = ivec4((x * 5) % 256, x ^ 0x5A, 255 - x, x);
+    outColor = vec4(v) / 255.0;
+}
+)glsl");
+    const auto name = vo5bName("all_values");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name, 256, 6);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_all_values"};
+    std::vector<std::uint8_t> expected;
+    for (int y = 0; y < 6; ++y) {
+        for (int x = 0; x < 256; ++x) {
+            expected.push_back(static_cast<std::uint8_t>(value(x, y, 2)));
+            expected.push_back(static_cast<std::uint8_t>(value(x, y, 1)));
+            expected.push_back(static_cast<std::uint8_t>(value(x, y, 0)));
+            expected.push_back(static_cast<std::uint8_t>(value(x, y, 3)));
+        }
+    }
+    Json sink;
+    const auto received = waitFor([&] {
+        (void)player.result("step_frame");
+        // Status first, then the receiver: these pixels came after the GPU frames.
+        sink = oneSink(player.outputStatus());
+        if (vo5bExpectsGpu() && sink.at("frames_gpu").get<std::uint64_t>() <= 8) return false;
+        (void)receiver.poll();
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.pixels() == expected;
+    }, std::chrono::seconds(30));
+    INFO(sink.dump());
+    CHECK(received);
+    if (vo5bExpectsGpu()) {
+        CHECK(sink.at("transport") == "gpu");
+        const auto status = player.result("get_status");
+        CHECK(status.at("output").at("spout_gpu_path").at("rgba8_blit").at("exact") == true);
+    }
+    player.close();
+}
+
+TEST_CASE("VO-5b an RGBA8 UNORM source stays on CPU, with its reason, when the blit wasn't exact",
+          "[vo5b][gpu]") {
+    SpoutGpuFault fault{"blit_mismatch"};
+    const auto name = vo5bName("blit");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_blit"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_blit"};
+    const auto received = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.pixels() == exactPatternBgra();
+    }, std::chrono::seconds(30));
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(received);
+    CHECK(sink.at("transport") == "cpu");
+    CHECK(sink.at("transport_reason") == "format_needs_cpu");
+    CHECK(sink.at("frames_gpu") == 0);
+}
+
+TEST_CASE("VO-5b a new size arrives and the GPU route comes back, with no fallback", "[vo5b][gpu]") {
+    const auto name = vo5bName("resize");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_resize"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name, 4, 4);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_resize"};
+    const auto gpu_frames = [&] {
+        return oneSink(player.outputStatus()).at("frames_gpu").get<std::uint64_t>();
+    };
+    REQUIRE(waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.pixels() == exactPatternBgra() && (!vo5bExpectsGpu() || gpu_frames() > 2);
+    }, std::chrono::seconds(30)));
+
+    auto root = project.readRoot();
+    for (auto &node : root.at("nodes")) {
+        if (node.at("id") == "fill_target") {
+            node["parameters"]["width"] = 8;
+            node["parameters"]["height"] = 8;
+        }
+    }
+    project.writeRoot(root);
+    REQUIRE(player.settle(player.result("reload_render_documents")).at("status") == "committed");
+    const auto before = gpu_frames();
+    const auto received = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.width() == 8 && receiver.height() == 8 &&
+               (!vo5bExpectsGpu() || gpu_frames() > before + 2);
+    }, std::chrono::seconds(30));
+    const auto sink = oneSink(player.outputStatus());
+    INFO(sink.dump());
+    CHECK(received);
+    CHECK(sink.at("gpu_fallbacks") == 0);
+    if (vo5bExpectsGpu()) CHECK(sink.at("transport") == "gpu");
+    const auto status = player.result("get_status");
+    player.close();
+    vo5bCheckLog(project, "vo5b_resize", status);
+}
+
+TEST_CASE("VO-5b a same-name reload while sending resumes, with old bridges retired safely",
+          "[vo5b][gpu]") {
+    const auto name = vo5bName("reload");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_reload"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name, 4, 4);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_reload"};
+    REQUIRE(waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.pixels() == exactPatternBgra();
+    }, std::chrono::seconds(30)));
+    // A changed sink spec makes a new sender with the same name.
+    for (int round = 0; round < 3; ++round) {
+        auto root = project.readRoot();
+        for (auto &node : root.at("nodes")) {
+            if (node.at("op") == "output.spout") node["parameters"]["enabled"] = round % 2 == 0;
+        }
+        project.writeRoot(root);
+        REQUIRE(player.settle(player.result("reload_render_documents")).at("status") == "committed");
+        for (int step = 0; step < 4; ++step) (void)player.result("step_frame");
+    }
+    auto root = project.readRoot();
+    for (auto &node : root.at("nodes")) {
+        if (node.at("op") == "output.spout") node["parameters"]["enabled"] = true;
+    }
+    project.writeRoot(root);
+    REQUIRE(player.settle(player.result("reload_render_documents")).at("status") == "committed");
+    Json sink;
+    const auto resumed = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        sink = oneSink(player.outputStatus());
+        return sink.at("registered").get<bool>() && receiver.pixels() == exactPatternBgra();
+    }, std::chrono::seconds(30));
+    INFO(sink.dump());
+    CHECK(resumed);
+    const auto status = player.result("get_status");
+    player.close();
+    vo5bCheckLog(project, "vo5b_reload", status);
+}
+
+TEST_CASE("VO-5b a receiver holding Spout's mutex stops neither rendering nor the route", "[vo5b][gpu]") {
+    const auto name = vo5bName("hold");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_hold"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_hold"};
+    REQUIRE(waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.pixels() == exactPatternBgra();
+    }, std::chrono::seconds(30)));
+    {
+        SpoutTestTextureHold hold{name};
+        for (int step = 0; step < 30; ++step) (void)player.result("step_frame");
+        const auto held = oneSink(player.outputStatus());
+        INFO(held.dump());
+        CHECK(held.at("state") == "running");
+        CHECK(held.at("gpu_fallbacks") == 0);
+    }
+    const auto before = oneSink(player.outputStatus()).at("frames_written").get<std::uint64_t>();
+    CHECK(waitFor([&] {
+        (void)player.result("step_frame");
+        return oneSink(player.outputStatus()).at("frames_written").get<std::uint64_t>() > before + 3;
+    }, std::chrono::seconds(30)));
+}
+
+TEST_CASE("VO-5b a blocked sender thread never stops rendering: the frame is dropped and counted",
+          "[vo5b][gpu]") {
+    SpoutGpuFault fault{"block_send"};
+    const auto name = vo5bName("block");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_block"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_block"};
+    (void)player.result("test_output_spout_backend", {{"block_gpu_send", true}});
+    const auto blocked = waitFor([&] {
+        (void)player.result("step_frame");
+        return player.result("test_output_spout_backend").at("gpu_send_blocked").get<bool>();
+    }, std::chrono::seconds(30));
+    if (!blocked && !vo5bExpectsGpu()) SKIP("the GPU route isn't available on this machine");
+    REQUIRE(blocked);
+    for (int step = 0; step < 60; ++step) (void)player.result("step_frame");
+    const auto during = oneSink(player.outputStatus());
+    INFO(during.dump());
+    CHECK(during.at("bridge_busy").get<std::uint64_t>() > 0);
+    for (const auto &submit : player.result("test_output_bridge_submits"))
+        CHECK(submit.at("wait_semaphores") == 0);
+    (void)player.result("test_output_spout_backend", {{"block_gpu_send", false}});
+    const auto resumed = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        return receiver.pixels() == exactPatternBgra();
+    }, std::chrono::seconds(30));
+    CHECK(resumed);
+}
+
+TEST_CASE("VO-5b each failure goes on by CPU in a real player, with its reason and no Problem",
+          "[vo5b][gpu]") {
+    // `live` says whether the failure comes after GPU work was really queued: only
+    // those are evidence about cleaning up after submitted work.
+    struct Fault { const char *fault; const char *reason; bool permanent; bool live; };
+    const auto item = GENERATE(
+        Fault{"device_luid", "sender_device_mismatch", true, false},
+        Fault{"warp_device", "sender_device_mismatch", true, false},
+        Fault{"d3d11_fence", "d3d11_fence_unavailable", true, false},
+        Fault{"semaphore_import", "semaphore_import_failed", true, false},
+        Fault{"bridge_create_invalid", "bridge_create_failed", true, false},
+        Fault{"bridge_create_second", "bridge_create_failed", true, false},
+        Fault{"oom_bridge", "bridge_create_failed", false, false},
+        Fault{"memory_types", "memory_type_mismatch", true, false},
+        Fault{"bridge_import_invalid", "bridge_import_failed", true, false},
+        Fault{"bridge_import_second", "bridge_import_failed", true, false},
+        Fault{"bridge_import_oom", "bridge_out_of_memory", false, false},
+        Fault{"submit_oom", "capture_submit_failed", false, false},
+        Fault{"submit_invalid", "capture_submit_failed", true, false},
+        Fault{"send_false", "send_failed", false, true},
+        Fault{"sync_late", "sync_timeout", false, true},
+        Fault{"event_fail", "sync_timeout", false, true},
+        Fault{"device_removed", "d3d11_device_removed", false, true});
+    CAPTURE(item.fault);
+    SpoutGpuFault fault{item.fault};
+    const auto name = vo5bName(item.fault);
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_fault"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_fault"};
+    Json sink;
+    const auto fell_back = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        sink = oneSink(player.outputStatus());
+        return sink.at("transport_reason") == item.reason;
+    }, std::chrono::seconds(30));
+    INFO(sink.dump());
+    REQUIRE(fell_back);
+    CHECK(sink.at("transport") == "cpu");
+    CHECK(sink.at("state") == "running");
+    // A WARP sender's texture may not open on a hardware receiver, so its proof
+    // is the real LUID compare above and CPU frames being accepted.
+    const auto before_cpu = sink.at("frames_cpu").get<std::uint64_t>();
+    const auto sent = waitFor([&] {
+        (void)player.result("step_frame");
+        return oneSink(player.outputStatus()).at("frames_cpu").get<std::uint64_t>() > before_cpu + 2;
+    }, std::chrono::seconds(30));
+    CHECK(sent);
+    if (std::string_view{item.fault} != "warp_device") {
+        const auto received = waitFor([&] {
+            (void)player.result("step_frame");
+            (void)receiver.poll();
+            return receiver.pixels() == exactPatternBgra();
+        }, std::chrono::seconds(30));
+        CHECK(received);
+    }
+    CHECK(outputProblems(player).empty());
+    const auto final_sink = oneSink(player.outputStatus());
+    INFO(final_sink.dump());
+    CHECK(final_sink.at("transport") == "cpu");
+    CHECK(final_sink.at("gpu_fallbacks") == 1);
+    CHECK(final_sink.at("gpu_next_retry_ms").is_null() == item.permanent);
+    WARN(std::string{item.fault} + (item.live ? " [after GPU work was queued]" : " [before]") +
+         ": " + final_sink.at("transport_detail").get<std::string>());
+    const auto status = player.result("get_status");
+    player.close();
+    vo5bCheckLog(project, "vo5b_fault", status);
+}
+
+TEST_CASE("VO-5b a size that can't be remade goes to CPU, and the first size's bridges had been live",
+          "[vo5b][gpu]") {
+    SpoutGpuFault fault{"size_remake"};
+    const auto name = vo5bName("remake");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_remake"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name, 4, 4);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_remake"};
+    const auto started = waitFor([&] {
+        (void)player.result("step_frame");
+        return oneSink(player.outputStatus()).at("frames_gpu").get<std::uint64_t>() > 2;
+    }, std::chrono::seconds(30));
+    if (!started && !vo5bExpectsGpu()) SKIP("the GPU route isn't available on this machine");
+    REQUIRE(started);
+    auto root = project.readRoot();
+    for (auto &node : root.at("nodes")) {
+        if (node.at("id") == "fill_target") {
+            node["parameters"]["width"] = 8;
+            node["parameters"]["height"] = 8;
+        }
+    }
+    project.writeRoot(root);
+    REQUIRE(player.settle(player.result("reload_render_documents")).at("status") == "committed");
+    Json sink;
+    const auto received = waitFor([&] {
+        (void)player.result("step_frame");
+        (void)receiver.poll();
+        sink = oneSink(player.outputStatus());
+        return sink.at("transport_reason") == "bridge_create_failed" && receiver.width() == 8;
+    }, std::chrono::seconds(30));
+    INFO(sink.dump());
+    CHECK(received);
+    CHECK(sink.at("transport") == "cpu");
+    CHECK(sink.at("gpu_next_retry_ms").is_number());
+    const auto status = player.result("get_status");
+    player.close();
+    vo5bCheckLog(project, "vo5b_remake", status);
+}
+
+TEST_CASE("VO-5b a D3D11 wait that never finishes: real, queued, and the sink is refused",
+          "[vo5b][gpu]") {
+    SpoutGpuFault fault{"wait_forever"};
+    const auto name = vo5bName("forever");
+    TempProject project{"vo5b_forever"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_forever"};
+    Json sink;
+    std::optional<std::uint64_t> cpu_at_timeout;
+    const auto refused = waitFor([&] {
+        (void)player.result("step_frame");
+        sink = oneSink(player.outputStatus());
+        if (!cpu_at_timeout && sink.at("sync_timeouts").get<std::uint64_t>() > 0)
+            cpu_at_timeout = sink.at("frames_cpu").get<std::uint64_t>();
+        return sink.at("state") == "refused";
+    }, std::chrono::seconds(60));
+    INFO(sink.dump());
+    if (!refused && sink.at("frames_gpu") == 0 && !vo5bExpectsGpu())
+        SKIP("the GPU route isn't available on this machine");
+    REQUIRE(refused);
+    CHECK_THAT(sink.at("last_error").get<std::string>(),
+               Catch::Matchers::ContainsSubstring("output.spout_send_failed@1"));
+    CHECK(sink.at("transport") == "cpu");
+    CHECK(sink.at("transport_reason") == "sync_timeout");
+    CHECK(sink.at("gpu_quarantined") == true);
+    CHECK(sink.at("sync_timeouts") == 1);
+    // No CPU frame after the wait timed out: that context isn't known to progress.
+    REQUIRE(cpu_at_timeout.has_value());
+    CHECK(sink.at("frames_cpu").get<std::uint64_t>() == *cpu_at_timeout);
+    // The engine goes on, and this refusal is a Problem, as VO-4's are.
+    for (int step = 0; step < 5; ++step) (void)player.result("step_frame");
+    CHECK_FALSE(outputProblems(player).empty());
+    player.close();
+    CHECK(player.exitCode() == 0);
+}
+
+TEST_CASE("VO-5b a signal that failed leaves completion unresolved, so the sink is refused",
+          "[vo5b][gpu]") {
+    SpoutGpuFault fault{"signal_fail"};
+    const auto name = vo5bName("signal");
+    TempProject project{"vo5b_signal"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_signal"};
+    Json sink;
+    const auto refused = waitFor([&] {
+        (void)player.result("step_frame");
+        sink = oneSink(player.outputStatus());
+        return sink.at("state") == "refused";
+    }, std::chrono::seconds(60));
+    INFO(sink.dump());
+    if (!refused && sink.at("frames_gpu") == 0 && !vo5bExpectsGpu())
+        SKIP("the GPU route isn't available on this machine");
+    REQUIRE(refused);
+    CHECK(sink.at("gpu_quarantined") == true);
+    player.close();
+}
+
+TEST_CASE("VO-5b --output-spout-transport cpu: readback, the flag-off device list, and its reason",
+          "[vo5b][gpu]") {
+    TempProject project{"vo5b_cpu"};
+    project.writeExactPatternShader();
+    const auto name = vo5bName("cpu");
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    const auto without = vo5aRunPlayer(project, {}, "vo5b_cpu_off");
+    Json status;
+    {
+        PlayerRpc player{project, {"--output-spout", "--output-spout-transport", "cpu"}, "vo5b_cpu_on"};
+        (void)waitFor([&] {
+            (void)player.result("step_frame");
+            return oneSink(player.outputStatus()).at("frames_written").get<std::uint64_t>() > 2;
+        }, std::chrono::seconds(30));
+        status = player.result("get_status");
+        player.close();
+    }
+    const auto sink = oneSink(status.at("output"));
+    INFO(sink.dump());
+    CHECK(sink.at("transport") == "cpu");
+    CHECK(sink.at("transport_reason") == "cpu_requested");
+    CHECK(sink.at("frames_gpu") == 0);
+    CHECK(status.at("output").at("readbacks").get<std::uint64_t>() > 0);
+    CHECK(status.at("output").at("spout_gpu_path").at("reason") == "cpu_requested");
+    CHECK(vo5aEnabled(status) == vo5aEnabled(without));
+    CHECK(status.at("vulkan_extensions").at("device").at("rows").empty());
+}
+
+TEST_CASE("VO-5b a frame on the GPU route does no readback and keeps no staging", "[vo5b][gpu]") {
+    if (!vo5bExpectsGpu()) SKIP("the machine gate PELICAN_VO5B_EXPECT_GPU isn't set");
+    const auto name = vo5bName("staging");
+    SpoutTestReceiver receiver{name};
+    if (!receiver.deviceAvailable())
+        SKIP("no D3D11 device in this session: the integration test did not run");
+    TempProject project{"vo5b_staging"};
+    project.writeExactPatternShader();
+    attachSizedSpoutGraph(project, "R8G8B8A8_UNORM", name);
+    PlayerRpc player{project, {"--output-spout"}, "vo5b_staging"};
+    REQUIRE(waitFor([&] {
+        (void)player.result("step_frame");
+        return oneSink(player.outputStatus()).at("frames_gpu").get<std::uint64_t>() > 4;
+    }, std::chrono::seconds(30)));
+    const auto before = player.outputStatus();
+    for (int step = 0; step < 60; ++step) (void)player.result("step_frame");
+    const auto after = player.outputStatus();
+    INFO(after.dump());
+    CHECK(after.at("readbacks") == before.at("readbacks"));
+    CHECK(after.at("staging_allocations") == before.at("staging_allocations"));
+    CHECK(after.at("staging_bytes") == 0);
+    CHECK(oneSink(after).at("frames_gpu").get<std::uint64_t>() >
+          oneSink(before).at("frames_gpu").get<std::uint64_t>());
+}
+
+// Not asserted, not run by default. At 1920x1080, with a real receiver reading.
+TEST_CASE("VO-5b measurement of the GPU route against the CPU route", "[.vo5b-measure]") {
+    struct Mode { const char *label; std::vector<std::string> flags; bool sink; };
+    const std::vector<Mode> modes{
+        {"control_no_sink", {}, false},
+        {"cpu", {"--output-spout", "--output-spout-transport", "cpu"}, true},
+        {"auto", {"--output-spout"}, true},
+    };
+    constexpr int warmup_seconds = 30;
+    constexpr int measured_frames = 600;
+    auto results = Json::array();
+    const auto percentile = [](std::vector<double> values, double fraction) {
+        if (values.empty()) return 0.0;
+        std::sort(values.begin(), values.end());
+        return values[static_cast<std::size_t>(fraction * static_cast<double>(values.size() - 1))];
+    };
+    const auto summary = [&](const std::vector<double> &values) {
+        double total = 0.0;
+        for (const auto value : values) total += value;
+        return Json{{"mean", values.empty() ? 0.0 : total / static_cast<double>(values.size())},
+                    {"p95", percentile(values, 0.95)},
+                    {"p99", percentile(values, 0.99)}};
+    };
+    for (const auto *format : {"R8G8B8A8_UNORM", "B8G8R8A8_UNORM"}) {
+        for (const auto &mode : modes) {
+            for (int run = 0; run < 3; ++run) {
+                const auto name = vo5bName("measure");
+                SpoutTestReceiver receiver{name};
+                TempProject project{"vo5b_measure"};
+                project.writeExactPatternShader();
+                if (mode.sink) {
+                    attachSizedSpoutGraph(project, format, name, 1920, 1080);
+                } else {
+                    auto root = project.readRoot();
+                    auto target = targetNode("fill_target", format);
+                    target["parameters"]["width"] = 1920;
+                    target["parameters"]["height"] = 1080;
+                    root["nodes"].push_back(std::move(target));
+                    root["nodes"].push_back(fillNode("fill", "fill_target", "fill_target"));
+                    project.writeRoot(root);
+                }
+                PlayerRpc player{project, mode.flags, "vo5b_measure"};
+                const auto warm_until =
+                    std::chrono::steady_clock::now() + std::chrono::seconds(warmup_seconds);
+                while (std::chrono::steady_clock::now() < warm_until) {
+                    (void)player.result("step_frame");
+                    (void)receiver.poll();
+                }
+                (void)player.result("test_output_capture_timings");
+                std::vector<double> step_ms;
+                std::vector<double> poll_ms;
+                const auto cpu_begin = player.processCpuMs();
+                const auto first_status = player.result("get_status");
+                for (int frame = 0; frame < measured_frames; ++frame) {
+                    const auto begin = std::chrono::steady_clock::now();
+                    (void)player.result("step_frame");
+                    step_ms.push_back(std::chrono::duration<double, std::milli>(
+                        std::chrono::steady_clock::now() - begin).count());
+                    (void)receiver.poll();
+                }
+                const auto cpu_end = player.processCpuMs();
+                const auto timings = player.result("test_output_capture_timings");
+                std::vector<double> capture_total;
+                std::vector<double> record_submit;
+                for (const auto &sample : timings.at("samples")) {
+                    capture_total.push_back(sample.at("total_ms").get<double>());
+                    record_submit.push_back(sample.at("record_submit_ms").get<double>());
+                }
+                const auto status = player.result("get_status");
+                Json row{{"format", format}, {"mode", mode.label}, {"run", run},
+                         {"frames", measured_frames},
+                         {"step_frame_rpc_ms", summary(step_ms)},
+                         {"capture_total_ms", summary(capture_total)},
+                         {"record_submit_ms", summary(record_submit)},
+                         {"process_cpu_ms_per_frame",
+                          (cpu_end - cpu_begin) / static_cast<double>(measured_frames)},
+                         // Engine GPU timing: D3D11's copy isn't in it.
+                         {"engine_gpu_timing", status.at("gpu_timing").value("logical_frame_averages", Json{})},
+                         {"staging_allocations", status.at("output").at("staging_allocations")},
+                         {"readbacks", status.at("output").at("readbacks")}};
+                if (mode.sink) {
+                    const auto sink = oneSink(status.at("output"));
+                    for (const auto *field : {"transport", "transport_reason", "frames_gpu",
+                                              "frames_cpu", "frames_dropped", "bridge_busy",
+                                              "sync_timeouts", "sender_api_latency_gpu",
+                                              "sender_api_latency_cpu", "d3d11_completion",
+                                              "bridge_cycle"}) {
+                        row[field] = sink.at(field);
+                    }
+                }
+                results.push_back(row);
+                writeFile(fs::path{std::getenv("PELICAN_VO5B_MEASURE_FILE") != nullptr
+                                       ? std::getenv("PELICAN_VO5B_MEASURE_FILE")
+                                       : "vo5b_measure.json"},
+                          results.dump(2) + "\n");
+                player.close();
+            }
+        }
+    }
+    CHECK(results.size() == 18);
 }
 #endif

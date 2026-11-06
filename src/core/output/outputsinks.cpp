@@ -9,6 +9,7 @@
 #include "../watch/problemlist.hpp"
 #include "outputslotqueue.hpp"
 #include "outputspout.hpp"
+#include "outputbridgecommands.hpp"
 #include "outputspoutgpupath.hpp"
 #include "outputvideo.hpp"
 
@@ -16,6 +17,7 @@
 #include <chrono>
 #include <cmath>
 #include <condition_variable>
+#include <cstdlib>
 #include <cstring>
 #include <deque>
 #include <thread>
@@ -69,6 +71,38 @@ bool replaceOutputProblems(const std::vector<nlohmann::json> &problems) {
     if (list == nullptr) return false;
     list->replace(outputProblemDomain, problems);
     return true;
+}
+OutputSpoutSourceFormat outputSpoutSourceFormat(vk::Format format) {
+    switch (format) {
+    case vk::Format::eB8G8R8A8Unorm: return OutputSpoutSourceFormat::bgra8_unorm;
+    case vk::Format::eB8G8R8A8Srgb: return OutputSpoutSourceFormat::bgra8_srgb;
+    case vk::Format::eR8G8B8A8Unorm: return OutputSpoutSourceFormat::rgba8_unorm;
+    default: return OutputSpoutSourceFormat::rgba8_srgb;
+    }
+}
+nlohmann::json spoutTimingJson(const OutputSpoutTiming &timing) {
+    return {{"count", timing.count},
+            {"mean_ms", timing.count == 0 ? 0.0 : timing.total_ms / static_cast<double>(timing.count)},
+            {"max_ms", timing.max_ms}};
+}
+nlohmann::json spoutTransportJson(const OutputSpoutStatus &spout) {
+    return {{"transport", spout.transport},
+            {"transport_reason", spout.transport_reason},
+            {"transport_detail", spout.transport_detail},
+            {"frames_gpu", spout.frames_gpu},
+            {"frames_cpu", spout.frames_cpu},
+            {"bridge_busy", spout.bridge_busy},
+            {"gpu_fallbacks", spout.gpu_fallbacks},
+            {"sync_timeouts", spout.sync_timeouts},
+            {"gpu_quarantined", spout.gpu_quarantined},
+            {"gpu_next_retry_ms", spout.gpu_next_retry_ms
+                                      ? nlohmann::json(*spout.gpu_next_retry_ms)
+                                      : nlohmann::json(nullptr)},
+            // Sender-side API latency and D3D11 completion: not receiver latency.
+            {"sender_api_latency_gpu", spoutTimingJson(spout.capture_to_send_gpu)},
+            {"sender_api_latency_cpu", spoutTimingJson(spout.capture_to_send_cpu)},
+            {"d3d11_completion", spoutTimingJson(spout.d3d11_completion)},
+            {"bridge_cycle", spoutTimingJson(spout.bridge_cycle)}};
 }
 std::vector<OutputSinks::State> statesToValues(
     const std::vector<std::shared_ptr<OutputSinks::State>> &states) {
@@ -151,7 +185,18 @@ struct OutputSinks::Impl {
         bool wait_for_fence = false;
         bool submitted = false;
         std::shared_ptr<OutputVideoFrame> video_frame;
+        // A bridge reserved for this frame, until completeGpu or cancelGpu.
+        std::optional<OutputSpoutGpuFrame> spout_gpu;
+        Clock::time_point captured_at{};
     };
+    // Whichever frame a queued entry holds, it never reaches its consumer.
+    static void cancelEntry(Work &entry) {
+        if (entry.video_frame) entry.runtime->video->cancel(entry.video_frame);
+        if (entry.spout_gpu) {
+            entry.runtime->spout->cancelGpu(*entry.spout_gpu);
+            entry.spout_gpu.reset();
+        }
+    }
 
     struct CaptureTiming {
         std::uint64_t frame = 0;
@@ -199,6 +244,10 @@ struct OutputSinks::Impl {
     bool spout_armed = false;
     // VO-5a: set in the constructor and never changed.
     nlohmann::json spout_gpu_path;
+    // VO-5b: the same, for every sender this module starts.
+    OutputSpoutGpuRequest spout_gpu_request;
+    std::uint64_t staging_allocations = 0;
+    std::uint64_t readbacks = 0;
     bool offline = false;
     // Held from a problems snapshot through its publication, so a Spout thread's
     // publication can't overwrite a newer one. Taken before `mutex`.
@@ -222,6 +271,7 @@ struct OutputSinks::Impl {
             runtime->state->sender_name = spout.sender_name;
             runtime->state->width = spout.width;
             runtime->state->height = spout.height;
+            runtime->state->spout_transport = spoutTransportJson(spout);
             return;
         }
         if (runtime->video) {
@@ -269,7 +319,7 @@ struct OutputSinks::Impl {
         worker = std::thread([this] { run(); });
     }
     void run();
-    void process(Work entry);
+    void process(Work &entry);
     void discardUnstarted();
     void finishSlot(Work &entry, bool written, std::uint64_t written_bytes,
                     std::string error, bool limit, bool device_error);
@@ -279,7 +329,7 @@ struct OutputSinks::Impl {
 OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
     // Reverse-order module teardown must join the worker and release slot
     // resources before the device and allocator are destroyed.
-    const auto &vulkan = GET_MODULE(VulkanManageCore);
+    auto &vulkan = GET_MODULE(VulkanManageCore);
     // A Spout thread publishes its refusal, and is joined by this destructor.
     (void)GET_MODULE(ProblemList);
     if (const auto *config = FastModuleContainer::tryGet<EngineLaunchConfig>();
@@ -300,9 +350,42 @@ OutputSinks::OutputSinks() : impl_(std::make_unique<Impl>()) {
         }
     }
     // VO-5a: once, for the device this module lives inside of.
-    const auto gpu_path = outputSpoutGpuPathForRun(impl_->spout_armed, vulkan);
+    const auto *launch = FastModuleContainer::tryGet<EngineLaunchConfig>();
+    const bool cpu_requested = launch != nullptr && launch->output_spout_cpu;
+    const auto gpu_path =
+        outputSpoutGpuPathForRun(impl_->spout_armed, cpu_requested, vulkan);
     impl_->spout_gpu_path = outputSpoutGpuPathJson(gpu_path);
     LOG_INFO(logger, "spout gpu path: {} ({})", gpu_path.state, gpu_path.reason);
+    // VO-5b: the preflight only opens the gate. The real checks are the sender's.
+    auto &request = impl_->spout_gpu_request;
+    if (cpu_requested) {
+        request.gate_reason = "cpu_requested";
+    } else if (gpu_path.state != "available") {
+        request.gate_detail = gpu_path.reason;
+    } else if (!gpu_path.facts->kmt.importable) {
+        request.gate_detail = "a D3D11 KMT handle isn't importable";
+    } else {
+        request.allowed = true;
+        request.device = static_cast<VkDevice>(vulkan.getDevice());
+        request.vulkan_luid = gpu_path.facts->device_luid.bytes;
+        request.max_width = gpu_path.facts->kmt.max_width;
+        request.max_height = gpu_path.facts->kmt.max_height;
+        OutputBlitVerification blit;
+        try {
+            blit = verifyOutputRgba8Blit(vulkan);
+        } catch (const std::exception &e) {
+            blit.detail = e.what();
+        }
+#if PELICAN_OUTPUT_TEST_SEAMS
+        if (const char *fault = std::getenv("PELICAN_OUTPUT_SPOUT_GPU_FAULT");
+            fault != nullptr && std::string_view{fault} == "blit_mismatch") {
+            blit = {false, "injected blit mismatch"};
+        }
+#endif
+        request.rgba8_blit_exact = blit.exact;
+        impl_->spout_gpu_path["rgba8_blit"] = {{"exact", blit.exact}, {"detail", blit.detail}};
+        LOG_INFO(logger, "spout rgba8 blit keeps every byte: {} {}", blit.exact, blit.detail);
+    }
 }
 
 OutputSinks::~OutputSinks() {
@@ -363,7 +446,8 @@ std::shared_ptr<OutputSpoutSender> OutputSinks::Impl::startSpout(
     const std::string &name) {
     OutputSpoutSender::Options options;
     options.name = name;
-    options.factory = outputSpoutBackendFactory();
+    options.factory = outputSpoutBackendFactory(spout_gpu_request);
+    options.gpu = spout_gpu_request;
     const auto predecessor = std::find_if(retired_spouts.rbegin(), retired_spouts.rend(),
         [&](const auto &sender) { return sender->name() == name; });
     if (predecessor != retired_spouts.rend())
@@ -557,17 +641,20 @@ void OutputSinks::install(std::shared_ptr<const OutputSinkTable> next) {
 }
 
 namespace {
+// A slot on the GPU route has 0 bytes: a command buffer and a fence, no staging.
 void allocateSlot(OutputSinks::Impl::SlotResource &slot, vk::DeviceSize bytes) {
     auto &vulkan = GET_MODULE(VulkanManageCore);
-    slot.buffer = vulkan.allocBuf(
-        bytes, vk::BufferUsageFlagBits::eTransferDst,
-        vma::MemoryUsage::eAutoPreferHost,
-        vma::AllocationCreateFlagBits::eMapped |
-            vma::AllocationCreateFlagBits::eHostAccessRandom);
-    const auto info = vulkan.getAllocator().getAllocationInfo(slot.buffer.allocation.get());
-    const auto memory = vulkan.getPhysDevice().getMemoryProperties();
-    const auto properties = memory.memoryTypes[info.memoryType].propertyFlags;
-    slot.coherent = bool(properties & vk::MemoryPropertyFlagBits::eHostCoherent);
+    if (bytes != 0) {
+        slot.buffer = vulkan.allocBuf(
+            bytes, vk::BufferUsageFlagBits::eTransferDst,
+            vma::MemoryUsage::eAutoPreferHost,
+            vma::AllocationCreateFlagBits::eMapped |
+                vma::AllocationCreateFlagBits::eHostAccessRandom);
+        const auto info = vulkan.getAllocator().getAllocationInfo(slot.buffer.allocation.get());
+        const auto memory = vulkan.getPhysDevice().getMemoryProperties();
+        const auto properties = memory.memoryTypes[info.memoryType].propertyFlags;
+        slot.coherent = bool(properties & vk::MemoryPropertyFlagBits::eHostCoherent);
+    }
     slot.bytes = bytes;
     slot.command_pool = vulkan.getDevice().createCommandPoolUnique(
         {vk::CommandPoolCreateFlagBits::eResetCommandBuffer,
@@ -654,7 +741,7 @@ void OutputSinks::Impl::finishSlot(Work &entry, bool written,
     free_cv.notify_all();
 }
 
-void OutputSinks::Impl::process(Work entry) {
+void OutputSinks::Impl::process(Work &entry) {
     auto &slot = *entry.pool->resources[entry.slot];
     std::string error;
     bool device_error = false;
@@ -700,8 +787,17 @@ void OutputSinks::Impl::process(Work entry) {
             std::lock_guard lock{mutex};
             current_generation = entry.generation == generation;
         }
-        if (ready && !entry.discard && !device_error && error.empty() &&
-            current_generation) {
+        const bool usable = ready && !entry.discard && !device_error && error.empty() &&
+                            current_generation;
+        if (entry.spout_gpu) {
+            // Vulkan's copy has finished, or never ran, or the device is lost.
+            if (usable) {
+                entry.runtime->spout->completeGpu(*entry.spout_gpu);
+            } else {
+                entry.runtime->spout->cancelGpu(*entry.spout_gpu);
+            }
+            entry.spout_gpu.reset();
+        } else if (usable) {
             auto frame = entry.runtime->spout->acquire(entry.extent.width,
                 entry.extent.height, entry.format == vk::Format::eB8G8R8A8Unorm ||
                                      entry.format == vk::Format::eB8G8R8A8Srgb);
@@ -711,6 +807,7 @@ void OutputSinks::Impl::process(Work entry) {
                     getAllocationInfo(slot.buffer.allocation.get());
                 std::memcpy(frame->pixels.data(), info.pMappedData,
                             frame->pixels.size());
+                frame->captured_at = entry.captured_at;
                 entry.runtime->spout->publish(std::move(*frame));
             }
         }
@@ -831,17 +928,14 @@ void OutputSinks::Impl::run() {
         try {
             process(*selected);
         } catch (const vk::DeviceLostError &) {
-            if (selected->video_frame)
-                selected->runtime->video->cancel(selected->video_frame);
+            Impl::cancelEntry(*selected);
             finishSlot(*selected, false, 0, {}, false, true);
         } catch (const std::exception &e) {
-            if (selected->video_frame)
-                selected->runtime->video->cancel(selected->video_frame);
+            Impl::cancelEntry(*selected);
             finishSlot(*selected, false, 0,
                 std::string{"output.write_failed@1: "} + e.what(), false, false);
         } catch (...) {
-            if (selected->video_frame)
-                selected->runtime->video->cancel(selected->video_frame);
+            Impl::cancelEntry(*selected);
             finishSlot(*selected, false, 0,
                 "output.write_failed@1: unknown output worker error", false, false);
         }
@@ -918,6 +1012,20 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             continue;
         }
         const auto drop = runtime->spec.when_full == "drop";
+        // Takes only the sender's mutex, and never reaches D3D11.
+        std::optional<OutputSpoutGpuFrame> reserved_gpu;
+        if (runtime->spout) {
+            auto reservation = runtime->spout->reserveGpu(
+                read.extent.width, read.extent.height, outputSpoutSourceFormat(read.format));
+            if (reservation.route == OutputSpoutRoute::busy) {
+                std::lock_guard lock{impl_->mutex};
+                impl_->syncCounters(runtime);
+                continue;
+            }
+            reserved_gpu = std::move(reservation.frame);
+        }
+        const auto gpu_route = reserved_gpu.has_value();
+        const auto gpu_frame = reserved_gpu;
         std::shared_ptr<OutputVideoFrame> video_frame;
         if (runtime->video) {
             const auto &time = GET_MODULE(EngineTime);
@@ -978,8 +1086,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                                        queued.slot == candidate;
                             });
                         if (found != impl_->work.end()) {
-                            if (found->video_frame)
-                                found->runtime->video->cancel(found->video_frame);
+                            Impl::cancelEntry(*found);
                             impl_->work.erase(found);
                         }
                         impl_->syncCounters(runtime);
@@ -1033,18 +1140,27 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                             return entry.pool == runtime->pool && entry.slot == slot;
                         });
                     if (found != impl_->work.end()) {
-                        if (found->video_frame)
-                            found->runtime->video->cancel(found->video_frame);
+                        Impl::cancelEntry(*found);
                         impl_->work.erase(found);
                     }
                     runtime->pool->resources[slot]->source_lease.reset();
                 }
                 auto &resource = runtime->pool->resources[slot];
-                const auto required = static_cast<vk::DeviceSize>(read.extent.width) *
-                    read.extent.height * 4;
+                const auto required = gpu_route ? vk::DeviceSize{0}
+                    : static_cast<vk::DeviceSize>(read.extent.width) * read.extent.height * 4;
                 if (!resource || resource->bytes != required) {
                     resource = std::make_unique<Impl::SlotResource>();
                     allocateSlot(*resource, required);
+                    if (required != 0) ++impl_->staging_allocations;
+                }
+                // The CPU route's staging isn't kept once frames go by the GPU.
+                if (gpu_route) {
+                    for (std::size_t other = 0; other < output_slot_count; ++other) {
+                        auto &candidate = runtime->pool->resources[other];
+                        if (candidate && candidate->bytes != 0 &&
+                            runtime->pool->queue.state(other) == OutputSlotState::free)
+                            candidate.reset();
+                    }
                 }
                 resource->source_lease = read.source_lease;
                 runtime->pool->extent = read.extent;
@@ -1053,17 +1169,26 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                     capture_generation, read.extent, read.format,
                     runtime->spec.format == "png" ? OutputFileEncoding::png
                                                  : OutputFileEncoding::raw,
-                    false, false, false, video_frame});
+                    false, false, false, video_frame, reserved_gpu, capture_begin});
+                // The entry owns it now, and every erasure of an entry cancels it.
+                reserved_gpu.reset();
                 impl_->syncCounters(runtime);
                 break;
             }
             if (choice == OutputCaptureChoice::full && video_frame)
                 runtime->video->cancel(video_frame);
+            // Dropped, or the generation moved on: no entry took it.
+            if (reserved_gpu) {
+                runtime->spout->cancelGpu(*reserved_gpu);
+                reserved_gpu.reset();
+            }
         } catch (const vk::DeviceLostError &) {
             if (video_frame) runtime->video->cancel(video_frame);
+            if (reserved_gpu) runtime->spout->cancelGpu(*reserved_gpu);
             throw;
         } catch (const std::exception &e) {
             if (video_frame) runtime->video->cancel(video_frame);
+            if (reserved_gpu) runtime->spout->cancelGpu(*reserved_gpu);
             std::lock_guard lock{impl_->mutex};
             impl_->refuseRuntime(runtime, std::string{"output.read_failed@1: "} + e.what());
             continue;
@@ -1092,24 +1217,33 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                     return entry.pool == runtime->pool && entry.slot == slot;
                 });
             if (found != impl_->work.end()) {
-                if (found->video_frame)
-                    found->runtime->video->cancel(found->video_frame);
+                Impl::cancelEntry(*found);
                 impl_->work.erase(found);
             }
         };
         auto &resource = *runtime->pool->resources[slot];
         const auto record_begin = Clock::now();
         try {
-            const auto submitted = renderer.submitOutputCapture(
-                runtime->spec.target, runtime->spec.graph,
-                resource.buffer.buffer.get(), resource.command_buffer.get(),
-                resource.fence.get());
+            const auto submitted = gpu_route
+                ? renderer.submitOutputCaptureToImage(
+                      runtime->spec.target, runtime->spec.graph,
+                      OutputCaptureImageTarget{
+                          gpu_frame->image, gpu_frame->semaphore, gpu_frame->signal_value,
+                          vk::Extent2D{gpu_frame->width, gpu_frame->height},
+                          gpu_frame->blit ? OutputCaptureCopy::blit : OutputCaptureCopy::copy},
+                      resource.command_buffer.get(), resource.fence.get())
+                : renderer.submitOutputCapture(
+                      runtime->spec.target, runtime->spec.graph,
+                      resource.buffer.buffer.get(), resource.command_buffer.get(),
+                      resource.fence.get());
             if (submitted.status != OutputReadStatus::ready) {
                 std::lock_guard lock{impl_->mutex};
                 runtime->pool->queue.cancel(slot);
                 resource.source_lease.reset();
                 cancel_work();
-                if (runtime->video) {
+                if (gpu_route && submitted.status != OutputReadStatus::refused) {
+                    // The frame went stale between the two questions. Nothing failed.
+                } else if (runtime->video) {
                     runtime->video->abort(submitted.error);
                     impl_->noteProblem(*runtime);
                 } else {
@@ -1125,6 +1259,7 @@ void OutputSinks::captureFrame(Renderer &renderer) {
                                entry.frame == frame;
                     });
                 if (found != impl_->work.end()) found->submitted = true;
+                if (!gpu_route) ++impl_->readbacks;
             }
         } catch (const vk::DeviceLostError &) {
             std::lock_guard lock{impl_->mutex};
@@ -1139,6 +1274,30 @@ void OutputSinks::captureFrame(Renderer &renderer) {
             impl_->free_cv.notify_all();
             throw;
         } catch (const std::exception &e) {
+            if (gpu_route) {
+                // The way back: this sink goes on by CPU, and nothing was submitted.
+                {
+                    std::lock_guard lock{impl_->mutex};
+                    runtime->pool->queue.cancel(slot);
+                    resource.source_lease.reset();
+                    const auto found = std::find_if(impl_->work.begin(), impl_->work.end(),
+                        [&](const Impl::Work &entry) {
+                            return entry.pool == runtime->pool && entry.slot == slot;
+                        });
+                    if (found != impl_->work.end()) found->spout_gpu.reset();
+                    cancel_work();
+                    const auto *system = dynamic_cast<const std::system_error *>(&e);
+                    runtime->spout->gpuSubmitFailed(
+                        *gpu_frame, system != nullptr ? system->code().value() : VK_ERROR_UNKNOWN,
+                        e.what());
+                    impl_->syncCounters(runtime);
+                    impl_->free_cv.notify_all();
+                }
+                record_submit_ms = std::chrono::duration<double, std::milli>(
+                    Clock::now() - record_begin).count();
+                record_timing();
+                continue;
+            }
             std::lock_guard lock{impl_->mutex};
             runtime->pool->queue.cancel(slot);
             resource.source_lease.reset();
@@ -1245,12 +1404,23 @@ nlohmann::json OutputSinks::status() const {
             item["sender_name"] = state.sender_name;
             item["width"] = state.width;
             item["height"] = state.height;
+            if (state.spout_transport.is_object()) item.update(state.spout_transport);
         }
         sinks.push_back(std::move(item));
     }
     return {{"active", impl_->active || impl_->spout_armed}, {"sinks", std::move(sinks)},
         {"frames_skipped_inactive", impl_->frames_skipped_inactive},
         {"frames_skipped_no_contents", impl_->frames_skipped_no_contents},
+        {"staging_allocations", impl_->staging_allocations},
+        {"staging_bytes", [&] {
+             std::uint64_t bytes = 0;
+             for (const auto &runtime : impl_->current) {
+                 for (const auto &slot : runtime->pool->resources)
+                     if (slot) bytes += slot->bytes;
+             }
+             return bytes;
+         }()},
+        {"readbacks", impl_->readbacks},
         {"spout_gpu_path", impl_->spout_gpu_path}};
 }
 

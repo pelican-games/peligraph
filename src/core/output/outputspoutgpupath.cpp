@@ -66,6 +66,9 @@ OutputSpoutGpuPathReport evaluateOutputSpoutGpuPath(
     if (!context.armed) {
         return unavailable("not_requested", "the player wasn't given --output-spout");
     }
+    if (context.cpu_requested) {
+        return unavailable("cpu_requested", "the player was given --output-spout-transport cpu");
+    }
     if (source == nullptr) return {};
 
     // Every fact first, so an unavailable report still shows them all.
@@ -161,15 +164,17 @@ nlohmann::json outputSpoutGpuPathJson(const OutputSpoutGpuPathReport &report) {
     return json;
 }
 
-OutputSpoutGpuPathReport outputSpoutGpuPathForRun(bool armed, const VulkanManageCore &vulkan) {
+OutputSpoutGpuPathReport outputSpoutGpuPathForRun(bool armed, bool cpu_requested,
+                                                  const VulkanManageCore &vulkan) {
 #if defined(_WIN32)
     constexpr bool windows = true;
 #else
     constexpr bool windows = false;
 #endif
-    const OutputSpoutGpuPathContext context{windows, PELICAN_WITH_SPOUT != 0, armed};
+    const OutputSpoutGpuPathContext context{windows, PELICAN_WITH_SPOUT != 0, armed,
+                                            cpu_requested};
 #if PELICAN_WITH_SPOUT
-    if (armed) {
+    if (armed && !cpu_requested) {
         const auto enabled = vulkan.getEnabledDeviceExtensions();
         const auto source = makeOutputSpoutGpuCapabilitySource(
             static_cast<VkPhysicalDevice>(vulkan.getPhysDevice()),

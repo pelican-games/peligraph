@@ -49,6 +49,8 @@ DECLARE_MODULE(OutputSinks) {
         std::string sender_name;
         std::uint32_t width = 0;
         std::uint32_t height = 0;
+        // VO-5b: output.spout only: transport, its reason and its counters.
+        nlohmann::json spout_transport;
     };
 
     struct Impl;

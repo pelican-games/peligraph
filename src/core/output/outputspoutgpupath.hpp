@@ -97,6 +97,8 @@ struct OutputSpoutGpuPathContext {
     bool windows = false;
     bool spout_built = false;
     bool armed = false;
+    // --output-spout-transport cpu.
+    bool cpu_requested = false;
 };
 
 struct OutputSpoutGpuPathFacts {
@@ -122,6 +124,7 @@ struct OutputSpoutGpuPathFacts {
 //   platform_unsupported         not Windows
 //   build_without_spout          Windows, PELICAN_WITH_SPOUT off
 //   not_requested                no --output-spout
+//   cpu_requested                --output-spout-transport cpu
 //   external_memory_not_enabled  VK_KHR_external_memory_win32 isn't enabled
 //   device_luid_invalid          deviceLUIDValid false
 //   dxgi_unavailable             the default adapter can't be read
@@ -133,6 +136,10 @@ struct OutputSpoutGpuPathFacts {
 //   format_not_importable        neither NT nor KMT says importable
 //   format_no_transfer_dst       optimal tiling lacks TRANSFER_DST
 //   no_usable_sync               neither way in sync_* is there
+//
+// This is the static preflight. VO-5b's real checks come after it, on the sender's
+// thread, with the real device, the real texture and the real handle; a sink's
+// `transport` and `transport_reason` say how they went.
 //
 // Unavailable isn't a Problem and changes nothing: VO-4's activation and its
 // failures stay what they are, including a build without Spout, where there is
@@ -152,7 +159,8 @@ nlohmann::json outputSpoutGpuPathJson(const OutputSpoutGpuPathReport &report);
 
 // A snapshot of this device. OutputSinks takes it once, and doesn't outlive the
 // VulkanManageCore it asked; --output-spout doesn't change during a run.
-OutputSpoutGpuPathReport outputSpoutGpuPathForRun(bool armed, const VulkanManageCore &vulkan);
+OutputSpoutGpuPathReport outputSpoutGpuPathForRun(bool armed, bool cpu_requested,
+                                                  const VulkanManageCore &vulkan);
 
 // VkExternalMemoryHandleTypeFlagBits of a handle kind.
 std::uint32_t outputSpoutHandleTypeBit(OutputSpoutHandleKind kind);

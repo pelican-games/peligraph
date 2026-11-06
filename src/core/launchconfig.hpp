@@ -101,6 +101,10 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // VO-4: --output-spout, the only thing that arms output.spout sinks. Apart
     // from output_dir. Studio's embedded engine doesn't pass it.
     bool output_spout = false;
+    // VO-5b: --output-spout-transport cpu, a machine's setting and not a
+    // project's: the way out on stage, and the control for measuring. It only
+    // takes away Spout's optional Vulkan requests and the GPU route.
+    bool output_spout_cpu = false;
     // External H.264 encoder. Absent searches PATH at the first video frame.
     std::optional<std::filesystem::path> ffmpeg;
     // Per sink; a sink that reaches it becomes finished.

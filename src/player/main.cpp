@@ -463,6 +463,11 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
     program.add_argument("--output-spout")
         .flag()
         .help("publish the project's output.spout sinks as Spout senders (Windows; never in offline runs)");
+    program.add_argument("--output-spout-transport")
+        .default_value(std::string{"auto"})
+        .metavar("auto|cpu")
+        .help("how --output-spout reaches Spout: auto tries a shared texture on the GPU and falls "
+              "back by itself; cpu always reads back (default: auto)");
     program.add_argument("--ffmpeg")
         .default_value(std::string{})
         .metavar("path")
@@ -730,6 +735,13 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
             config.render_out = std::filesystem::path{render_out};
         }
         config.output_spout = program.get<bool>("--output-spout");
+        {
+            const auto transport = program.get<std::string>("--output-spout-transport");
+            if (transport != "auto" && transport != "cpu") {
+                throw std::runtime_error("--output-spout-transport must be auto or cpu");
+            }
+            config.output_spout_cpu = transport == "cpu";
+        }
         const auto ffmpeg = program.get<std::string>("--ffmpeg");
         if (!ffmpeg.empty()) config.ffmpeg = std::filesystem::path{ffmpeg};
         config.output_max_frames = parseOutputFrameLimit(

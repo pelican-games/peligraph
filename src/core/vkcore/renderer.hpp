@@ -9,6 +9,7 @@
 #include "render_target_layout_tracker.hpp"
 #include "rendertarget.hpp"
 #if PELICAN_WITH_VIDEO_OUTPUT
+#include "../output/outputbridgecommands.hpp"
 #include "../output/outputreadback.hpp"
 #endif
 #include "../../project/imagesubresource.hpp"
@@ -346,10 +347,20 @@ DECLARE_MODULE(Renderer) {
     // plan does not contain, is inactive; an unlaid-out target is no_contents.
     OutputReadResult readOutputRenderTargetForSink(
         std::string_view name, std::string_view graph);
+    // VO-5b: the same capture, into a bridge image. See outputbridgecommands.hpp.
+    OutputCaptureResult submitOutputCaptureToImage(
+        std::string_view name, std::string_view graph,
+        const OutputCaptureImageTarget &target,
+        vk::CommandBuffer command_buffer, vk::Fence fence);
     OutputCaptureResult submitOutputCapture(
         std::string_view name, std::string_view graph,
         vk::Buffer staging_buffer, vk::CommandBuffer command_buffer,
         vk::Fence fence);
+    // Both of the above, with one set of checks and leases.
+    OutputCaptureResult captureOutputTarget(
+        std::string_view name, std::string_view graph,
+        vk::Buffer staging_buffer, const OutputCaptureImageTarget *target,
+        vk::CommandBuffer command_buffer, vk::Fence fence);
 #endif
     R8RenderTargetReadback readR8RenderTargetForTesting(
         std::string_view name);

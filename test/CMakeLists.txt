@@ -4307,6 +4307,17 @@ if(PELICAN_WITH_VIDEO_OUTPUT)
         target_link_libraries(pelican_test_vo5a_gpu_path_windows_test PRIVATE dxgi)
     endif()
 endif()
+if(PELICAN_WITH_VIDEO_OUTPUT)
+    # VO-5b: routes, states, fallback, retry and stop with a fake backend, on every
+    # platform.
+    pelican_define_test(vo5b_spout_transport_test pelican_core)
+    if(PELICAN_WITH_SPOUT)
+        # Real Vulkan, real D3D11, a real spoutDX and a real receiver, no player.
+        pelican_define_test(vo5b_gpu_bridge_windows_test GPU pelican_core pelican_spoutdx
+                            VulkanMemoryAllocator VulkanMemoryAllocator-Hpp)
+        target_sources(pelican_test_vo5b_gpu_bridge_windows_test PRIVATE spout_test_receiver.cpp)
+    endif()
+endif()
 # VO-5a: the extension request table, with no GPU, in every build.
 pelican_define_test(vo5a_extension_requests_test pelican_core)
 # VO-5a: what really reaches the create calls, flat and through a fake OpenXR

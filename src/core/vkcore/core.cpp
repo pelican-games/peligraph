@@ -1167,7 +1167,8 @@ VulkanManageCore::VulkanManageCore() {
     StartupPhaseTimer startup_timer{&StartupMetrics::addVulkan};
     auto &launch_config = GET_MODULE(EngineLaunchConfig);
     const bool headless = launch_config.headless;
-    auto extension_requests = collectVulkanExtensionRequests(launch_config.output_spout);
+    auto extension_requests = collectVulkanExtensionRequests(
+        launch_config.output_spout && !launch_config.output_spout_cpu);
 #if PELICAN_OUTPUT_TEST_SEAMS
     applyExtraVulkanExtensionRequestsForTesting(extension_requests);
 #endif
