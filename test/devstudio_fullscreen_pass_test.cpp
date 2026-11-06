@@ -3437,7 +3437,7 @@ TEST_CASE("G-5 New... on a pass that already reads shaders/<its name>.frag "
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    form.setShaderSourceOpenAction([](const SourceLocation &) { return true; });
     form.setProjectRoot(root);
     // A Blank pipeline project's present, as F-6's test reads it.
     const Json present{{"name", "present"},
@@ -3568,8 +3568,9 @@ TEST_CASE("F-3 New... writes the shader for the form's inputs and opens it, "
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
     std::vector<std::filesystem::path> opened;
-    form.setShaderSourceOpenAction([&](const std::filesystem::path &path) {
-        opened.push_back(path);
+    form.setShaderSourceOpenAction([&](const SourceLocation &where) {
+        opened.push_back(where.file);
+        CHECK(!where.line);
         return true;
     });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
@@ -4038,7 +4039,7 @@ TEST_CASE("G-3 New... offers the deferred lighting and tone map starting "
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    form.setShaderSourceOpenAction([](const SourceLocation &) { return true; });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
     form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
     form.setProjectRoot(root);
@@ -4103,7 +4104,7 @@ TEST_CASE("G-3 a new pass needs no stem or name typed: the vertex stem is the "
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    form.setShaderSourceOpenAction([](const SourceLocation &) { return true; });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
     form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
     form.setProjectRoot(filesystemPath(temporary.path()));
@@ -4328,7 +4329,7 @@ TEST_CASE("T-1 the shader fields offer the project's shaders, then the engine's"
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    form.setShaderSourceOpenAction([](const SourceLocation &) { return true; });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
     form.receiveResult(QByteArray::fromStdString(f3FramePlan().dump()));
     auto &choice = required<QComboBox>(form, "pelican.fullscreenPass.shader.fragmentChoice");
@@ -4403,7 +4404,7 @@ TEST_CASE("T-1 Deferred lighting fills its inputs with the G-buffer targets by n
     RefreshHarness refresh;
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
-    form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+    form.setShaderSourceOpenAction([](const SourceLocation &) { return true; });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
     Json resources = Json::array();
     for (const auto &name : gbuffer) resources.push_back(resource(name));
@@ -4895,8 +4896,9 @@ TEST_CASE("Q-14 the Pass Editor says what to do when a Save gives a pass an "
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
     std::vector<std::filesystem::path> opened;
-    form.setShaderSourceOpenAction([&opened](const std::filesystem::path &path) {
-        opened.push_back(path);
+    form.setShaderSourceOpenAction([&opened](const SourceLocation &where) {
+        opened.push_back(where.file);
+        CHECK(!where.line);
         return true;
     });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
@@ -5011,8 +5013,9 @@ TEST_CASE("Q-15 the Pass Editor, refused for a declaration the pass cannot "
     AuthoringHarness authoring;
     FullscreenPassWidget form{refresh.driver(), authoring.driver()};
     std::vector<std::filesystem::path> opened;
-    form.setShaderSourceOpenAction([&opened](const std::filesystem::path &path) {
-        opened.push_back(path);
+    form.setShaderSourceOpenAction([&opened](const SourceLocation &where) {
+        opened.push_back(where.file);
+        CHECK(!where.line);
         return true;
     });
     authoring.succeed(authoring.requests.back().id, f3AuthoringContext());
@@ -5130,7 +5133,7 @@ struct Vi3bPresentForm {
 
     void open(const Json &shader, const Json &pass_inputs,
               const std::filesystem::path &root) {
-        form.setShaderSourceOpenAction([](const std::filesystem::path &) { return true; });
+        form.setShaderSourceOpenAction([](const SourceLocation &) { return true; });
         form.setProjectRoot(root);
         const auto context = vi3bPresentContext(shader);
         const auto plan = vi3bPresentPlan(pass_inputs);

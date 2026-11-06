@@ -38,7 +38,6 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QCheckBox>
-#include <QDesktopServices>
 #include <QEvent>
 #include <QFormLayout>
 #include <QGridLayout>
@@ -248,7 +247,7 @@ struct FullscreenPassWidget::Impl {
     // takes down that log and not an authoring rejection shown since.
     QString reload_log_text;
     std::optional<std::filesystem::path> project_root;
-    std::function<bool(const std::filesystem::path &)> shader_open_action;
+    std::function<bool(const SourceLocation &)> shader_open_action;
     QLineEdit *skinned_vertex_shader = nullptr;
     QWidget *skinned_vertex_row = nullptr;
     QComboBox *skinned_vertex_choice = nullptr;
@@ -1057,8 +1056,8 @@ struct FullscreenPassWidget::Impl {
                 refreshShaderChoices();
                 fragment_shader->setText(text(written.reference));
                 updateDraft();
-                if (!shader_open_action || !shader_open_action(written.path)) {
-                    row.line->setText(owner.tr("The desktop could not open %1.")
+                if (!shader_open_action || !shader_open_action(SourceLocation{written.path})) {
+                    row.line->setText(owner.tr("Could not open %1.")
                                           .arg(QString::fromStdWString(
                                               written.path.wstring())));
                     return;
@@ -1082,8 +1081,8 @@ struct FullscreenPassWidget::Impl {
         }
         if (row.unsupplied) {
             // Q-15: nothing to add -- the declaration is what goes.
-            if (!shader_open_action || !shader_open_action(*path)) {
-                row.line->setText(owner.tr("The desktop could not open %1.")
+            if (!shader_open_action || !shader_open_action(SourceLocation{*path})) {
+                row.line->setText(owner.tr("Could not open %1.")
                                       .arg(QString::fromStdWString(path->wstring())));
                 return;
             }
@@ -1102,8 +1101,8 @@ struct FullscreenPassWidget::Impl {
                 : 0;
         QApplication::clipboard()->setText(
             text(fullscreenShaderInputSnippet(inputs_now, first)));
-        if (!shader_open_action || !shader_open_action(*path)) {
-            row.line->setText(owner.tr("The desktop could not open %1.")
+        if (!shader_open_action || !shader_open_action(SourceLocation{*path})) {
+            row.line->setText(owner.tr("Could not open %1.")
                                   .arg(QString::fromStdWString(path->wstring())));
             return;
         }
@@ -1116,11 +1115,6 @@ struct FullscreenPassWidget::Impl {
     // --- F-3: a fullscreen pass is made shader and all.
 
     void buildShaderTemplateRows() {
-        // The same desktop hand-off the Frame Plan's shader Open uses.
-        shader_open_action = [](const std::filesystem::path &path) {
-            return QDesktopServices::openUrl(QUrl::fromLocalFile(
-                QString::fromStdWString(path.wstring())));
-        };
         fragment_row = new QWidget(&owner);
         fragment_row->setObjectName(
             QStringLiteral("pelican.fullscreenPass.fragmentRow"));
@@ -1394,10 +1388,10 @@ struct FullscreenPassWidget::Impl {
     void openShaderFile(const std::filesystem::path &path,
                         const QString &reference) {
         const bool opened =
-            shader_open_action && shader_open_action(path);
+            shader_open_action && shader_open_action(SourceLocation{path});
         if (!opened) {
             templateNotice(owner.tr("could not open %1").arg(reference),
-                           owner.tr("The desktop could not open %1.")
+                           owner.tr("Could not open %1.")
                                .arg(QString::fromStdWString(path.wstring())),
                            true);
         }
@@ -3868,12 +3862,16 @@ void FullscreenPassWidget::renderTargetCreated(const QString &name) {
 }
 
 void FullscreenPassWidget::setShaderSourceOpenAction(
-    std::function<bool(const std::filesystem::path &)> action) {
+    std::function<bool(const SourceLocation &)> action) {
     if (!action) {
         throw std::invalid_argument(
             "shader source open action must not be empty");
     }
     impl_->shader_open_action = std::move(action);
+}
+
+bool FullscreenPassWidget::hasShaderSourceOpenAction() const {
+    return static_cast<bool>(impl_->shader_open_action);
 }
 
 void FullscreenPassWidget::showShaderReloadLog(const QString &message) {

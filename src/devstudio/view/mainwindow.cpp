@@ -9,6 +9,7 @@
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
 #include "fullscreenshadertemplate.hpp"
+#include "externaleditordialog.hpp"
 #include "graphcanvaswidget.hpp"
 #include "inspectorwidget.hpp"
 #include "keymapdialog.hpp"
@@ -48,7 +49,6 @@
 #include <QAction>
 #include <QActionGroup>
 #include <QCryptographicHash>
-#include <QDesktopServices>
 #include <QAbstractItemView>
 #include <QCoreApplication>
 #include <QCloseEvent>
@@ -749,6 +749,20 @@ void MainWindow::showKeymapDialog() {
     dialog->open();
 }
 
+void MainWindow::showExternalEditorDialog() {
+    if (auto *existing = findChild<ExternalEditorDialog *>(
+            QStringLiteral("pelican.externalEditor.dialog"))) {
+        existing->show();
+        existing->raise();
+        existing->activateWindow();
+        return;
+    }
+    auto *dialog = new ExternalEditorDialog(*user_settings_, source_open_backends_.platform,
+                                            source_open_backends_.probe, this, editor_discovery_);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->open();
+}
+
 bool MainWindow::nativeEvent(const QByteArray &event_type, void *message, qintptr *result) {
 #ifdef Q_OS_WIN
     const auto *native_message = static_cast<const MSG *>(message);
@@ -808,9 +822,6 @@ void MainWindow::createWorkspace() {
     // BS-1s, decisions 2-4: above the viewport while the engine draws its
     // placeholder because the rendering setup was refused at start. Its
     // hooks reach panels made further down; they run only once it shows.
-    file_open_action_ = [](const std::filesystem::path &path) {
-        return QDesktopServices::openUrl(QUrl::fromLocalFile(QString::fromStdWString(path.wstring())));
-    };
     render_fallback_ = new RenderFallbackNotice(
         RenderFallbackNotice::Hooks{
             .reload = [this] {
@@ -821,13 +832,11 @@ void MainWindow::createWorkspace() {
                 showDock(GraphDock);
                 graph_canvas_->revealNodeWhenPresent(node);
             },
-            .open_file = [this](const QString &document) {
-                const QString root = viewport_->projectRoot();
-                if (root.isEmpty()) return;
-                const auto path = std::filesystem::path{root.toStdWString()} /
-                                  std::filesystem::path{document.toStdWString()};
-                if (!file_open_action_ || !file_open_action_(path))
-                    statusBar()->showMessage(tr("Could not open %1.").arg(document), 8000);
+            .open_file = [this](const QString &document, std::int64_t line,
+                                std::int64_t column) {
+                const auto where = projectSourceLocation(viewport_->projectRoot(), document,
+                                                        line, column);
+                if (where) (void)openSourceFile(*where);
             },
             .restart = [this](const QString &reason) { requestEngineRestart(reason); },
             .read_status = [this] {
@@ -1214,6 +1223,8 @@ void MainWindow::createWorkspace() {
     // as its largest page, shown or not, so each dock now asks only for what
     // it holds.
     frame_plan_ = new FramePlanWidget(viewport_, this);
+    frame_plan_->setShaderSourceOpenAction(
+        [this](const SourceLocation &where) { return openSourceFile(where); });
     render_features_ = new RenderFeaturesWidget(viewport_, this);
     graph_canvas_ = new GraphCanvasWidget(
         graphCanvasReadCapability(*viewport_), this);
@@ -1340,6 +1351,8 @@ void MainWindow::createWorkspace() {
     fullscreen_pass_ = new FullscreenPassWidget(
         framePlanReadCapability(*viewport_),
         renderPassAuthoringCapability(*viewport_), this);
+    fullscreen_pass_->setShaderSourceOpenAction(
+        [this](const SourceLocation &where) { return openSourceFile(where); });
     // F-7. The form is taller than most screens leave a bottom dock (close
     // to a thousand pixels at its minimum), and a dock may not be smaller
     // than what it holds: showing it pushed the dock area up until the
@@ -2358,17 +2371,13 @@ void MainWindow::openProblem(const ProblemRow &row) {
         return;
     }
     case Place::ShaderFile: {
-        const QString root = viewport_->projectRoot();
-        if (root.isEmpty() || document.isEmpty() || document.startsWith(QStringLiteral("engine://"))) {
+        const auto where = projectSourceLocation(viewport_->projectRoot(), document,
+                                                row.line, row.column);
+        if (!where) {
             statusBar()->showMessage(tr("%1 is not a file of this project.").arg(document), 8000);
             return;
         }
-        const auto path =
-            std::filesystem::path{root.toStdWString()} / std::filesystem::path{document.toStdWString()};
-        if (!file_open_action_ || !file_open_action_(path))
-            statusBar()->showMessage(tr("Could not open %1.").arg(document), 8000);
-        else if (row.line > 0)
-            statusBar()->showMessage(tr("%1: line %2").arg(document).arg(row.line), 8000);
+        (void)openSourceFile(*where);
         return;
     }
     case Place::AssetFile:
@@ -2601,6 +2610,10 @@ void MainWindow::createMenus() {
                    tr("Keyboard Shortcuts..."));
     connect(keymap_action, &QAction::triggered, this,
             [this] { showKeymapDialog(); });
+    QAction *external_editor_action = edit_menu->addAction(tr("External &Editor..."));
+    external_editor_action->setObjectName(QStringLiteral("pelican.edit.externalEditor"));
+    connect(external_editor_action, &QAction::triggered, this,
+            [this] { showExternalEditorDialog(); });
 
     QAction *palette_action = edit_menu->addAction(tr("Command &Palette..."));
     palette_action->setObjectName(QStringLiteral("pelican.edit.commandPalette"));
@@ -3888,12 +3901,56 @@ void MainWindow::leaveCurrentProject(
     setWindowModified(false);
 }
 
-void MainWindow::setShaderSourceOpenAction(
-    std::function<bool(const std::filesystem::path &)> action) {
-    frame_plan_->setShaderSourceOpenAction(action);
-    // BS-1s: the fallback notice's Open file opens the same way.
-    file_open_action_ = action;
-    fullscreen_pass_->setShaderSourceOpenAction(std::move(action));
+bool MainWindow::openSourceFile(const SourceLocation &where) {
+    ++source_open_generation_;
+    const auto settings = ExternalEditorStore(*user_settings_).load();
+    const QString project = viewport_->projectRoot();
+    const auto *preset = externalEditorPreset(settings.choice);
+    if (preset && preset->id == QStringLiteral("visual_studio") &&
+        source_open_backends_.platform == EditorPlatform::windows) {
+        if (!editor_discovery_->hasCached(preset->id, EditorPlatform::windows)) {
+            const auto generation = source_open_generation_;
+            editor_discovery_->resolve(
+                *preset, EditorPlatform::windows, this,
+                [this, generation, where, project](const QString &program) {
+                    if (generation != source_open_generation_ || project != viewport_->projectRoot()) return;
+                    if (program.isEmpty()) {
+                        statusBar()->showMessage(
+                            tr("Could not open %1: %2 was not found on this computer. "
+                               "Change it in Edit > External Editor...")
+                                .arg(QFileInfo{QString::fromStdU16String(where.file.u16string())}.fileName(),
+                                     tr("Visual Studio")), 8000);
+                        return;
+                    }
+                    auto backends = source_open_backends_;
+                    backends.resolved_program = program;
+                    const auto result = openSourceFileWith(
+                        ExternalEditorStore(*user_settings_).load(), where, project, backends);
+                    if (!result.status.isEmpty()) statusBar()->showMessage(result.status, 8000);
+                });
+            return true;
+        }
+        source_open_backends_.resolved_program =
+            editor_discovery_->cached(preset->id, EditorPlatform::windows);
+        if (source_open_backends_.resolved_program.isEmpty()) {
+            statusBar()->showMessage(
+                tr("Could not open %1: %2 was not found on this computer. "
+                   "Change it in Edit > External Editor...")
+                    .arg(QFileInfo{QString::fromStdU16String(where.file.u16string())}.fileName(),
+                         preset->label), 8000);
+            return false;
+        }
+    } else {
+        source_open_backends_.resolved_program.clear();
+    }
+    const auto result = openSourceFileWith(settings, where, project, source_open_backends_);
+    if (!result.status.isEmpty()) statusBar()->showMessage(result.status, 8000);
+    return result.opened;
+}
+
+void MainWindow::setSourceOpenBackends(SourceOpenBackends backends) {
+    source_open_backends_ = std::move(backends);
+    editor_discovery_ = std::make_shared<ExternalEditorDiscovery>(source_open_backends_.probe);
 }
 
 void MainWindow::populateOutliner() {

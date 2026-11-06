@@ -71,6 +71,7 @@ struct Rig {
     int status_reads = 0;
     std::vector<QString> graph_opened;
     std::vector<QString> files_opened;
+    std::vector<std::pair<std::int64_t, std::int64_t>> file_locations;
     std::vector<QString> restarts;
     std::vector<std::pair<bool, QString>> shown;
     // Decision 8: what the document's window asked the engine, its clock,
@@ -93,7 +94,10 @@ struct Rig {
         : notice{RenderFallbackNotice::Hooks{
               .reload = [this] { ++reloads; },
               .open_graph = [this](const QString &node) { graph_opened.push_back(node); },
-              .open_file = [this](const QString &document) { files_opened.push_back(document); },
+              .open_file = [this](const QString &document, std::int64_t line, std::int64_t column) {
+                  files_opened.push_back(document);
+                  file_locations.emplace_back(line, column);
+              },
               .restart = [this](const QString &reason) { restarts.push_back(reason); },
               .read_status = [this] { ++status_reads; },
               .request = [this](const std::string &method, const Json &params, std::string *) -> std::int64_t {
@@ -159,6 +163,16 @@ TEST_CASE("BS-1s decision 2: the placeholder is one sentence above the viewport 
     CHECK(rig.graph_opened == std::vector<QString>{QStringLiteral("sim")});
     rig.named<QPushButton>("pelican.renderFallbackNotice.openFile")->click();
     CHECK(rig.files_opened == std::vector<QString>{QStringLiteral("passes/main_rendering_config.json")});
+    REQUIRE(rig.file_locations.size() == 1);
+    CHECK(rig.file_locations.back() == std::pair<std::int64_t, std::int64_t>{0, 0});
+    Json located = fallbackStatus();
+    located["render_pipeline"]["refusal"]["code"] = "render_document_syntax@1";
+    located["render_pipeline"]["refusal"]["line"] = 3;
+    located["render_pipeline"]["refusal"]["column"] = 1;
+    rig.notice.observeStatus(located);
+    rig.named<QPushButton>("pelican.renderFallbackNotice.openFile")->click();
+    REQUIRE(rig.file_locations.size() == 2);
+    CHECK(rig.file_locations.back() == std::pair<std::int64_t, std::int64_t>{3, 1});
 
     // A refusal that names no node and no document: the root is the file,
     // nothing to open in the Graph, and a code Studio has no sentence for

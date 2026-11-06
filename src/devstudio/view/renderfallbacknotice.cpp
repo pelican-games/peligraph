@@ -66,7 +66,9 @@ RenderFallbackNotice::RenderFallbackNotice(Hooks hooks, QWidget *parent)
     });
     connect(open_file_, &QPushButton::clicked, this, [this] {
         if (hooks_.open_file && !session_.notice().document.empty())
-            hooks_.open_file(qtext(session_.notice().document));
+            hooks_.open_file(qtext(session_.notice().document),
+                             session_.notice().syntax_line,
+                             session_.notice().syntax_column);
     });
     connect(show_document_, &QPushButton::clicked, this, [this] { showDocument(); });
     connect(restart_, &QPushButton::clicked, this, [this] {

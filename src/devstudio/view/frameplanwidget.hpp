@@ -3,6 +3,7 @@
 #include "../model/frameplanmodel.hpp"
 #include "../toollayoutpreset.hpp"
 #include "frameplaneditcapability.hpp"
+#include "externaleditor.hpp"
 #include "shaderdiagnostics.hpp"
 
 #include <QWidget>
@@ -44,7 +45,7 @@ class FramePlanWidget final : public QWidget {
 
   public:
     using ShaderSourceOpenAction =
-        std::function<bool(const std::filesystem::path &)>;
+        std::function<bool(const SourceLocation &)>;
 
     explicit FramePlanWidget(EmbeddedViewport *viewport,
                              QWidget *parent = nullptr);

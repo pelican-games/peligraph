@@ -1,6 +1,7 @@
 #pragma once
 
 #include "frameplanreadcapability.hpp"
+#include "externaleditor.hpp"
 #include "renderpassauthoringcapability.hpp"
 
 #include <QWidget>
@@ -59,7 +60,7 @@ class FullscreenPassWidget final : public QWidget {
     void insertAuthoredPassAfter(const QString &graph, const QString &after_pass);
     void editPresetPassConnection(const QString &graph, const QString &pass_name, const QStringList &outputs);
     // F-3. "New..." beside the fragment stem writes <root>/shaders/<name>.frag
-    // and opens it with this action (the desktop's own by default).
+    // and opens it through the main window's configured editor.
     void setProjectRoot(const std::filesystem::path &project_root);
     // VI-3b. Fix sockets beside the fragment, shown for a pass whose shader
     // has a variadic group: the Frame Plan rewrites the shader.
@@ -70,7 +71,8 @@ class FullscreenPassWidget final : public QWidget {
     void setDecomposeAction(
         std::function<void(const QString &graph, const QString &pass)> action);
     void setShaderSourceOpenAction(
-        std::function<bool(const std::filesystem::path &)> action);
+        std::function<bool(const SourceLocation &)> action);
+    [[nodiscard]] bool hasShaderSourceOpenAction() const;
     // F-5. A shader reload the engine refused: its log goes under the form
     // while the Pass Editor is open. Empty text takes down a log that a
     // reload put there (a reload that committed).

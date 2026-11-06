@@ -66,12 +66,14 @@ int uimain(int argc, char **argv, LaunchOptions options) {
         automation = std::make_unique<AutomationServer>(std::move(host));
         // A scenario drives Studio, not the desktop: a shader "opened" under
         // automation is written to the log instead of starting an editor.
-        window.setShaderSourceOpenAction(
-            [](const std::filesystem::path &path) {
-                std::cout << "automation: shader source open "
-                          << path.generic_string() << std::endl;
-                return true;
-            });
+        auto backends = defaultSourceOpenBackends();
+        backends.system_default = [](const SourceLocation &where) {
+            std::cout << "automation: shader source open " << where.file.generic_string();
+            if (where.line) std::cout << " line " << *where.line;
+            std::cout << std::endl;
+            return true;
+        };
+        window.setSourceOpenBackends(std::move(backends));
         QString error;
         const auto name = QString::fromStdString(options.automation);
         if (!automation->listen(name, &error)) {

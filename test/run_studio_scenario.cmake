@@ -90,6 +90,11 @@ if(EXISTS "${prepare}")
     endif()
 endif()
 
+set(scenario_extra_vars)
+if(DEFINED EDITOR_HELPER AND NOT "${EDITOR_HELPER}" STREQUAL "")
+    list(APPEND scenario_extra_vars --var "editor_helper=${EDITOR_HELPER}")
+endif()
+
 set(report "${run_dir}/report.json")
 execute_process(
     COMMAND ${CMAKE_COMMAND} -E env "PATH=${scenario_path_env}" ${scenario_extra_env}
@@ -100,6 +105,7 @@ execute_process(
             --project "${project_dir}"
             --var "other_project=${other_project_dir}"
             --var "fixtures=${fixtures_dir}"
+            ${scenario_extra_vars}
             --artifacts "${run_dir}"
             --report "${report}"
     RESULT_VARIABLE driver_result

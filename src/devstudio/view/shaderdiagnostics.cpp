@@ -165,6 +165,18 @@ bool sameShaderSource(const std::filesystem::path &left,
     return normalisedSpelling(left) == normalisedSpelling(right);
 }
 
+std::optional<int> shaderErrorLine(std::string_view engine_message,
+                                   const std::filesystem::path &file) {
+    for (const auto &failure : parseShaderCompileFailures(engine_message)) {
+        if (!sameShaderSource(std::filesystem::path{failure.path}, file)) continue;
+        for (const auto &location : shaderLogLocations(failure.log))
+            if (location.line > 0 &&
+                sameShaderSource(std::filesystem::path{location.path}, file))
+                return location.line;
+    }
+    return std::nullopt;
+}
+
 ShaderReloadMarks shaderReloadMarks(const ShaderReloadReading &reading,
                                     const NodeShaderSources &sources) {
     ShaderReloadMarks marks;

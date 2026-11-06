@@ -1078,6 +1078,30 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Test
   )
 
+  add_executable(pelican_test_editor_helper editor_helper.cpp)
+  set_target_properties(pelican_test_editor_helper PROPERTIES CXX_STANDARD 20)
+  target_link_libraries(pelican_test_editor_helper PRIVATE Qt6::Core)
+
+  pelican_define_test(devstudio_external_editor_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+  target_include_directories(pelican_test_devstudio_external_editor_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/devstudio)
+  target_compile_definitions(pelican_test_devstudio_external_editor_test PRIVATE
+    PELICAN_EDITOR_HELPER_PATH="$<TARGET_FILE:pelican_test_editor_helper>")
+  add_dependencies(pelican_test_devstudio_external_editor_test pelican_test_editor_helper)
+
   # BS-1s: the row above the viewport while the engine draws its placeholder
   # (engine BS-1), on the real widget with the test answering through its
   # hooks.
@@ -4192,6 +4216,9 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
             elseif(pelican_studio_scenario_name STREQUAL "live_input_knob")
                 set(pelican_studio_scenario_fixture
                     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_live_input_node_from_graph")
+            elseif(pelican_studio_scenario_name STREQUAL "external_editor_open")
+                set(pelican_studio_scenario_fixture
+                    "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_material_pass_authoring")
             endif()
             set(pelican_studio_scenario_game_logic)
             if(TARGET pelican_studio_${pelican_studio_scenario_name}_game_logic)
@@ -4203,6 +4230,11 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
             set(pelican_studio_scenario_cli)
             if(TARGET pelican_cli)
                 set(pelican_studio_scenario_cli "-DCLI=$<TARGET_FILE:pelican_cli>")
+            endif()
+            set(pelican_studio_scenario_editor_helper)
+            if(TARGET pelican_test_editor_helper)
+                set(pelican_studio_scenario_editor_helper
+                    "-DEDITOR_HELPER=$<TARGET_FILE:pelican_test_editor_helper>")
             endif()
             # gui_build_optimize ends with the undo invariant, which recompiles
             # every step back, and needs more than the shared driver timeout.
@@ -4225,6 +4257,7 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     -DQT_BIN_DIR=$<TARGET_FILE_DIR:Qt6::Core>
                     ${pelican_studio_scenario_game_logic}
                     ${pelican_studio_scenario_cli}
+                    ${pelican_studio_scenario_editor_helper}
                     -DDRIVER_TIMEOUT=${pelican_studio_scenario_driver_timeout}
                     -P ${CMAKE_CURRENT_SOURCE_DIR}/run_studio_scenario.cmake
             )

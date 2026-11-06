@@ -5903,8 +5903,9 @@ TEST_CASE(
     widget.setProjectRoot(root);
     std::optional<std::filesystem::path> opened;
     widget.setShaderSourceOpenAction(
-        [&](const std::filesystem::path &path) {
-            opened = path;
+        [&](const SourceLocation &where) {
+            opened = where.file;
+            CHECK(!where.line);
             return true;
         });
     widget.receiveResult(QByteArray::fromStdString(wire.dump()));
@@ -6028,8 +6029,9 @@ TEST_CASE(
     widget.setProjectRoot(root);
     std::optional<std::filesystem::path> opened;
     widget.setShaderSourceOpenAction(
-        [&](const std::filesystem::path &path) {
-            opened = path;
+        [&](const SourceLocation &where) {
+            opened = where.file;
+            CHECK(!where.line);
             return true;
         });
     widget.receiveResult(QByteArray::fromStdString(wire.dump()));

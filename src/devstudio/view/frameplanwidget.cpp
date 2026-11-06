@@ -30,7 +30,6 @@
 #include <QColor>
 #include <QComboBox>
 #include <QDateTime>
-#include <QDesktopServices>
 #include <QFont>
 #include <QGraphicsView>
 #include <QHeaderView>
@@ -860,6 +859,7 @@ struct FramePlanWidget::Impl {
     QPushButton *contract_use_passthrough = nullptr;
     QPushButton *contract_open_shader = nullptr;
     std::optional<std::filesystem::path> project_root;
+    std::string last_shader_error;
     // RP-1a2: what a tabified dock shows, and what a plain widget shows.
     // Declared last so it is destroyed first: its callbacks use the members
     // above it.
@@ -871,10 +871,6 @@ struct FramePlanWidget::Impl {
           shown{widget,
                 [this] { caughtUpOnShow(); },
                 [this] { wentOutOfView(); }} {
-        shader_source_open_action = [](const std::filesystem::path &path) {
-            return QDesktopServices::openUrl(QUrl::fromLocalFile(
-                QString::fromStdWString(path.wstring())));
-        };
         reload_follower = std::make_unique<ShaderReloadFollower>(
             ShaderReloadFollower::Hooks{
                 .request_status =
@@ -2005,6 +2001,7 @@ struct FramePlanWidget::Impl {
                                 const ShaderReloadReading &reading,
                                 bool after_change) {
         (void)after_change;
+        last_shader_error = reading.last_error;
         std::map<std::string, QString> nodes;
         for (const auto &[node, line] : marks.nodes)
             nodes.emplace(node, text(line));
@@ -2031,6 +2028,7 @@ struct FramePlanWidget::Impl {
         using Kind = ShaderReloadOutcome::Kind;
         switch (outcome.kind) {
         case Kind::committed:
+            last_shader_error.clear();
             clearReloadNotice();
             logical_scene->setShaderErrorMarks({});
             if (shader_reload_log_action) shader_reload_log_action({});
@@ -2834,8 +2832,8 @@ struct FramePlanWidget::Impl {
                 graph, pass, *engineFragmentSource(EnginePassthroughFragment));
             if (!file) return;
             const auto path = shaderTemplatePath(*project_root, name);
-            if (!shader_source_open_action || !shader_source_open_action(path)) {
-                showStatus(owner.tr("The desktop could not open %1.")
+            if (!shader_source_open_action || !shader_source_open_action(SourceLocation{path})) {
+                showStatus(owner.tr("Could not open %1.")
                                .arg(QString::fromStdWString(path.wstring())));
                 return;
             }
@@ -2852,8 +2850,8 @@ struct FramePlanWidget::Impl {
         }
         if (fix.unsupplied) {
             // Q-15: nothing to add -- the declaration is what goes.
-            if (!shader_source_open_action || !shader_source_open_action(*path)) {
-                showStatus(owner.tr("The desktop could not open %1.")
+            if (!shader_source_open_action || !shader_source_open_action(SourceLocation{*path})) {
+                showStatus(owner.tr("Could not open %1.")
                                .arg(QString::fromStdWString(path->wstring())));
                 return;
             }
@@ -2871,8 +2869,8 @@ struct FramePlanWidget::Impl {
         const auto inputs = contractTemplateInputs(fix);
         QApplication::clipboard()->setText(
             text(fullscreenShaderInputSnippet(inputs, first)));
-        if (!shader_source_open_action || !shader_source_open_action(*path)) {
-            showStatus(owner.tr("The desktop could not open %1.")
+        if (!shader_source_open_action || !shader_source_open_action(SourceLocation{*path})) {
+            showStatus(owner.tr("Could not open %1.")
                            .arg(QString::fromStdWString(path->wstring())));
             return;
         }
@@ -3269,8 +3267,9 @@ struct FramePlanWidget::Impl {
                            .arg(text(fix.fragment)));
             return;
         }
-        if (!shader_source_open_action || !shader_source_open_action(*path))
-            showStatus(owner.tr("The desktop could not open %1.")
+        const SourceLocation where{*path, shaderErrorLine(last_shader_error, *path)};
+        if (!shader_source_open_action || !shader_source_open_action(where))
+            showStatus(owner.tr("Could not open %1.")
                            .arg(QString::fromStdWString(path->wstring())));
     }
 
@@ -4582,6 +4581,7 @@ struct FramePlanWidget::Impl {
     }
 
     void populate() {
+        last_shader_error.clear();
         if (logical_scene->dragging()) {
             populate_after_drag = true;
             return;
@@ -4799,13 +4799,11 @@ struct FramePlanWidget::Impl {
             const auto path =
                 Pelican::materializeShaderSourceOpenReference(
                     *project_resolver, logical_ref);
-            if (!shader_source_open_action ||
-                !shader_source_open_action(path)) {
-                throw std::runtime_error(
-                    "the desktop could not open shader source: " +
-                    path.string());
+            const SourceLocation where{path, shaderErrorLine(last_shader_error, path)};
+            if (!shader_source_open_action || !shader_source_open_action(where)) {
+                throw std::runtime_error("Could not open " + path.string());
             }
-            showStatus(owner.tr("Opened shader source %1")
+            showStatus(owner.tr("Open requested for shader source %1")
                            .arg(QString::fromStdString(logical_ref)));
             status->setStyleSheet(QStringLiteral("color: #388e3c;"));
         } catch (const std::exception &error) {
@@ -5884,6 +5882,7 @@ void FramePlanWidget::receiveGpuTimingResult(
 void FramePlanWidget::setProjectRoot(
     const std::filesystem::path &project_root) {
     // RP-1b: another project is another engine's plan.
+    impl_->last_shader_error.clear();
     impl_->cancelPlanWait();
     const auto project_file = project_root / "project.json";
     std::ifstream input{project_file, std::ios::binary};

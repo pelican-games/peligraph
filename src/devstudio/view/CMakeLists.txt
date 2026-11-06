@@ -8,6 +8,10 @@ add_library(pelican_studio_view STATIC
     commandpalette.cpp
     commandpalette.hpp
     commandpalettematch.hpp
+    externaleditor.cpp
+    externaleditor.hpp
+    externaleditordialog.cpp
+    externaleditordialog.hpp
     frameplanwidget.cpp
     frameplanwidget.hpp
     frameplangraphics.cpp

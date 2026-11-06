@@ -1,6 +1,7 @@
 #pragma once
 
 #include "layoutpreset.hpp"
+#include "externaleditor.hpp"
 #include "panelshown.hpp"
 #include "renderdocumentwatcher.hpp"
 #include "toollayoutpreset.hpp"
@@ -180,12 +181,8 @@ class MainWindow : public QMainWindow {
     [[nodiscard]] EmbeddedViewport *engineViewport() const noexcept {
         return viewport_;
     }
-    // F-3. How a shader file is handed to an editor, for both panels that
-    // open one (the Frame Plan's Open and the Pass Editor's New...). The
-    // desktop's own by default; the automation launch replaces it so a
-    // scenario never starts an application.
-    void setShaderSourceOpenAction(
-        std::function<bool(const std::filesystem::path &)> action);
+    bool openSourceFile(const SourceLocation &where);
+    void setSourceOpenBackends(SourceOpenBackends backends);
     // UX-7, decision 9. The automation channel's quit: a run in Play or Pause
     // is stopped (nothing kept) and `then` is called once it has; with no
     // run, at once. A person closing the window is still asked; a scenario's
@@ -401,11 +398,11 @@ class MainWindow : public QMainWindow {
     std::optional<RenderDocumentReload> render_reload_;
     std::unique_ptr<RenderDocumentWatcher> render_document_watcher_;
     QAction *reload_from_disk_action_ = nullptr;
-    // BS-1s: the row above the viewport while the engine draws its
-    // placeholder, and how Open file opens a file (the desktop's editor;
-    // under automation, a line in the log).
     RenderFallbackNotice *render_fallback_ = nullptr;
-    std::function<bool(const std::filesystem::path &)> file_open_action_;
+    SourceOpenBackends source_open_backends_ = defaultSourceOpenBackends();
+    std::shared_ptr<ExternalEditorDiscovery> editor_discovery_ =
+        std::make_shared<ExternalEditorDiscovery>(systemEditorProbe());
+    quint64 source_open_generation_ = 0;
     // PM-3a: Pause / Step on the gizmo band, the play line of the status bar,
     // and what a paused game turns the viewport's frame and that band.
     PlayControls *play_controls_ = nullptr;
@@ -460,6 +457,7 @@ class MainWindow : public QMainWindow {
     // so a rebound command still knows the key it was made with.
     void captureKeymapDefaults();
     void showKeymapDialog();
+    void showExternalEditorDialog();
     bool writeKeymapFile(const QString &path, const QByteArray &bytes,
                          QString *error) const;
     void updateSceneShortcuts();

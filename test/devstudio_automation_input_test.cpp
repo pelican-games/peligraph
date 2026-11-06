@@ -4814,6 +4814,9 @@ TEST_CASE("KM-3 availability follows the captured surface including text entry",
     CHECK_FALSE(undo->flags() & Qt::ItemIsEnabled);
     const int before = rig.undo_calls;
     QTest::keyClicks(palette.edit, QStringLiteral("undo scene"));
+    // Typing rebuilds the rows, so the item found above is gone.
+    undo = paletteItem(palette.list, QStringLiteral("Undo scene edit"));
+    REQUIRE(undo != nullptr);
     QTest::mouseClick(palette.list->viewport(), Qt::LeftButton, {},
                       palette.list->visualItemRect(undo).center());
     QTest::keyClick(palette.edit, Qt::Key_Return);

@@ -45,7 +45,8 @@ class RenderFallbackNotice final : public QFrame {
         // Open in Graph: the Graph tab, on the node.
         std::function<void(const QString &node)> open_graph;
         // Open file: the file as the project names it ("passes/main.json").
-        std::function<void(const QString &document)> open_file;
+        std::function<void(const QString &document, std::int64_t line,
+                           std::int64_t column)> open_file;
         // Restart engine (decision 4), with the reason it is asked for.
         std::function<void(const QString &reason)> restart;
         // Reads get_status again (its reply comes back through

@@ -1,0 +1,167 @@
+{
+  "schema": "pelican.studio_scenario",
+  "version": 1,
+  "name": "external_editor_open",
+  "description": "ED-1: a person chooses Studio's Custom external editor, introduces a shader compile error, and clicks its Problems row. The real helper process receives the source file and its diagnostic line and column; repairing the shader clears the problem.",
+  "tab": "frame_plan",
+  "probe_no_automation": false,
+  "invariants": {
+    "log_allow": [
+      {
+        "pattern": "LOG_WARNING.*present\\.frag:\\d+(?::\\d+)?: error: 'vaule0' : undeclared identifier",
+        "reason": "The scenario deliberately writes vaule0 into present.frag, opens the row, then repairs the shader."
+      }
+    ]
+  },
+  "steps": [
+    {
+      "label": "the fixture engine is up with its original valid shader",
+      "cmd": "wait_engine",
+      "timeout_ms": 180000
+    },
+    {
+      "label": "start from the default layout",
+      "cmd": "action",
+      "name": "pelican.layout.resetDefault"
+    },
+    {
+      "label": "present is drawn",
+      "cmd": "wait",
+      "name": "pelican.framePlanLogicalView::node#present",
+      "visible": true,
+      "timeout_ms": 180000
+    },
+    {
+      "label": "Edit > External Editor...",
+      "cmd": "action",
+      "name": "pelican.edit.externalEditor"
+    },
+    {
+      "label": "the editor dialog is visible",
+      "cmd": "wait",
+      "name": "pelican.externalEditor.dialog",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "choose Custom",
+      "cmd": "select",
+      "name": "pelican.externalEditor.choice",
+      "text": "Custom"
+    },
+    {
+      "label": "the real argument-recording helper is the configured program",
+      "cmd": "type",
+      "name": "pelican.externalEditor.program",
+      "text": "{editor_helper}"
+    },
+    {
+      "label": "record output path, source path, line and column as separate arguments",
+      "cmd": "type",
+      "name": "pelican.externalEditor.arguments",
+      "text": "\"{artifacts}/editor_args.txt\" {file} line={line} column={column}"
+    },
+    {
+      "label": "save the editor settings",
+      "cmd": "click",
+      "name": "pelican.externalEditor.ok"
+    },
+    {
+      "label": "saving closed the dialog",
+      "cmd": "wait",
+      "name": "pelican.externalEditor.dialog",
+      "missing": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "View > Problems",
+      "cmd": "action",
+      "name": "pelican.view.problems"
+    },
+    {
+      "label": "Problems is visible",
+      "cmd": "wait",
+      "name": "pelican.problems.list",
+      "visible": true,
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the fixture begins without the deliberate error",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "No problems",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "no helper output from an earlier scenario can satisfy this one",
+      "file": "exists",
+      "path": "{artifacts}/editor_args.txt",
+      "value": false
+    },
+    {
+      "label": "introduce an undeclared identifier on present.frag line 7",
+      "file": "replace",
+      "path": "{project}/shaders/present.frag",
+      "old": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0);",
+      "new": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0) + vaule0;"
+    },
+    {
+      "label": "the shader compiler reports one error",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "contains": "1 error",
+      "timeout_ms": 60000
+    },
+    {
+      "label": "restrict Problems to errors, so the clicked row is a shader error rather than a warning",
+      "cmd": "select",
+      "name": "pelican.problems.severity",
+      "text": "Errors"
+    },
+    {
+      "label": "restrict Problems to present.frag, identifying the expected document",
+      "cmd": "type",
+      "name": "pelican.problems.filter",
+      "text": "shaders/present.frag"
+    },
+    {
+      "label": "click the identified shader Problem",
+      "cmd": "select",
+      "name": "pelican.problems.list",
+      "index": 0
+    },
+    {
+      "label": "the selected Problem is present.frag at line 7",
+      "cmd": "wait",
+      "name": "pelican.problems.detail",
+      "contains": "shaders/present.frag:7",
+      "timeout_ms": 10000
+    },
+    {
+      "label": "the real editor helper was invoked after the click",
+      "file": "exists",
+      "path": "{artifacts}/editor_args.txt",
+      "retry_ms": 10000
+    },
+    {
+      "label": "the helper received exactly the canonical shader path, diagnostic line and column",
+      "file": "contains",
+      "path": "{artifacts}/editor_args.txt",
+      "text": "present.frag\nline=7\ncolumn=1\nenv:ELECTRON_RUN_AS_NODE=\n"
+    },
+    {
+      "label": "repair present.frag",
+      "file": "replace",
+      "path": "{project}/shaders/present.frag",
+      "old": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0) + vaule0;",
+      "new": "outColor = vec4(inUV.x, inUV.y, 0.5, 1.0);"
+    },
+    {
+      "label": "repair clears the shader Problem",
+      "cmd": "wait",
+      "name": "pelican.problems.count",
+      "text": "No problems",
+      "timeout_ms": 60000
+    }
+  ]
+}

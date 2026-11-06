@@ -1015,6 +1015,11 @@ def run_file_step(
             detail = f"copied {source.name} over {path.name}"
         elif action == "exists":
             present = path.is_file()
+            if step.get("value", True) and "retry_ms" in step:
+                deadline = time.monotonic() + float(step["retry_ms"]) / 1000.0
+                while not present and time.monotonic() < deadline:
+                    time.sleep(0.1)
+                    present = path.is_file()
             if present != bool(step.get("value", True)):
                 raise ValueError(f"{path.name} {'exists' if present else 'is missing'}")
             if present:

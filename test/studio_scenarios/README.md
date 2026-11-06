@@ -614,7 +614,7 @@ reload its shaders (`reload_shaders`) 200 ms after a write to a file a drawn
 node reads; a refusal marks the node and, while the Pass Editor is open, puts
 the log under its form. Under automation Studio does
 not hand a shader to the desktop: "opening" one prints
-`automation: shader source open <path>` to its log instead.
+`automation: shader source open <path>` to its log instead. Only the System default opener is replaced by that log line; an explicitly chosen editor really runs under automation. In `external_editor_open`, `{editor_helper}` is the path of the real helper process that records its arguments.
 
 G-1's "Add material pass..." is the named QAction
 `pelican.framePlan.addMaterialPass` (also the toolbar button

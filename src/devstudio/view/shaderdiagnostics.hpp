@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -90,5 +91,8 @@ ShaderReloadMarks shaderReloadMarks(const ShaderReloadReading &reading,
 // agree (case-insensitively on Windows).
 bool sameShaderSource(const std::filesystem::path &left,
                       const std::filesystem::path &right);
+
+std::optional<int> shaderErrorLine(std::string_view engine_message,
+                                   const std::filesystem::path &file);
 
 } // namespace PelicanStudio

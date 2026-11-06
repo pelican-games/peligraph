@@ -344,8 +344,8 @@ void main() { out_color = vec4(0.25, 0.5, 0.75, 1.0); }
         widget.setProjectRoot(root);
         std::optional<std::filesystem::path> opened;
         widget.setShaderSourceOpenAction(
-            [&](const std::filesystem::path &path) {
-                opened = path;
+            [&](const PelicanStudio::SourceLocation &where) {
+                opened = where.file;
                 return true;
             });
         widget.receiveResult(
