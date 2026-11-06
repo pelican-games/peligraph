@@ -4,6 +4,7 @@
 #include "docktitlebar.hpp"
 #include "assetsdock.hpp"
 #include "materialsdock.hpp"
+#include "projectpanel.hpp"
 #include "frameplaneditcapability.hpp"
 #include "frameplanwidget.hpp"
 #include "fullscreenpasswidget.hpp"
@@ -885,12 +886,25 @@ void MainWindow::createWorkspace() {
     // takes the space, and once migrated it is one line above the viewport.
     workspace_layout->addWidget(migration_panel_);
 
-    project_list_ = new QListWidget(this);
+    auto *project_page = new QWidget(this);
+    auto *project_page_layout = new QVBoxLayout(project_page);
+    project_page_layout->setContentsMargins(0, 0, 0, 0);
+    project_list_ = new QListWidget(project_page);
     project_list_->addItem(tr("No project open"));
+    project_list_->setMaximumHeight(2 * project_list_->sizeHintForRow(0) +
+                                    2 * project_list_->frameWidth());
     project_list_->setEnabled(false);
     project_list_->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    project_list_->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    project_list_->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    project_list_->setTextElideMode(Qt::ElideMiddle);
+    project_list_->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Maximum);
+    project_page_layout->addWidget(project_list_, 0);
+    project_panel_ = new ProjectPanel(project_page);
+    project_panel_->setObjectName(QStringLiteral("pelican.projectPanel"));
+    project_page_layout->addWidget(project_panel_, 1);
     docks_[ProjectDock] =
-        makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_list_);
+        makeDock(this, tr("Project"), QStringLiteral("pelican.projectDock"), project_page);
     // HW-2s / AV-1s: the asset folders beside Project -- Reload when saved
     // outside on each row, and the contents check against a manifest.
     assets_dock_ = new AssetsDock(
@@ -3741,6 +3755,7 @@ void MainWindow::openProjectNow(const QString &path) {
         // RL-1s: nor anything the reload watched.
         if (render_reload_) render_reload_->open(project_model_->projectRoot());
         assets_dock_->open(project_model_->projectRoot());
+        project_panel_->open(project_model_->projectRoot());
         materials_dock_->open(project_model_->projectRoot());
         tool_layout_presets_.emplace(
             application_config_directory_,
@@ -3833,6 +3848,7 @@ void MainWindow::leaveCurrentProject(
     if (render_history_) render_history_->clear();
     if (render_reload_) render_reload_->open({});
     assets_dock_->open({});
+    project_panel_->open({});
     materials_dock_->open({});
     selection_model_.bindProject(nullptr);
     project_model_.reset();

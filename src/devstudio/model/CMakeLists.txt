@@ -1,5 +1,7 @@
 add_library(pelican_studio_outliner STATIC
     project.cpp
+    projectfiles.cpp
+    projectfiles.hpp
     selection.cpp
     selectionhub.cpp
     selectionhub.hpp

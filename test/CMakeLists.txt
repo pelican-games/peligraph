@@ -1014,6 +1014,22 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
     Qt6::Widgets
   )
 
+  pelican_define_test(devstudio_project_files_test pelican_studio_outliner)
+  pelican_define_test(devstudio_project_panel_test QT QT_OFFSCREEN
+    pelican_studio_view
+    pelican_studio_viewport
+    pelican_studio_frame_plan
+    pelican_studio_layout
+    pelican_studio_outliner
+    pelican_studio_inspector_model
+    pelican_studio_gizmo_model
+    pelican_project
+    pelican_core
+    Qt6::Core
+    Qt6::Test
+    Qt6::Widgets
+  )
+
   # MT-1s: the Materials dock and the Inspector's Material rows on their
   # real widgets, with the test answering for the engine (MT-1, MT-1b)
   # through their own hooks.
@@ -4155,7 +4171,9 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_${pelican_studio_scenario_name}")
             endif()
             # DL-1 measures copies of the shipped projects, not the tiny GUI fixture.
-            if(pelican_studio_scenario_name STREQUAL "dl1_drag_example")
+            if(pelican_studio_scenario_name STREQUAL "project_tree")
+                set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/example")
+            elseif(pelican_studio_scenario_name STREQUAL "dl1_drag_example")
                 set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/example")
             elseif(pelican_studio_scenario_name STREQUAL "dl1_drag_posegraph")
                 set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/posegraph_demo")

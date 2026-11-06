@@ -457,6 +457,31 @@ ProjectDocumentTransactionLock acquireApplyTransaction(
 
 } // namespace
 
+std::optional<DocumentEnvelope>
+readDocumentEnvelope(const std::filesystem::path &path, std::uintmax_t max_bytes) {
+    std::ifstream input{path, std::ios::binary};
+    if (!input.is_open()) return std::nullopt;
+    std::string bytes;
+    char buffer[16384];
+    while (input && bytes.size() <= max_bytes) {
+        const auto remaining = max_bytes + 1 - bytes.size();
+        input.read(buffer, static_cast<std::streamsize>(
+                               std::min<std::size_t>(sizeof(buffer), remaining)));
+        bytes.append(buffer, static_cast<std::size_t>(input.gcount()));
+    }
+    if (input.bad() || bytes.size() > max_bytes) return std::nullopt;
+    EnvelopeReader reader;
+    try {
+        (void)nlohmann::json::sax_parse(bytes, &reader);
+    } catch (const std::exception &) {
+    }
+    if (!reader.isDocument() || *reader.version < INT32_MIN ||
+        *reader.version > INT32_MAX) {
+        return std::nullopt;
+    }
+    return DocumentEnvelope{*reader.schema, static_cast<int>(*reader.version)};
+}
+
 ProjectMigrationError::ProjectMigrationError(std::string code,
                                              nlohmann::ordered_json fields)
     // Parentheses, not braces: a braced json initializer is an array.

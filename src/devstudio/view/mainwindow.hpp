@@ -67,6 +67,7 @@ class PlayControls;
 class ProblemsDock;
 struct ProblemRow;
 class ProjectMigrationWidget;
+class ProjectPanel;
 class RenderConfigDigest;
 class RenderFeaturesWidget;
 class RenderFallbackNotice;
@@ -249,6 +250,7 @@ class MainWindow : public QMainWindow {
     KeymapFileWriter keymap_file_writer_;
     std::array<QDockWidget *, DockCount> docks_{};
     QListWidget *project_list_ = nullptr;
+    ProjectPanel *project_panel_ = nullptr;
     // HW-2s / AV-1s: the asset folders, their watch and the contents check.
     AssetsDock *assets_dock_ = nullptr;
     // MT-1s: the project's materials and their editor.

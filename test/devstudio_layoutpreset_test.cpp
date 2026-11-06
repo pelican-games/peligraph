@@ -26,6 +26,7 @@
 #include <QLabel>
 #include <QIcon>
 #include <QLineEdit>
+#include <QListWidget>
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
@@ -1614,6 +1615,56 @@ TEST_CASE("DK-1 every dock has a title bar whose buttons and title follow the do
     settle(application());
     CHECK(bar->titleLabel()->text() == QStringLiteral("Renamed project"));
     CHECK(project->windowTitle() == QStringLiteral("Renamed project"));
+}
+
+TEST_CASE("PRJ-1a the Project tree does not raise the window's floor",
+          "[prj1a][ui1a]") {
+    QApplication &app = application();
+    QTemporaryDir config;
+    REQUIRE(config.isValid());
+    PelicanStudio::MainWindow window{config.path()};
+    window.show();
+    settle(app);
+
+    auto *dock = window.findChild<QDockWidget *>(QStringLiteral("pelican.projectDock"));
+    REQUIRE(dock != nullptr);
+    CHECK(window.findChild<QAction *>(QStringLiteral("pelican.view.panels.projectDock")) != nullptr);
+    CHECK(window.findChild<QWidget *>(QStringLiteral("pelican.projectPanel")) != nullptr);
+    auto *list = dock->findChild<QListWidget *>();
+    REQUIRE(list != nullptr);
+    REQUIRE(list->count() == 1);
+    CHECK(list->item(0)->text() == QStringLiteral("No project open"));
+    CHECK(list->maximumHeight() ==
+          2 * list->sizeHintForRow(0) + 2 * list->frameWidth());
+    CHECK(list->horizontalScrollBarPolicy() == Qt::ScrollBarAlwaysOff);
+    CHECK(list->verticalScrollBarPolicy() == Qt::ScrollBarAlwaysOff);
+    CHECK(list->textElideMode() == Qt::ElideMiddle);
+    auto *search = dock->findChild<QLineEdit *>(QStringLiteral("pelican.project.search"));
+    REQUIRE(search != nullptr);
+    CHECK(search->placeholderText() == QStringLiteral("Filter by path"));
+    CHECK(dock->findChild<QComboBox *>(QStringLiteral("pelican.project.kind")) != nullptr);
+    CHECK(dock->findChild<QPushButton *>(QStringLiteral("pelican.project.refresh")) != nullptr);
+    CHECK(dock->findChild<QWidget *>(QStringLiteral("pelican.projectTree")) != nullptr);
+    for (const char *name : {"pelican.project.truncated", "pelican.project.notice"}) {
+        auto *label = dock->findChild<QLabel *>(QString::fromLatin1(name));
+        REQUIRE(label != nullptr);
+        CHECK(label->wordWrap());
+    }
+    CHECK(window.isVisible());
+    CHECK(window.geometry().isValid());
+    CHECK(window.width() > 0);
+
+    const int with_tree = window.minimumSizeHint().width();
+    INFO("with_tree=" << with_tree);
+    auto *old_page = dock->widget();
+    REQUIRE(old_page != nullptr);
+    old_page->setParent(&window);
+    old_page->hide();
+    dock->setWidget(new QListWidget);
+    settle(app);
+    const int with_list = window.minimumSizeHint().width();
+    INFO("with_list=" << with_list);
+    CHECK(with_tree <= with_list);
 }
 
 TEST_CASE("DK-1 maximize is hidden when docked and disabled for a floating group",

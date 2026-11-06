@@ -4,6 +4,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <map>
@@ -91,6 +92,17 @@ using DocumentMigrationPlanFunction = std::function<StepResult(
 // One registered step: `schema` documents at `from_version` become
 // `to_version` documents. The shape follows GraphModuleManifest: a value that
 // is handed to a registry, which accepts it whole or refuses it by name.
+struct DocumentEnvelope {
+    std::string schema;
+    int version = 0;
+};
+
+// Reads at most max_bytes. Checking and opening are separate filesystem
+// operations, so callers must not use this as a no-follow guarantee for links.
+std::optional<DocumentEnvelope>
+readDocumentEnvelope(const std::filesystem::path &path,
+                     std::uintmax_t max_bytes = 8 * 1024 * 1024);
+
 struct DocumentMigrationStep {
     std::string id;
     std::string schema;
