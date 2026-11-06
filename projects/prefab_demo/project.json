@@ -1,0 +1,30 @@
+{
+  "schema": "pelican.project",
+  "version": 1,
+  "name": "Prefab Demo",
+  "engine_min_version": "0.1.0",
+  "basic_config": {
+    "window_title": "Pelican Prefab Demo",
+    "window_size": {
+      "width": 1280,
+      "height": 720
+    },
+    "fullscreen": false,
+    "framerate": 60,
+    "camera": {
+      "yfov": 0.7853981633974483,
+      "znear": 0.1,
+      "zfar": 1000
+    },
+    "default_scene_id": "default_scene",
+    "scene_data_json": "scene.json",
+    "asset_data_json": "assets/asset_data.json",
+    "rendering_config_json": "passes/main.json",
+    "default_rendering_pass": "main_render",
+    "ui_config_json": "ui/ui_overlay.json"
+  },
+  "prefabs": [
+    {"name": "crate", "path": "prefabs/crate.json"},
+    {"name": "lamp", "path": "prefabs/lamp.json"}
+  ]
+}

@@ -2766,12 +2766,17 @@ struct InspectorModel::Impl {
         invalidateRayOccurrences();
         // No coalesce key: a new object is its own undo step, never folded
         // into the property edit before it.
+        Json operation{{"op", "spawn"},
+                       {"scene_id", scene_id},
+                       {"object", std::move(object)}};
+        if (const auto prefab = operation["object"].find("prefab");
+            prefab != operation["object"].end()) {
+            operation["new_instance_id"] = prefab->at("instance_id");
+        }
         queue("edit",
               Json{{"actor_id", *actor_id},
                    {"base_revision", *current_scene_revision},
-                   {"operations", Json::array({Json{{"op", "spawn"},
-                                                    {"scene_id", scene_id},
-                                                    {"object", std::move(object)}}})}},
+                   {"operations", Json::array({std::move(operation)})}},
               {.purpose = RequestPurpose::EditSubmit,
                .selection_generation = selection_generation,
                .description = "Add " + name,

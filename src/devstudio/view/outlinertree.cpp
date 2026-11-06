@@ -10,6 +10,7 @@
 #include <QPainter>
 #include <QPaintEvent>
 #include <QPen>
+#include <QStyledItemDelegate>
 #include <QTreeWidgetItemIterator>
 #include <QVariant>
 
@@ -27,6 +28,31 @@ QString sceneOf(const QTreeWidgetItem *item) {
 bool isObjectRow(const QTreeWidgetItem *item) {
     return item != nullptr && item->data(0, OutlinerAuthoringIdRole).isValid();
 }
+
+class PrefabOutlinerDelegate final : public QStyledItemDelegate {
+  public:
+    using QStyledItemDelegate::QStyledItemDelegate;
+
+    void paint(QPainter *painter, const QStyleOptionViewItem &option,
+               const QModelIndex &index) const override {
+        QStyleOptionViewItem decorated = option;
+        initStyleOption(&decorated, index);
+        const QString prefab = index.data(OutlinerPrefabRole).toString();
+        if (!prefab.isEmpty()) decorated.text += QStringLiteral(" : ") + prefab;
+        QStyle *style = option.widget ? option.widget->style() : QApplication::style();
+        style->drawControl(QStyle::CE_ItemViewItem, &decorated, painter, option.widget);
+    }
+
+    QSize sizeHint(const QStyleOptionViewItem &option,
+                   const QModelIndex &index) const override {
+        QStyleOptionViewItem decorated = option;
+        initStyleOption(&decorated, index);
+        const QString prefab = index.data(OutlinerPrefabRole).toString();
+        if (!prefab.isEmpty()) decorated.text += QStringLiteral(" : ") + prefab;
+        const QStyle *style = option.widget ? option.widget->style() : QApplication::style();
+        return style->sizeFromContents(QStyle::CT_ItemViewItem, &decorated, QSize{}, option.widget);
+    }
+};
 
 } // namespace
 
@@ -65,6 +91,7 @@ OutlinerTree::OutlinerTree(QWidget *parent) : QTreeWidget(parent) {
     // The drag below is the tree's own; Qt's would start a QDrag.
     setDragDropMode(QAbstractItemView::NoDragDrop);
     setSelectionMode(QAbstractItemView::SingleSelection);
+    setItemDelegate(new PrefabOutlinerDelegate(this));
 
     // While the tree has focus: Del in an Inspector field deletes a
     // character, never an object.

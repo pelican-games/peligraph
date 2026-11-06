@@ -4,7 +4,7 @@
 
 namespace Pelican {
 
-TEST_CASE("RC-5s seven shipping graphs and sixteen recipe configurations execute without anchors", "[golden][headless][rc5s][rc5s-a1]") {
+TEST_CASE("RC-5s eight shipping graphs and sixteen recipe configurations execute without anchors", "[golden][headless][rc5s][rc5s-a1]") {
     GoldenHarness::runRc5sRuntimeMatrix();
 }
 

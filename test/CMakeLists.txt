@@ -464,6 +464,14 @@ if(TARGET pelican_studio_inspector_model)
     pelican_core
     glm
   )
+  pelican_define_test(devstudio_prefab_place_test
+    pelican_studio_inspector_model
+    pelican_studio_outliner
+    pelican_project
+    pelican_core
+  )
+  target_compile_definitions(pelican_test_devstudio_prefab_place_test PRIVATE
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
 endif()
 
 if(TARGET pelican_studio_gizmo_model)
@@ -970,6 +978,7 @@ if(TARGET pelican_studio_viewport AND TARGET pelican_studio_frame_plan)
   )
   target_compile_definitions(pelican_test_devstudio_outliner_edit_test PRIVATE
     PELICAN_PROCESS_FIXTURE_PATH="$<TARGET_FILE:pelican_test_process_fixture_child>"
+    PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
   )
   add_dependencies(pelican_test_devstudio_outliner_edit_test
     pelican_test_process_fixture_child)
@@ -2307,6 +2316,7 @@ target_compile_definitions(pelican_test_wp360_resolvedscene_test PRIVATE
 pelican_define_test(wp361_prefab_test pelican_core glm picosha2)
 target_compile_definitions(pelican_test_wp361_prefab_test PRIVATE
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
+  PELICAN_TEST_SOURCE_DIR="${CMAKE_SOURCE_DIR}"
 )
 if(MSVC)
   target_compile_options(pelican_test_wp361_prefab_test PRIVATE /bigobj)
@@ -4177,6 +4187,8 @@ if(NOT SKIP_DEVSTUDIO AND TARGET pelican_studio)
                 set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/example")
             elseif(pelican_studio_scenario_name STREQUAL "dl1_drag_posegraph")
                 set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/posegraph_demo")
+            elseif(pelican_studio_scenario_name STREQUAL "prefab_place")
+                set(pelican_studio_scenario_fixture "${CMAKE_SOURCE_DIR}/projects/prefab_demo")
             elseif(pelican_studio_scenario_name STREQUAL "live_input_knob")
                 set(pelican_studio_scenario_fixture
                     "${CMAKE_CURRENT_SOURCE_DIR}/fixtures/studio_live_input_node_from_graph")

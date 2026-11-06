@@ -266,6 +266,7 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
     const std::vector<std::pair<std::string, std::string>> projects{
         {"example", "passes/main_rendering_config.json"},
         {"animgraph_demo", "passes/main.json"},
+        {"prefab_demo", "passes/main.json"},
         {"posegraph_demo", "passes/main.json"},
         {"sprite_demo", "passes/main.json"},
         {"vrm_xr_demo", "passes/main.json"},
@@ -299,7 +300,7 @@ TEST_CASE("RC-3c1b IR: the shipping projects and the engine features plan on the
         }
         ++shipping;
     }
-    CHECK(shipping == 7);
+    CHECK(shipping == 8);
 
     auto hybrid = readJson(sourceRoot() / "projects/animgraph_demo/passes/main.json");
     hybrid["rendering"]["features"] = Json::array();

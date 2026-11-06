@@ -144,6 +144,9 @@ PrefabRegistrySnapshot buildPrefabRegistrySnapshot(
     const std::function<std::string(std::string_view)> &load_raw_bytes,
     std::uint64_t generation = 1);
 
+nlohmann::ordered_json prefabRegistryListJson(
+    const PrefabRegistrySnapshot &registry);
+
 struct PrefabResolvedParameter {
     std::string name;
     nlohmann::ordered_json value_resolved;

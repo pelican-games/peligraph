@@ -1619,4 +1619,23 @@ TEST_CASE("SV1f export_scene_snapshot preserves numeric semantics across Save an
         CHECK_FALSE(saved_component.contains("scale"));
     }
 }
+
+TEST_CASE("PFB-1 list_prefabs exposes an empty registry and leaves plain outline rows unchanged",
+          "[pfb1][editor-command][prefab]") {
+    auto document = AuthoringSceneDocument::load(
+        readJson(authoringFixturePath()).dump(), SceneRevision{41});
+    const auto service = makeQueryService(document);
+    const EditorCommandRpcAdapter rpc{service};
+    CHECK(rpc.listPrefabs(nlohmann::json::object()) ==
+          nlohmann::ordered_json{{"registry_generation", 0},
+                                 {"prefabs", nlohmann::ordered_json::array()}});
+    CHECK(errorCode([&] { (void)rpc.listPrefabs({{"x", 1}}); }) ==
+          EditorCommandErrorCode::InvalidParams);
+    const auto outline = rpc.sceneOutline(nlohmann::json::object());
+    REQUIRE_FALSE(outline.at("objects").empty());
+    for (const auto &row : outline.at("objects")) {
+        CHECK_FALSE(row.contains("prefab_ref"));
+        CHECK_FALSE(row.contains("prefab_instance_id"));
+    }
+}
 } // namespace Pelican

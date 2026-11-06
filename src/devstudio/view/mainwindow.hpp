@@ -63,6 +63,7 @@ class PlanPerfHub;
 class FullscreenPassWidget;
 class InspectorWidget;
 class OutlinerTree;
+class PrefabPlaceMenu;
 class PlayControls;
 class ProblemsDock;
 struct ProblemRow;
@@ -354,6 +355,9 @@ class MainWindow : public QMainWindow {
     // G-2: Add object. One menu, shown by the Outliner's right click and by
     // the Scene toolbar, so a scenario fires the same four named actions.
     QMenu *add_object_menu_ = nullptr;
+    PrefabPlaceMenu *prefab_place_menu_ = nullptr;
+    qint64 pending_prefab_list_request_ = 0;
+    std::uint64_t pending_prefab_list_engine_generation_ = 0;
     // The name a spawn took, by scene, until it is in (or refused): the next
     // Add Object numbers past it.
     std::optional<std::pair<std::string, std::string>> pending_spawn_name_;
@@ -509,12 +513,15 @@ class MainWindow : public QMainWindow {
     void chooseModelFile(std::function<void(const std::string &model)> registered);
     // The spawn of an object whose simplemodelview draws `model`.
     void addModelObject(const std::string &model);
+    void addPrefabObject(const std::string &prefab);
     // Add Object's one spawn: the first free name from `base`, its object.
     void spawnNewObject(std::string_view base,
-                        const std::function<nlohmann::json(const std::string &name)> &declaration);
+                        const std::function<nlohmann::json(const std::string &name)> &declaration,
+                        bool number_from_one = false);
     void showOutlinerRestart(const QString &line, const QString &reason);
     // Decision 4: list_assets, for the registered models' files.
     void requestRegisteredModels();
+    void requestPrefabList();
     void modelsChanged();
     // Selects the pending created object once the Outliner holds it.
     void selectCreatedObject();

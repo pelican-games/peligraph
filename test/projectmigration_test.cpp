@@ -452,7 +452,7 @@ TEST_CASE("the production registry has no steps and opens every shipped project 
     for (const auto &entry : fs::directory_iterator{source_dir / "projects"}) {
         if (fs::is_regular_file(entry.path() / "project.json")) roots.push_back(entry.path());
     }
-    REQUIRE(roots.size() == 14);
+    REQUIRE(roots.size() == 15);
     for (const auto &root : roots) {
         INFO(root.string());
         CHECK(detectProjectMigration(root, builtinDocumentMigrationRegistry()).empty());

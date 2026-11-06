@@ -2915,7 +2915,7 @@ TEST_CASE("RC-1 every format a render target can be authored with has a texel si
 
 TEST_CASE("RC-6c E3 shipping projects keep allocation eligibility representations and attachment operations",
           "[frameplanner][rc6c][rc6c-shipping]") {
-    for (const auto *project : {"animgraph_demo", "example", "sprite_demo", "vrm_xr_demo", "posegraph_demo", "raytracing_demo", "pathtrace_demo"}) {
+    for (const auto *project : {"animgraph_demo", "example", "pathtrace_demo", "posegraph_demo", "prefab_demo", "raytracing_demo", "sprite_demo", "vrm_xr_demo"}) {
         CAPTURE(project);
         const auto root = sourceRoot() / "projects" / project;
         const auto config = readJson(root / "project.json");

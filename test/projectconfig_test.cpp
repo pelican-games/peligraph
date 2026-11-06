@@ -274,8 +274,8 @@ TEST_CASE("MG-2b every shipped project is a pelican.graph root with scene 2 and 
     }
     std::sort(named.begin(), named.end());
     CHECK(named == std::vector<std::string>{
-                       "animgraph_demo", "example", "pathtrace_demo",
-                       "posegraph_demo", "raytracing_demo", "sprite_demo",
+                       "animgraph_demo", "example", "pathtrace_demo", "posegraph_demo",
+                       "prefab_demo", "raytracing_demo", "sprite_demo",
                        "vrm_xr_demo"});
     CHECK(graph_roots == named.size());
 
@@ -321,10 +321,10 @@ TEST_CASE("MG-2b every shipped project is a pelican.graph root with scene 2 and 
     }
     INFO("older documents: " << nlohmann::json(older_documents).dump());
     CHECK(older_documents.empty());
-    CHECK(scenes == 7);
-    CHECK(asset_data == 7);
-    // The seven roots the projects name, and the example's second config.
-    CHECK(rendering_roots == 8);
+    CHECK(scenes == 8);
+    CHECK(asset_data == 8);
+    // The eight roots the projects name, and the example's second config.
+    CHECK(rendering_roots == 9);
 }
 
 // MG-2b acceptance 1: a rendering root that is not a `pelican.graph` document

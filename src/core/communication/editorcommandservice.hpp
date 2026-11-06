@@ -118,6 +118,8 @@ struct EditorOutlineObject {
     AuthoringObjectId authoring_object_id{};
     std::size_t declaration_index = 0;
     std::optional<std::string> name;
+    std::optional<std::string> prefab_ref;
+    std::optional<std::string> prefab_instance_id;
     std::optional<AuthoringObjectId> parent_authoring_object_id;
 };
 
@@ -354,6 +356,7 @@ class EditorCommandService {
         std::string_view occurrence_id) const;
     EditorRayTableResult getRayTable() const;
     EditorListAssetsResult listAssets(const EditorListAssetsRequest &request = {}) const;
+    nlohmann::ordered_json listPrefabs() const;
     ExportSceneSnapshotResponseV2 exportSceneSnapshotV2(
         const ExportSceneSnapshotRequestV2 &request) const;
     ImportSceneSnapshotResult importSceneSnapshotV2(
@@ -490,6 +493,7 @@ class EditorCommandRpcAdapter {
     nlohmann::ordered_json resolveRayOccurrence(const nlohmann::json &params) const;
     nlohmann::ordered_json getRayTable(const nlohmann::json &params) const;
     nlohmann::ordered_json listAssets(const nlohmann::json &params) const;
+    nlohmann::ordered_json listPrefabs(const nlohmann::json &params) const;
     nlohmann::ordered_json exportSceneSnapshot(const nlohmann::json &params) const;
     nlohmann::ordered_json importSceneSnapshot(const nlohmann::json &params) const;
     nlohmann::ordered_json saveScene(const nlohmann::json &params) const;

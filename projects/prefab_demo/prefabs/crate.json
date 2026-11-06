@@ -1,0 +1,11 @@
+{
+  "schema": "pelican.prefab",
+  "version": 1,
+  "name": "crate",
+  "parameters": [
+    {"name": "model", "kind": "asset", "asset_kind": "model"}
+  ],
+  "components": [
+    {"name": "simplemodelview", "model": {"$param": "model"}}
+  ]
+}

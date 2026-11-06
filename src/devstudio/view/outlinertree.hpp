@@ -25,6 +25,7 @@ inline constexpr int OutlinerAuthoringIdRole = Qt::UserRole + 2;
 // PM-3c: a row for an object the running game spawned carries its entity
 // ((index << 32) | generation) and none of the three roles above.
 inline constexpr int OutlinerRuntimeEntityRole = Qt::UserRole + 3;
+inline constexpr int OutlinerPrefabRole = Qt::UserRole + 4;
 
 // The object a row stands for; empty for a scene row, a runtime row or no row.
 [[nodiscard]] std::optional<OutlinerObjectKey> outlinerObjectKey(const QTreeWidgetItem *item);

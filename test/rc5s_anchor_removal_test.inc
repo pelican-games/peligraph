@@ -308,7 +308,7 @@ TEST_CASE("RC-5s frozen v0 sprite requires explicit target bindings", "[renderco
     }
 }
 
-TEST_CASE("RC-5s all seven shipping projects have no anchor in IR frame or physical plans", "[rendercompiler][rc5s][rc5s-a1]") {
+TEST_CASE("RC-5s all eight shipping projects have no anchor in IR frame or physical plans", "[rendercompiler][rc5s][rc5s-a1]") {
     const vk::ApplicationInfo application{"rc5s-plan-device", 1, "pelican", 1, VK_API_VERSION_1_3};
     const auto instance = vk::createInstanceUnique(vk::InstanceCreateInfo{{}, &application});
     const auto devices = instance->enumeratePhysicalDevices();
@@ -316,7 +316,8 @@ TEST_CASE("RC-5s all seven shipping projects have no anchor in IR frame or physi
     const std::vector<std::pair<std::string, std::string>> projects{
         {"animgraph_demo", "passes/main.json"}, {"example", "passes/main_rendering_config.json"},
         {"pathtrace_demo", "rendering.json"}, {"posegraph_demo", "passes/main.json"},
-        {"raytracing_demo", "rendering.json"}, {"sprite_demo", "passes/main.json"}, {"vrm_xr_demo", "passes/main.json"}};
+        {"prefab_demo", "passes/main.json"}, {"raytracing_demo", "rendering.json"},
+        {"sprite_demo", "passes/main.json"}, {"vrm_xr_demo", "passes/main.json"}};
     std::size_t compiled = 0;
     for (const auto &[project, document] : projects) {
         CAPTURE(project);
@@ -348,5 +349,5 @@ TEST_CASE("RC-5s all seven shipping projects have no anchor in IR frame or physi
                 for (const auto &node : scope.at("nodes")) CHECK_FALSE(node.get<std::string>().starts_with("__anchor_"));
         ++compiled;
     }
-    CHECK(compiled == 7);
+    CHECK(compiled == 8);
 }

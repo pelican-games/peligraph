@@ -1404,6 +1404,311 @@ TEST_CASE("WP361 object references use frozen identity for forward backward self
                 .effective_json);
 }
 
+TEST_CASE("PFB-1 prefab registry list encodes parameter kinds and required defaults",
+          "[pfb1][prefab][registry]") {
+    const auto registry = registryFor(prefabFixture());
+    const auto expected = OJson{
+        {"registry_generation", 3},
+        {"prefabs", {
+            {{"name", "unit"}, {"path", "prefabs/unit.json"},
+             {"digest_sha256", registry.records().front().digest_sha256},
+             {"parameters", {
+                 {{"name", "hp"}, {"kind", "value"}, {"required", false}},
+                 {{"name", "target"}, {"kind", "object"}, {"required", true}},
+                 {{"name", "tint"}, {"kind", "value"}, {"required", false}},
+                 {{"name", "texture"}, {"kind", "asset"}, {"required", false}},
+                 {{"name", "radius"}, {"kind", "value"}, {"required", false}},
+             }}},
+        }},
+    };
+    CHECK(prefabRegistryListJson(registry) == expected);
+}
+
+TEST_CASE("PFB-1 real project places, rejects, reverts, saves and reopens prefabs",
+          "[pfb1][prefab][lifecycle][production]") {
+    ensureBehavior();
+    ensureWp361Logger();
+    Wp361TemporaryProject temporary;
+    std::filesystem::copy(std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                              "projects/prefab_demo",
+                          temporary.root(),
+                          std::filesystem::copy_options::recursive |
+                              std::filesystem::copy_options::overwrite_existing);
+    const auto project = Json::parse(temporary.read("project.json"));
+    std::uint64_t lamp_authoring_id = 0;
+    std::string model_generated_id;
+    std::string light_generated_id;
+
+    {
+        FastModuleContainer modules;
+        GET_MODULE(PathResolver).setup(temporary.root(), false);
+        GET_MODULE(ProjectSource).setProjectData(project.dump());
+        GET_MODULE(ECSPredefinedRegistration).reg();
+        auto &config = GET_MODULE(ProjectBasicConfig);
+        (void)config.sceneProjectionState();
+        auto &ecs = GET_MODULE(ECSCore).getTemplatePublicModule();
+        auto &components = GET_MODULE(ComponentInfoManager);
+        auto &arena = GET_MODULE(BehaviorAttachmentArena);
+        ProjectBasicConfigProjectionTarget projection_target{config};
+        EditorRuntimeBindingState binding_state{.epoch = 1};
+        const EditorProjectionModules projection_modules{
+            .ecs = &ecs, .component_info = &components, .behavior_arena = &arena};
+        EditorEditRuntimeDependencies edit_dependencies{
+            .document = [&]() -> const AuthoringSceneDocument & {
+                return config.sceneDocument();
+            },
+            .current_scene_id = [] { return std::string{"default_scene"}; },
+            .execute = [&](const EditorEditExecutionRequest &request) {
+                return executeWp375Seam(
+                    request, projection_target, projection_modules, binding_state,
+                    EditorBehaviorAvailability::Active);
+            },
+            .gate = [] { return EditorGateObservation{}; },
+            .allocate_behavior_attachment =
+                [&](std::uint64_t commit_seq, std::size_t command_index,
+                    std::size_t attachment_index) {
+                    const auto identity = arena.reserveRuntimeAttachmentIdentity(
+                        commit_seq, command_index, attachment_index);
+                    return EditorBehaviorAttachmentIdentity{
+                        .handle = identity.handle.value,
+                        .attachment_seq = identity.attachment_seq};
+                },
+            .prefab_registry = [&] { return config.resolvedScene().prefabRegistry(); },
+            .bindable_provider = [&] { return config.resolvedScene().bindableProvider(); },
+            .closure_generation = [&] {
+                return config.resolvedScene().prefabClosure().generation;
+            },
+        };
+        EditorCommandService rpc_service{EditorCommandServiceDependencies{
+            .document = edit_dependencies.document,
+            .resolved_scene = [&]() -> const ResolvedScene & {
+                return config.resolvedScene();
+            },
+            .current_scene_id = edit_dependencies.current_scene_id,
+            .edit = edit_dependencies,
+        }};
+        EditorCommandRpcAdapter rpc_adapter{rpc_service};
+        std::istringstream rpc_input;
+        std::ostringstream rpc_output;
+        RpcServer rpc_server{rpc_input, rpc_output};
+        configureEditorRpcHandlers(
+            rpc_server, rpc_adapter,
+            EditorRpcHandlerHooks{.snapshot_imported = [] {},
+                                  .save_busy = [] { return false; }});
+        std::uint64_t rpc_id = 1;
+        const auto rpc_response = [&](std::string method, Json params) {
+            return Json::parse(rpc_server.processLine(
+                Json{{"jsonrpc", "2.0"}, {"id", rpc_id++},
+                     {"method", std::move(method)}, {"params", std::move(params)}}.dump()));
+        };
+        const auto rpc = [&](std::string method, Json params) {
+            const auto response = rpc_response(std::move(method), std::move(params));
+            INFO("PFB-1 RPC response: " << response.dump());
+            REQUIRE_FALSE(response.contains("error"));
+            return response.at("result");
+        };
+        const auto actor = rpc("open_editor_session", {{"display_name", "pfb1 lifecycle"}})
+                               .at("actor_id").get<std::uint64_t>();
+        const auto commit = [&](Json operation) {
+            const auto accepted = rpc("edit", {{"actor_id", actor},
+                {"base_revision", config.sceneDocument().revision().value},
+                {"operations", Json::array({std::move(operation)})}});
+            REQUIRE(accepted.at("status") == "accepted");
+            rpc_service.commitPendingEdits();
+            const auto result = rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            INFO("PFB-1 edit result: " << result.dump());
+            return result;
+        };
+        const auto objects = [&]() -> const std::vector<ResolvedObject> & {
+            return config.resolvedScene().findScene("default_scene")->objects;
+        };
+        const auto named = [&](std::string_view name) -> const ResolvedObject * {
+            const auto &listed = objects();
+            const auto found = std::find_if(listed.begin(), listed.end(),
+                [&](const auto &object) { return object.name == name; });
+            return found == listed.end() ? nullptr : &*found;
+        };
+
+        const auto listed = rpc("list_prefabs", Json::object());
+        REQUIRE(listed.at("registry_generation") == 1);
+        REQUIRE(listed.at("prefabs").size() == 2);
+        CHECK(listed.at("prefabs")[0].at("name") == "crate");
+        CHECK(listed.at("prefabs")[1].at("name") == "lamp");
+        CHECK(listed.at("prefabs")[0].at("parameters")[0].at("required") == true);
+        CHECK(listed.at("prefabs")[1].at("parameters")[0].at("required") == false);
+        for (const auto name : {"crate", "lamp"}) {
+            const auto bytes = temporary.read(std::string{"prefabs/"} + name + ".json");
+            const auto digest = listed.at("prefabs")[std::string{name} == "crate" ? 0 : 1]
+                                    .at("digest_sha256").get<std::string>();
+            CHECK(digest == picosha2::hash256_hex_string(bytes));
+        }
+        auto outline = rpc("scene_outline", {{"scene_id", "default_scene"}});
+        REQUIRE(outline.at("objects").size() == 4);
+        CHECK(outline.at("objects")[3].at("prefab_ref") == "crate");
+        CHECK(outline.at("objects")[3].at("prefab_instance_id") == "gi_crate_1");
+        CHECK_FALSE(outline.at("objects")[0].contains("prefab_ref"));
+        CHECK_FALSE(outline.at("objects")[0].contains("prefab_instance_id"));
+        const auto tree = rpc("scene_tree", {{"scene_id", "default_scene"}});
+        CHECK(tree.at("objects")[3].at("name") == "crate_1");
+        CHECK(tree.at("objects")[3].at("prefab_instance").at("parameters")[0]
+                  .at("source") == "override");
+
+        const Json lamp_object{
+            {"name", "lamp_1"},
+            {"components", Json::array({{{"name", "transform"},
+                {"pos", {0.0, 0.0, 0.0}}, {"rotation", {0.0, 0.0, 0.0, 1.0}},
+                {"scale", {1.0, 1.0, 1.0}}}})},
+            {"prefab", {{"ref", "lamp"}, {"instance_id", "gi_lamp_1"}}}};
+        const auto spawned = commit({{"op", "spawn"}, {"scene_id", "default_scene"},
+                                    {"new_instance_id", "gi_lamp_1"},
+                                    {"object", lamp_object}});
+        REQUIRE(spawned.at("status") == "committed");
+        const auto *lamp = named("lamp_1");
+        REQUIRE(lamp != nullptr);
+        REQUIRE(lamp->prefab_instance.has_value());
+        CHECK(lamp->prefab_instance->ref == "lamp");
+        CHECK(lamp->prefab_instance->instance_id == "gi_lamp_1");
+        REQUIRE(lamp->prefab_instance->parameters.size() == 1);
+        CHECK(lamp->prefab_instance->parameters[0].value_resolved.get<double>() ==
+              Catch::Approx(2.0));
+        CHECK_FALSE(lamp->prefab_instance->parameters[0].is_override);
+        lamp_authoring_id = lamp->authoring_object_id.value;
+        model_generated_id = generatedByKey(*lamp, "simplemodelview")
+                                 .origin.generated()->stable_generated_id;
+        light_generated_id = generatedByKey(*lamp, "light")
+                                 .origin.generated()->stable_generated_id;
+        CHECK(generatedByKey(*lamp, "light").effective_json.at("intensity").get<double>() ==
+              Catch::Approx(2.0));
+        outline = rpc("scene_outline", {{"scene_id", "default_scene"}});
+        CHECK(outline.at("objects")[4].at("prefab_ref") == "lamp");
+        CHECK(outline.at("objects")[4].at("prefab_instance_id") == "gi_lamp_1");
+        const auto spawned_tree = rpc("scene_tree", {{"scene_id", "default_scene"}});
+        CHECK(spawned_tree.at("objects")[4].at("name") == "lamp_1");
+        CHECK(spawned_tree.at("objects")[4].at("prefab_instance").at("parameters")[0]
+                  .at("source") == "default");
+
+        const auto history_size = [&] {
+            return rpc("query_journal", Json::object()).at("records").size();
+        };
+        const auto revision = [&] { return config.sceneDocument().revision().value; };
+        const auto rejected_spawn = [&](std::string name, std::string instance_id,
+                                        std::string ref) {
+            const auto old_revision = revision();
+            const auto old_count = objects().size();
+            const auto old_history = history_size();
+            auto object = lamp_object;
+            object["name"] = std::move(name);
+            object["prefab"] = {{"ref", std::move(ref)},
+                                {"instance_id", std::move(instance_id)}};
+            const auto accepted = rpc("edit", {{"actor_id", actor},
+                {"base_revision", old_revision},
+                {"operations", Json::array({{{"op", "spawn"},
+                    {"scene_id", "default_scene"},
+                    {"new_instance_id", object.at("prefab").at("instance_id")},
+                    {"object", std::move(object)}}})}});
+            auto final = accepted;
+            if (accepted.at("status") == "accepted") {
+                rpc_service.commitPendingEdits();
+                final = rpc("get_edit_result", {{"ticket", accepted.at("ticket")}});
+            }
+            INFO("PFB-1 rejected placement: " << final.dump());
+            CHECK(final.at("status") == "rejected");
+            CHECK(revision() == old_revision);
+            CHECK(objects().size() == old_count);
+            CHECK(history_size() == old_history);
+            return final.at("error").at("code").get<std::string>();
+        };
+        CHECK(rejected_spawn("crate_2", "gi_crate_2", "crate") ==
+              "prefab_parameter_required");
+        CHECK(rejected_spawn("unknown_1", "gi_unknown_1", "not_registered") ==
+              "prefab_dependency_mismatch");
+
+        const auto floor_before = named("Floor")->components.front().effective_json;
+        const auto closure_before = config.resolvedScene().prefabClosure().generation;
+        const auto floor_id = named("Floor")->authoring_object_id.value;
+        const auto set = commit({{"op", "set_component_value"}, {"object_id", floor_id},
+            {"component_slot", "transform"}, {"field_path", "/pos"},
+            {"value", {0.0, -0.25, 0.0}}});
+        REQUIRE(set.at("status") == "committed");
+        CHECK(config.resolvedScene().prefabClosure().generation != closure_before);
+        CHECK(named("Floor")->components.front().effective_json != floor_before);
+
+        Json undone;
+        REQUIRE_NOTHROW(undone = rpc("undo", {{"actor_id", actor},
+                                             {"base_revision", revision()}}));
+        REQUIRE(undone.at("status") == "accepted");
+        rpc_service.commitPendingEdits();
+        REQUIRE(rpc("get_edit_result", {{"ticket", undone.at("ticket")}}).at("status") ==
+                "committed");
+        CHECK(named("Floor")->components.front().effective_json == floor_before);
+        undone = rpc("undo", {{"actor_id", actor}, {"base_revision", revision()}});
+        REQUIRE(undone.at("status") == "accepted");
+        rpc_service.commitPendingEdits();
+        REQUIRE(rpc("get_edit_result", {{"ticket", undone.at("ticket")}}).at("status") ==
+                "committed");
+        CHECK(named("lamp_1") == nullptr);
+        for (int step = 0; step < 2; ++step) {
+            const auto redone = rpc("redo", {{"actor_id", actor},
+                                            {"base_revision", revision()}});
+            REQUIRE(redone.at("status") == "accepted");
+            rpc_service.commitPendingEdits();
+            REQUIRE(rpc("get_edit_result", {{"ticket", redone.at("ticket")}}).at("status") ==
+                    "committed");
+        }
+        lamp = named("lamp_1");
+        REQUIRE(lamp != nullptr);
+        CHECK(lamp->authoring_object_id.value == lamp_authoring_id);
+        CHECK(generatedByKey(*lamp, "simplemodelview").origin.generated()->stable_generated_id ==
+              model_generated_id);
+        CHECK(generatedByKey(*lamp, "light").origin.generated()->stable_generated_id ==
+              light_generated_id);
+
+        config.saveSceneDocument();
+        const auto saved = Json::parse(temporary.read("scene.json"));
+        const auto &saved_lamp = saved.at("scenes").at("default_scene").at("objects").at(4);
+        CHECK(saved_lamp.at("name") == "lamp_1");
+        CHECK(saved_lamp.at("prefab") ==
+              Json{{"ref", "lamp"}, {"instance_id", "gi_lamp_1"}});
+        REQUIRE(saved_lamp.at("components").size() == 1);
+        CHECK(saved_lamp.at("components")[0].at("name") == "transform");
+        const auto saved_document = AuthoringSceneDocument::load(
+            temporary.read("scene.json"), config.sceneDocument().revision());
+        const auto resolved_saved = ResolvedSceneResolver::resolve(
+            saved_document, SceneResolverGeneration{99}, config.resolvedScene().defaults(),
+            config.resolvedScene().prefabRegistry(), config.resolvedScene().bindableProvider());
+        const auto &saved_objects = resolved_saved.findScene("default_scene")->objects;
+        const auto &resolved_lamp = *std::find_if(saved_objects.begin(), saved_objects.end(),
+            [](const auto &object) { return object.name == "lamp_1"; });
+        CHECK(generatedByKey(resolved_lamp, "simplemodelview")
+                  .origin.generated()->stable_generated_id == model_generated_id);
+        CHECK(generatedByKey(resolved_lamp, "light").origin.generated()->stable_generated_id ==
+              light_generated_id);
+    }
+
+    FastModuleContainer fresh_modules;
+    GET_MODULE(PathResolver).setup(temporary.root(), false);
+    GET_MODULE(ProjectSource).setProjectData(project.dump());
+    GET_MODULE(ECSPredefinedRegistration).reg();
+    auto &fresh_config = GET_MODULE(ProjectBasicConfig);
+    (void)fresh_config.sceneProjectionState();
+    const auto &fresh_objects = fresh_config.resolvedScene().findScene("default_scene")->objects;
+    REQUIRE(fresh_objects.size() == 5);
+    const auto &fresh_lamp = fresh_objects[4];
+    CHECK(fresh_lamp.name == "lamp_1");
+    REQUIRE(fresh_lamp.prefab_instance.has_value());
+    CHECK(fresh_lamp.prefab_instance->ref == "lamp");
+    CHECK(fresh_lamp.prefab_instance->instance_id == "gi_lamp_1");
+    REQUIRE(fresh_lamp.prefab_instance->parameters.size() == 1);
+    CHECK(fresh_lamp.prefab_instance->parameters[0].value_resolved.get<double>() ==
+          Catch::Approx(2.0));
+    CHECK_FALSE(fresh_lamp.prefab_instance->parameters[0].is_override);
+    CHECK(fresh_lamp.authoring_object_id.value == lamp_authoring_id);
+    CHECK(generatedByKey(fresh_lamp, "simplemodelview").origin.generated()->stable_generated_id ==
+          model_generated_id);
+    CHECK(generatedByKey(fresh_lamp, "light").origin.generated()->stable_generated_id ==
+          light_generated_id);
+}
+
 TEST_CASE("WP361a production lifecycle adapter reconciles Generated behaviors and rebases sequence",
           "[wp361a][prefab][lifecycle][arena][production][rebase]") {
     ensureBehavior();

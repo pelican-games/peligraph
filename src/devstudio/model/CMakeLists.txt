@@ -16,6 +16,8 @@ target_link_libraries(pelican_studio_outliner PUBLIC pelican_project)
 add_library(pelican_studio_inspector_model STATIC
     inspectormodel.cpp
     inspectormodel.hpp
+    prefabplacement.cpp
+    prefabplacement.hpp
     graphattachmentmodel.cpp
     graphattachmentmodel.hpp
     graphcanvasmodel.cpp

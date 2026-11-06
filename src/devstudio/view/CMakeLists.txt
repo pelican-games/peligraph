@@ -80,6 +80,8 @@ add_library(pelican_studio_view STATIC
     inspectorgraphsections.hpp
     outlinertree.cpp
     outlinertree.hpp
+    prefabplacemenu.cpp
+    prefabplacemenu.hpp
     runtimeoutliner.cpp
     runtimeoutliner.hpp
     componentaddlist.cpp

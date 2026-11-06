@@ -626,6 +626,31 @@ PrefabRegistrySnapshot buildPrefabRegistrySnapshot(
     return PrefabRegistrySnapshot{std::move(data)};
 }
 
+nlohmann::ordered_json prefabRegistryListJson(
+    const PrefabRegistrySnapshot &registry) {
+    nlohmann::ordered_json result{
+        {"registry_generation", registry.generation()},
+        {"prefabs", nlohmann::ordered_json::array()}};
+    for (const auto &record : registry.records()) {
+        nlohmann::ordered_json parameters = nlohmann::ordered_json::array();
+        for (const auto &parameter : record.document->parameters) {
+            const char *kind = "value";
+            if (parameter.kind == PrefabParameterKind::Asset) kind = "asset";
+            else if (parameter.kind == PrefabParameterKind::Object) kind = "object";
+            parameters.push_back({
+                {"name", parameter.name},
+                {"kind", kind},
+                {"required", !parameter.default_value.has_value()}});
+        }
+        result["prefabs"].push_back({
+            {"name", record.name},
+            {"path", record.path},
+            {"digest_sha256", record.digest_sha256},
+            {"parameters", std::move(parameters)}});
+    }
+    return result;
+}
+
 PrefabInstanceDeclaration resolvePrefabInstance(
     const Json &prefab_block, const PrefabRegistrySnapshot &registry,
     PrefabErrorContext context) {

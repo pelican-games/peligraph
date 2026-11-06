@@ -837,6 +837,12 @@ EditorSceneOutlineResult EditorCommandService::sceneOutline(
             .authoring_object_id = object.authoring_object_id,
             .declaration_index = object.authoring_object_index,
             .name = object.name,
+            .prefab_ref = object.prefab_instance
+                ? std::optional<std::string>{object.prefab_instance->ref}
+                : std::nullopt,
+            .prefab_instance_id = object.prefab_instance
+                ? std::optional<std::string>{object.prefab_instance->instance_id}
+                : std::nullopt,
             .parent_authoring_object_id = parent_id});
     }
     return result;
@@ -1005,6 +1011,10 @@ EditorListAssetsResult EditorCommandService::listAssets(const EditorListAssetsRe
         if (!request.store || asset.store == *request.store) result.assets.push_back(std::move(asset));
     }
     return result;
+}
+
+nlohmann::ordered_json EditorCommandService::listPrefabs() const {
+    return prefabRegistryListJson(resolved().prefabRegistry());
 }
 
 ExportSceneSnapshotResponseV2
@@ -1994,6 +2004,10 @@ OrderedJson editorQueryJson(const EditorSceneOutlineResult &scene) {
             row["parent_authoring_object_id"] = object.parent_authoring_object_id->value;
         }
         if (object.name) row["name"] = *object.name;
+        if (object.prefab_ref) {
+            row["prefab_ref"] = *object.prefab_ref;
+            row["prefab_instance_id"] = *object.prefab_instance_id;
+        }
         result["objects"].push_back(std::move(row));
     }
     return result;
@@ -2405,6 +2419,12 @@ OrderedJson EditorCommandRpcAdapter::resolveRayOccurrence(
 
 OrderedJson EditorCommandRpcAdapter::listAssets(const Json &params) const {
     return editorQueryJson(service_.listAssets(parseListAssetsRequest(params)));
+}
+
+OrderedJson EditorCommandRpcAdapter::listPrefabs(const Json &params) const {
+    requireObjectParams(params, "list_prefabs");
+    if (!params.empty()) invalidParams("list_prefabs takes no parameters");
+    return service_.listPrefabs();
 }
 
 OrderedJson EditorCommandRpcAdapter::exportSceneSnapshot(const Json &params) const {

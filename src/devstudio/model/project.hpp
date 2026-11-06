@@ -54,6 +54,8 @@ struct OutlinerObject {
     // The authored name; empty for an unnamed object (which the engine
     // cannot reparent, and which no other object can name as its parent).
     std::string name;
+    std::string prefab_ref;
+    std::string prefab_instance_id;
     std::optional<std::size_t> parent_declaration_index;
     std::vector<std::size_t> child_declaration_indices;
 };

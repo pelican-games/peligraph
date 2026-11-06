@@ -1,0 +1,19 @@
+{
+  "schema": "pelican.prefab",
+  "version": 1,
+  "name": "lamp",
+  "parameters": [
+    {"name": "brightness", "type": "f32", "default": 2.0}
+  ],
+  "components": [
+    {"name": "simplemodelview", "model": "engine://primitives/sphere"},
+    {
+      "name": "light",
+      "type": "point",
+      "position": [0.0, 1.0, 0.0],
+      "color": [1.0, 0.85, 0.6],
+      "intensity": {"$param": "brightness"},
+      "range": 6.0
+    }
+  ]
+}

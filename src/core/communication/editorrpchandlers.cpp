@@ -98,6 +98,9 @@ void configureEditorRpcHandlers(RpcServer &server,
     server.setHandler("list_assets", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.listAssets(params); });
     });
+    server.setHandler("list_prefabs", [&editor_rpc](const nlohmann::json &params) {
+        return invokeEditorRpc([&] { return editor_rpc.listPrefabs(params); });
+    });
     server.setHandler("export_scene_snapshot", [&editor_rpc](const nlohmann::json &params) {
         return invokeEditorRpc([&] { return editor_rpc.exportSceneSnapshot(params); });
     });

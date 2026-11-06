@@ -265,6 +265,8 @@ bool ProjectOutlinerModel::updateScene(const nlohmann::json &reply,
         std::size_t declaration_index = 0;
         std::uint64_t authoring_object_id = 0;
         std::string name;
+        std::string prefab_ref;
+        std::string prefab_instance_id;
         std::optional<std::string> parent;
         std::optional<std::uint64_t> parent_id;
     };
@@ -312,6 +314,17 @@ bool ProjectOutlinerModel::updateScene(const nlohmann::json &reply,
             if (!id_indices.emplace(object.authoring_object_id, index).second) {
                 throw std::runtime_error(label + " authoring_object_id is duplicated");
             }
+            for (const auto &[key, destination] : {
+                     std::pair{"prefab_ref", &object.prefab_ref},
+                     std::pair{"prefab_instance_id", &object.prefab_instance_id}}) {
+                if (const auto field = value.find(key); field != value.end()) {
+                    if (!field->is_string() || field->get_ref<const std::string &>().empty()) {
+                        throw std::runtime_error(label + " object " + key +
+                                                 " must be a non-empty string");
+                    }
+                    *destination = field->get<std::string>();
+                }
+            }
             const auto parent = value.find("parent_authoring_object_id");
             if (parent == value.end()) {
                 throw std::runtime_error(
@@ -346,6 +359,8 @@ bool ProjectOutlinerModel::updateScene(const nlohmann::json &reply,
             .display_name = Pelican::runtimeObjectIdentityName(
                 scene_id, source.authoring_object_id, source.name),
             .name = source.name,
+            .prefab_ref = source.prefab_ref,
+            .prefab_instance_id = source.prefab_instance_id,
         };
         // UX-13c: the parent by its authoring id (scene_outline) or by its
         // name (scene_tree); either may be declared after the child.

@@ -1,5 +1,6 @@
 #include "inspectormodel.hpp"
 #include "gizmomodel.hpp"
+#include "prefabplacement.hpp"
 
 #include "../src/core/communication/editorcommandservice.hpp"
 #include "../src/core/container.hpp"
@@ -1806,6 +1807,42 @@ TEST_CASE("G-2 Add object spawns once, named by kind with Blender's numbering",
     CHECK(second.params.at("operations").at(0).at("object").at("name") == "Cube_001");
     CHECK(second.params.at("operations").at(0).at("object").at("components").at(1) ==
           Json{{"name", "simplemodelview"}, {"model", "engine://primitives/cube"}});
+}
+
+TEST_CASE("PFB-1 prefab spawn carries instance authority through its queue and Undo stays revision-only",
+          "[pfb1][devstudio][inspector][prefab]") {
+    using PelicanStudio::prefabObjectDeclaration;
+    InspectorHarness harness;
+    harness.model.startSession();
+    harness.reply(harness.take("open_editor_session"), {{"actor_id", 9}});
+    harness.model.observeSceneRevision(3);
+    const auto lamp_1 = prefabObjectDeclaration("lamp_1", "lamp");
+    const auto lamp_2 = prefabObjectDeclaration("lamp_2", "lamp");
+    REQUIRE(harness.model.spawnObject("default_scene", lamp_1) == SpawnOutcome::Sent);
+    const auto first = harness.take("edit");
+    CHECK_FALSE(first.params.contains("coalesce_key"));
+    CHECK(first.params.at("operations").at(0) == Json{
+        {"op", "spawn"}, {"scene_id", "default_scene"}, {"object", lamp_1},
+        {"new_instance_id", "gi_lamp_1"}});
+    REQUIRE(harness.model.spawnObject("default_scene", lamp_2) == SpawnOutcome::Queued);
+    CHECK(harness.model.takeRpcRequests().empty());
+    harness.reply(first, {{"status", "accepted"}, {"ticket", "spawn:pfb1:1"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_edit_result"),
+                  {{"status", "committed"}, {"committed_revision", 4}});
+    const auto second = harness.take("edit");
+    CHECK(second.params.at("base_revision") == 4);
+    CHECK(second.params.at("operations").at(0) == Json{
+        {"op", "spawn"}, {"scene_id", "default_scene"}, {"object", lamp_2},
+        {"new_instance_id", "gi_lamp_2"}});
+    harness.reply(second, {{"status", "accepted"}, {"ticket", "spawn:pfb1:2"}});
+    harness.model.pollPendingOperations();
+    harness.reply(harness.take("get_edit_result"),
+                  {{"status", "committed"}, {"committed_revision", 5}});
+    (void)harness.model.takeRpcRequests();
+    harness.model.undo();
+    const auto undo = harness.take("undo");
+    CHECK(undo.params == Json{{"actor_id", 9}, {"base_revision", 5}});
 }
 
 TEST_CASE("T-1 Add Object > Floor spawns a wide plane just under the origin",

@@ -20,6 +20,7 @@
 #include "panelhelp.hpp"
 #include "panelshown.hpp"
 #include "playcontrols.hpp"
+#include "prefabplacemenu.hpp"
 #include "problemsdock.hpp"
 #include "projectmigrationwidget.hpp"
 #include "renderconfigdigest.hpp"
@@ -1856,6 +1857,7 @@ void MainWindow::createWorkspace() {
                 problems_dock_->engineAvailable();
                 // MI-1s, decision 4: which files are registered models.
                 requestRegisteredModels();
+                requestPrefabList();
                 problems_count_->show();
                 // RR-1s, decision 1: whether the reads answer from the version
                 // the picture was made from.
@@ -1880,6 +1882,9 @@ void MainWindow::createWorkspace() {
                 // waited for is under way (or the project changed).
                 model_registration_->engineGone();
                 pending_models_request_ = 0;
+                pending_prefab_list_request_ = 0;
+                pending_prefab_list_engine_generation_ = 0;
+                prefab_place_menu_->engineUnavailable();
                 registered_model_files_.clear();
                 outliner_restart_reason_.clear();
                 outliner_restart_->hide();
@@ -1931,6 +1936,19 @@ void MainWindow::createWorkspace() {
                         return;
                     }
                     model_registration_->receiveResult(request_id, result.is_discarded() ? nlohmann::json{} : result);
+                    return;
+                }
+                if (request_id != 0 && request_id == pending_prefab_list_request_) {
+                    if (pending_prefab_list_engine_generation_ != engine_generation_) return;
+                    pending_prefab_list_request_ = 0;
+                    pending_prefab_list_engine_generation_ = 0;
+                    try {
+                        const auto parsed = nlohmann::json::parse(
+                            result_json.constData(), result_json.constData() + result_json.size());
+                        prefab_place_menu_->setList(parsePrefabList(parsed));
+                    } catch (const std::exception &) {
+                        prefab_place_menu_->listFailed();
+                    }
                     return;
                 }
                 // OSC-3c: declared inputs, listener, recent traffic.
@@ -2023,6 +2041,12 @@ void MainWindow::createWorkspace() {
                 if (model_registration_->receiveFailure(request_id, message.toStdString())) return;
                 if (request_id != 0 && request_id == pending_models_request_) {
                     pending_models_request_ = 0;
+                    return;
+                }
+                if (request_id != 0 && request_id == pending_prefab_list_request_) {
+                    pending_prefab_list_request_ = 0;
+                    pending_prefab_list_engine_generation_ = 0;
+                    prefab_place_menu_->listFailed();
                     return;
                 }
                 if (live_inputs_dock_->receiveFailure(request_id, message)) return;
@@ -3915,6 +3939,10 @@ void MainWindow::populateOutliner() {
             item->setData(
                 0, OutlinerAuthoringIdRole,
                 QVariant::fromValue<qulonglong>(object.key.authoring_object_id));
+            if (!object.prefab_ref.empty()) {
+                item->setData(0, OutlinerPrefabRole,
+                              QString::fromStdString(object.prefab_ref));
+            }
             object_items.push_back(item);
         }
 
@@ -3968,6 +3996,9 @@ void MainWindow::createAddObjectMenu() {
     QAction *model_from_file = add_object_menu_->addAction(tr("Model from file\xE2\x80\xA6"));
     model_from_file->setObjectName(QStringLiteral("pelican.outliner.addObject.modelFromFile"));
     connect(model_from_file, &QAction::triggered, this, [this] { addModelFromFile(); });
+    prefab_place_menu_ = new PrefabPlaceMenu(
+        *add_object_menu_,
+        [this](const std::string &prefab) { addPrefabObject(prefab); }, this);
 
     // OL-1: the right-click menu is the row's first -- Duplicate and Delete,
     // switched off with nothing selected -- and then Add Object.
@@ -3991,7 +4022,8 @@ void MainWindow::createAddObjectMenu() {
     add_button->setObjectName(QStringLiteral("pelican.outliner.addObjectButton"));
     add_button->setText(tr("Add Object"));
     add_button->setToolTip(tr("Add an empty or a primitive shape at the origin, "
-                              "a wide floor just under it, or a model from a file"));
+                              "a wide floor just under it, a model from a file, "
+                              "or a registered prefab"));
     add_button->setMenu(add_object_menu_);
     add_button->setPopupMode(QToolButton::InstantPopup);
     scene_toolbar->addWidget(add_button);
@@ -4005,6 +4037,14 @@ void MainWindow::addObject(AddObjectKind kind) {
 void MainWindow::addModelObject(const std::string &model) {
     spawnNewObject(modelObjectBaseName(model),
                    [model](const std::string &name) { return modelObjectDeclaration(name, model); });
+}
+
+void MainWindow::addPrefabObject(const std::string &prefab) {
+    spawnNewObject(prefabObjectBaseName(prefab),
+                   [prefab](const std::string &name) {
+                       return prefabObjectDeclaration(name, prefab);
+                   },
+                   true);
 }
 
 void MainWindow::addModelFromFile() {
@@ -4089,8 +4129,16 @@ void MainWindow::requestRegisteredModels() {
     pending_models_request_ = viewport_->requestRpc(QStringLiteral("list_assets"), {}, &error);
 }
 
+void MainWindow::requestPrefabList() {
+    if (!viewport_->rpcReady() || pending_prefab_list_request_ != 0) return;
+    QString error;
+    pending_prefab_list_request_ = viewport_->requestRpc(QStringLiteral("list_prefabs"), {}, &error);
+    pending_prefab_list_engine_generation_ = engine_generation_;
+}
+
 void MainWindow::spawnNewObject(std::string_view base,
-                                const std::function<nlohmann::json(const std::string &name)> &declaration) {
+                                const std::function<nlohmann::json(const std::string &name)> &declaration,
+                                bool number_from_one) {
     if (!project_model_ || !viewport_->rpcReady()) {
         statusBar()->showMessage(
             tr("Add Object needs an open project with its engine running."), 5000);
@@ -4115,10 +4163,22 @@ void MainWindow::spawnNewObject(std::string_view base,
     // A spawn the Outliner has not shown yet still holds its name.
     if (pending_spawn_name_ && pending_spawn_name_->first == scene->scene_id)
         taken.push_back(pending_spawn_name_->second);
-    const std::string name = uniqueObjectName(base, taken);
+    const std::string name = number_from_one ? uniquePrefabObjectName(base, taken)
+                                             : uniqueObjectName(base, taken);
+    auto object = declaration(name);
+    if (number_from_one) {
+        std::vector<std::string> instance_ids;
+        for (const auto &existing : scene->objects) {
+            if (!existing.prefab_instance_id.empty()) {
+                instance_ids.push_back(existing.prefab_instance_id);
+            }
+        }
+        object.at("prefab").at("instance_id") =
+            uniquePrefabInstanceId(name, instance_ids);
+    }
 
     QString error;
-    const auto outcome = inspector_->spawnObject(scene->scene_id, declaration(name), &error);
+    const auto outcome = inspector_->spawnObject(scene->scene_id, std::move(object), &error);
     const QString shown_name = QString::fromStdString(name);
     if (outcome == SpawnOutcome::Refused) {
         const QString message = tr("Could not add %1: %2").arg(shown_name, error);

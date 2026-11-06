@@ -74,7 +74,7 @@ void GoldenHarness::runRc5sRuntimeMatrix() {
     requireGoldenVulkanDevice();
     std::size_t shipping = 0;
     for (const auto *name : {"animgraph_demo", "example", "pathtrace_demo", "posegraph_demo",
-                             "raytracing_demo", "sprite_demo", "vrm_xr_demo"}) {
+                             "prefab_demo", "raytracing_demo", "sprite_demo", "vrm_xr_demo"}) {
         CAPTURE(name);
         FastModuleContainer modules;
         const auto root = sourceRoot() / "projects" / name;
@@ -91,7 +91,7 @@ void GoldenHarness::runRc5sRuntimeMatrix() {
         rc5sCheckRuntime(false);
         ++shipping;
     }
-    CHECK(shipping == 7);
+    CHECK(shipping == 8);
     std::size_t recipes = 0;
 #if !PELICAN_WITH_OPENXR
     FAIL("RC-5s runtime matrix requires OpenXR enabled for all sixteen configurations");

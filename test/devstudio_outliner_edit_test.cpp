@@ -18,8 +18,11 @@
 #include "toollayoutpreset.hpp"
 #include "../src/devstudio/model/gizmomodel.hpp"
 #include "../src/devstudio/model/inspectormodel.hpp"
+#include "../src/devstudio/model/prefabplacement.hpp"
 #include "../src/devstudio/model/project.hpp"
 #include "../src/devstudio/model/selection.hpp"
+#include "../src/project/prefab.hpp"
+#include "../src/project/projectformat.hpp"
 #include "../src/devstudio/viewport/engineattach.hpp"
 #include "../src/devstudio/viewport/enginefailuremodel.hpp"
 #include "../src/devstudio/viewport/enginelogbuffer.hpp"
@@ -55,6 +58,7 @@
 #include <QPushButton>
 #include <QSet>
 #include <QStringList>
+#include <QStyledItemDelegate>
 #include <QTest>
 #include <QTimer>
 #include <QTreeWidgetItemIterator>
@@ -111,6 +115,8 @@ class FakeEngine {
         std::uint64_t id = 0;
         std::string name;
         std::string parent;
+        std::string prefab;
+        std::string instance_id;
     };
 
     explicit FakeEngine(EmbeddedViewport &viewport) : viewport_{viewport} {
@@ -123,6 +129,8 @@ class FakeEngine {
     std::uint64_t next_id = 100;
     // Every operation an `edit` carried, in order.
     std::vector<Json> operations;
+    std::optional<Json> prefab_list;
+    std::optional<Json> refuse_next_edit;
     // UX-13c: false is an engine from before scene_outline, which refuses it
     // as an unknown method (-32601).
     bool knows_scene_outline = true;
@@ -255,6 +263,20 @@ class FakeEngine {
         operations.push_back(operation);
         Json created = Json::array();
         const auto op = operation.at("op").get<std::string>();
+        if (op == "spawn") {
+            const auto &declaration = operation.at("object");
+            Object object{.id = next_id++,
+                          .name = declaration.at("name").get<std::string>()};
+            if (declaration.contains("prefab")) {
+                object.prefab = declaration.at("prefab").at("ref");
+                object.instance_id = operation.at("new_instance_id");
+            }
+            objects.push_back(object);
+            created.push_back({{"object_id", object.id}, {"scene_id", "main"},
+                               {"declaration_index", objects.size() - 1},
+                               {"name", object.name}});
+            return created;
+        }
         const auto id = operation.at("object_id").get<std::uint64_t>();
         if (op == "duplicate") {
             const auto source = subtree(indexOf(id));
@@ -299,6 +321,9 @@ class FakeEngine {
                         {"name", objects[index].name},
                         {"components", Json::array()}};
             if (!objects[index].parent.empty()) object["parent"] = objects[index].parent;
+            if (!objects[index].prefab.empty())
+                object["prefab_instance"] = {{"ref", objects[index].prefab},
+                                             {"instance_id", objects[index].instance_id}};
             listed.push_back(std::move(object));
         }
         return {{"scene_revision", revision}, {"scene_id", "main"}, {"objects", listed}};
@@ -319,6 +344,10 @@ class FakeEngine {
                         {"parent_authoring_object_id", nullptr}};
             if (!objects[index].parent.empty())
                 object["parent_authoring_object_id"] = ids.at(objects[index].parent);
+            if (!objects[index].prefab.empty()) {
+                object["prefab_ref"] = objects[index].prefab;
+                object["prefab_instance_id"] = objects[index].instance_id;
+            }
             listed.push_back(std::move(object));
         }
         return {{"scene_id", "main"},
@@ -337,6 +366,7 @@ class FakeEngine {
         if (method == "get_document_journal")
             return Json{{"dirty", false}, {"changes", Json::array()}};
         if (method == "list_assets") return Json{{"assets", Json::array()}};
+        if (method == "list_prefabs") return prefab_list;
         // HUB-1a: the Graph tab's smallest readable document. The window's
         // Graph page only asks the model for the node a press named, so the
         // rest of the engine's graph surface is irrelevant here.
@@ -465,6 +495,10 @@ class FakeEngine {
                                                          {{"name", "scale"}, {"type", "vec3"}}})}}}}})}};
         }
         if (method == "edit") {
+            if (refuse_next_edit) {
+                auto refusal = std::exchange(refuse_next_edit, std::nullopt).value();
+                return Json{{"status", "rejected"}, {"error", std::move(refusal)}};
+            }
             const std::string ticket = "edit:" + std::to_string(next_ticket_++);
             edits_[ticket] = params.at("operations");
             return Json{{"status", "accepted"}, {"ticket", ticket}};
@@ -522,6 +556,22 @@ struct ProjectSandbox {
     }
 };
 
+Json realPrefabList() {
+    const auto root = std::filesystem::path{PELICAN_TEST_SOURCE_DIR} /
+                      "projects" / "prefab_demo";
+    const auto read = [&](const std::filesystem::path &path) {
+        std::ifstream input{path, std::ios::binary};
+        return std::string{std::istreambuf_iterator<char>{input},
+                           std::istreambuf_iterator<char>{}};
+    };
+    const auto project = Pelican::parseProjectEnvelopeText(read(root / "project.json"));
+    const auto registry = Pelican::buildPrefabRegistrySnapshot(
+        project.envelope.prefabs, [&](std::string_view path) {
+            return read(root / std::string{path});
+        });
+    return Pelican::prefabRegistryListJson(registry);
+}
+
 struct Rig {
     QApplication &app = application();
     ProjectSandbox sandbox;
@@ -538,10 +588,12 @@ struct Rig {
                                                             {2, "Cube", ""},
                                                             {3, "Floor", ""},
                                                             {4, "Leg", "Floor"}},
-                 bool knows_scene_outline = true, bool teardown_graph = false) {
+                 bool knows_scene_outline = true, bool teardown_graph = false,
+                 bool with_prefabs = false) {
         engine.objects = std::move(objects);
         engine.knows_scene_outline = knows_scene_outline;
         engine.teardown_graph = teardown_graph;
+        if (with_prefabs) engine.prefab_list = realPrefabList();
         QString error;
         REQUIRE(viewport.process_.start(
             {QString::fromUtf8(PELICAN_PROCESS_FIXTURE_PATH), {QStringLiteral("rpc-hold")}, {}},
@@ -590,6 +642,13 @@ struct Rig {
             QTest::qWait(5);
         }
         return done();
+    }
+
+    void trigger(const QString &name) {
+        auto *action = window.findChild<QAction *>(name);
+        REQUIRE(action != nullptr);
+        action->trigger();
+        pumpFor(200);
     }
 
     QTreeWidgetItem *row(const QString &text) {
@@ -1527,6 +1586,200 @@ TEST_CASE("Studio owners die with Graph gestures and child UI still active",
             }
         }
     }
+}
+
+} // namespace PelicanStudio
+
+namespace PelicanStudio {
+
+TEST_CASE("PFB-1 real window places prefabs and keeps their editing identity",
+          "[pfb1][devstudio][outliner][prefab]") {
+    Rig rig{{{1, "Camera", ""}}, true, false, true};
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.findChild<QAction *>(
+                   QStringLiteral("pelican.outliner.addObject.prefab.lamp")) != nullptr;
+    }));
+    auto *lamp = rig.window.findChild<QAction *>(
+        QStringLiteral("pelican.outliner.addObject.prefab.lamp"));
+    auto *crate = rig.window.findChild<QAction *>(
+        QStringLiteral("pelican.outliner.addObject.prefab.crate"));
+    REQUIRE(lamp != nullptr);
+    REQUIRE(crate != nullptr);
+    CHECK(lamp->isEnabled());
+    CHECK(lamp->text() == QStringLiteral("lamp"));
+    CHECK_FALSE(crate->isEnabled());
+    CHECK(crate->text() == QStringLiteral("crate (needs model)"));
+    CHECK(crate->toolTip().contains(QStringLiteral("model")));
+    CHECK(rig.window.findChild<QAction *>(
+              QStringLiteral("pelican.outliner.addObject.prefabNone")) == nullptr);
+
+    // Both menu actions fire before the first edit's reply, as a fast double click does.
+    lamp->trigger();
+    lamp->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.operations.size() == 2; }));
+    const auto declaration_1 = prefabObjectDeclaration("lamp_1", "lamp");
+    const auto declaration_2 = prefabObjectDeclaration("lamp_2", "lamp");
+    CHECK(rig.engine.operations[0] == Json{{"op", "spawn"}, {"scene_id", "main"},
+        {"object", declaration_1}, {"new_instance_id", "gi_lamp_1"}});
+    CHECK(rig.engine.operations[1] == Json{{"op", "spawn"}, {"scene_id", "main"},
+        {"object", declaration_2}, {"new_instance_id", "gi_lamp_2"}});
+    auto *row = rig.row(QStringLiteral("lamp_1"));
+    REQUIRE(row != nullptr);
+    CHECK(row->text(0) == QStringLiteral("lamp_1"));
+    CHECK(row->data(0, OutlinerPrefabRole).toString() == QStringLiteral("lamp"));
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.row(QStringLiteral("lamp_2")) != nullptr &&
+               rig.selectedId() == rig.engine.objects[2].id;
+    }));
+    CHECK(rig.engine.objects[2].instance_id == "gi_lamp_2");
+    CHECK(rig.selectedId() == rig.engine.objects[2].id);
+    CHECK(rig.row(QStringLiteral("Camera")) != nullptr);
+    REQUIRE(rig.pumpUntil([&] {
+        const auto *found = rig.window.project_model_->findObject(
+            OutlinerObjectKey{"main", 1, rig.engine.objects[1].id});
+        return found != nullptr && found->display_name == "lamp_1";
+    }));
+    const auto *object = rig.window.project_model_->findObject(
+        OutlinerObjectKey{"main", 1, rig.engine.objects[1].id});
+    REQUIRE(object != nullptr);
+    const OutlinerObject object_copy = *object;
+    CHECK(object_copy.display_name == "lamp_1");
+
+    row = rig.row(QStringLiteral("lamp_1"));
+    REQUIRE(row != nullptr);
+    // The display role stays raw; only the delegate's presentation grows.
+    const auto index = rig.outliner.indexFromItem(row, 0);
+    QStyleOptionViewItem option;
+    option.rect = rig.outliner.visualItemRect(row);
+    const int decorated_width = rig.outliner.itemDelegate()->sizeHint(option, index).width();
+    row->setData(0, OutlinerPrefabRole, QVariant{});
+    const int plain_width = rig.outliner.itemDelegate()->sizeHint(option, index).width();
+    CHECK(decorated_width > plain_width);
+    row->setData(0, OutlinerPrefabRole, QStringLiteral("lamp"));
+
+    rig.select(QStringLiteral("lamp_1"));
+    rig.outliner.duplicateAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.operations.size() == 3; }));
+    CHECK(rig.engine.operations[2] == Json{{"op", "duplicate"},
+                                           {"object_id", rig.engine.objects[1].id}});
+    REQUIRE(rig.pumpUntil([&] { return rig.row(QStringLiteral("lamp_1_copy1")) != nullptr; }));
+    rig.select(QStringLiteral("lamp_1_copy1"));
+    const auto copied_id = rig.selectedId();
+    rig.outliner.deleteAction()->trigger();
+    REQUIRE(rig.pumpUntil([&] { return rig.engine.operations.size() == 4; }));
+    CHECK(rig.engine.operations[3] == Json{{"op", "destroy"}, {"object_id", copied_id}});
+    // A refresh retains raw identities and the same dragging rules.
+    rig.select(QStringLiteral("Camera"));
+    const auto drag = rig.outliner.dropTargetAt(rig.row(QStringLiteral("lamp_1")),
+                                                rig.middleOf(QStringLiteral("Camera")));
+    CHECK(drag.place == OutlinerTree::DropPlace::Onto);
+    CHECK(outlinerObjectKey(rig.row(QStringLiteral("lamp_1")))->authoring_object_id ==
+          rig.engine.objects[1].id);
+}
+
+TEST_CASE("PFB-1 real window reports a rejected prefab placement and frees its name",
+          "[pfb1][devstudio][outliner][prefab][refusal]") {
+    Rig rig{{{1, "Camera", ""}}, true, false, true};
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.findChild<QAction *>(
+                   QStringLiteral("pelican.outliner.addObject.prefab.lamp")) != nullptr;
+    }));
+    rig.engine.refuse_next_edit = Json{{"code", "prefab_dependency_mismatch"},
+                                      {"message", "dependency is incompatible"}};
+    rig.trigger(QStringLiteral("pelican.outliner.addObject.prefab.lamp"));
+    CHECK(rig.row(QStringLiteral("lamp_1")) == nullptr);
+    CHECK(rig.window.outliner_notice_->text().contains(QStringLiteral("Cannot add lamp_1")));
+    CHECK(rig.window.outliner_notice_->text().contains(
+        QStringLiteral("prefab_dependency_mismatch")));
+    CHECK(rig.window.outliner_notice_->text().contains(
+        QStringLiteral("dependency is incompatible")));
+    rig.trigger(QStringLiteral("pelican.outliner.addObject.prefab.lamp"));
+    REQUIRE(rig.row(QStringLiteral("lamp_1")) != nullptr);
+    CHECK(rig.engine.operations.back().at("new_instance_id") == "gi_lamp_1");
+}
+
+TEST_CASE("PFB-1 prefab menu belongs to an engine session and handles empty or failed lists",
+          "[pfb1][devstudio][outliner][prefab][session]") {
+    Rig rig{{{1, "Camera", ""}}, true, false, true};
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.findChild<QAction *>(
+                   QStringLiteral("pelican.outliner.addObject.prefab.lamp")) != nullptr;
+    }));
+    CHECK(rig.asked("list_prefabs") == 1);
+    const auto *before = rig.row(QStringLiteral("Camera"));
+    const QString camera_text = before->text(0);
+    rig.engine.held_methods.insert(QStringLiteral("list_prefabs"));
+    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("stopped"));
+    rig.pumpFor(100);
+    CHECK(rig.window.findChild<QAction *>(
+              QStringLiteral("pelican.outliner.addObject.prefab.lamp")) == nullptr);
+    auto *none = rig.window.findChild<QAction *>(
+        QStringLiteral("pelican.outliner.addObject.prefabNone"));
+    REQUIRE(none != nullptr);
+    CHECK(none->text() == QStringLiteral("Prefabs are listed when the engine is running"));
+    CHECK(rig.row(QStringLiteral("Camera"))->text(0) == camera_text);
+
+    // Save a pending reply, then reconnect to a session whose registry is empty.
+    const QByteArray old_reply = QByteArray::fromStdString(realPrefabList().dump());
+    emit rig.viewport.engineRpcBecameAvailable();
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("list_prefabs") == 2; }));
+    const qint64 old_request = rig.window.pending_prefab_list_request_;
+    REQUIRE(old_request != 0);
+    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("stopped"));
+    rig.engine.prefab_list = Json{{"registry_generation", 1}, {"prefabs", Json::array()}};
+    emit rig.viewport.engineRpcBecameAvailable();
+    REQUIRE(rig.pumpUntil([&] { return rig.asked("list_prefabs") == 3; }));
+    CHECK(rig.window.pending_prefab_list_request_ != 0);
+    CHECK(rig.window.pending_prefab_list_request_ != old_request);
+    emit rig.viewport.inspectorRpcSucceeded(old_request, old_reply);
+    rig.pumpFor(100);
+    none = rig.window.findChild<QAction *>(
+        QStringLiteral("pelican.outliner.addObject.prefabNone"));
+    REQUIRE(none != nullptr);
+    CHECK(none->text() == QStringLiteral("Prefabs are listed when the engine is running"));
+    CHECK(rig.window.findChild<QAction *>(
+              QStringLiteral("pelican.outliner.addObject.prefab.lamp")) == nullptr);
+    rig.engine.held_methods.remove(QStringLiteral("list_prefabs"));
+    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("stopped"));
+    emit rig.viewport.engineRpcBecameAvailable();
+    REQUIRE(rig.pumpUntil([&] {
+        auto *action = rig.window.findChild<QAction *>(
+            QStringLiteral("pelican.outliner.addObject.prefabNone"));
+        return action != nullptr && action->text() == QStringLiteral("No prefabs registered");
+    }));
+
+    rig.engine.prefab_list.reset();
+    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("stopped"));
+    emit rig.viewport.engineRpcBecameAvailable();
+    REQUIRE(rig.pumpUntil([&] {
+        auto *action = rig.window.findChild<QAction *>(
+            QStringLiteral("pelican.outliner.addObject.prefabNone"));
+        return action != nullptr && action->text() == QStringLiteral("Could not read the prefab list");
+    }));
+    CHECK(rig.window.outliner_notice_->text().isEmpty());
+    CHECK(rig.row(QStringLiteral("Camera"))->text(0) == camera_text);
+    CHECK(rig.engine.objects.size() == 1);
+}
+
+TEST_CASE("PFB-1 long prefab names do not widen the real main window",
+          "[pfb1][devstudio][outliner][prefab][layout]") {
+    Rig rig{{{1, "Camera", ""}}, true, false, true};
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.findChild<QAction *>(
+                   QStringLiteral("pelican.outliner.addObject.prefab.lamp")) != nullptr;
+    }));
+    const int width = rig.window.minimumSizeHint().width();
+    rig.engine.prefab_list = Json{{"registry_generation", 1}, {"prefabs", Json::array({
+        Json{{"name", std::string(64, 'p')}, {"path", "long.json"},
+             {"digest_sha256", "unused"}, {"parameters", Json::array()}}})}};
+    emit rig.viewport.engineRpcBecameUnavailable(QStringLiteral("stopped"));
+    emit rig.viewport.engineRpcBecameAvailable();
+    REQUIRE(rig.pumpUntil([&] {
+        return rig.window.findChild<QAction *>(
+            QStringLiteral("pelican.outliner.addObject.prefab.") +
+            QString(64, QLatin1Char{'p'})) != nullptr;
+    }));
+    CHECK(rig.window.minimumSizeHint().width() == width);
 }
 
 } // namespace PelicanStudio
