@@ -43,6 +43,7 @@ macro(pelican_android_feature_defaults)
       PELICAN_WITH_HOT_RELOAD
       PELICAN_WITH_RENDERDOC
       PELICAN_WITH_AUDIO
+      PELICAN_WITH_JOYSTICK_INPUT
       PELICAN_WITH_SPIRV_LINK
       PELICAN_WITH_INTRO_LINK)
     if(NOT DEFINED CACHE{${pelican_android_off}})

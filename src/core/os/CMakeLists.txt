@@ -40,7 +40,48 @@ FetchContent_Declare(
   GIT_REPOSITORY https://github.com/glfw/glfw.git
   GIT_TAG        7b6aead9fb88b3623e3b3725ebb42670cbe4c579 # 3.4
 )
-FetchContent_MakeAvailable(glfw)
+# DMAP-1a: prepare and patch a build-private copy. In particular, a shared
+# FETCHCONTENT_SOURCE_DIR_GLFW checkout is an input, never a mutation target.
+FetchContent_GetProperties(glfw)
+if(NOT glfw_POPULATED)
+  if(POLICY CMP0169)
+    cmake_policy(PUSH)
+    cmake_policy(SET CMP0169 OLD)
+  endif()
+  FetchContent_Populate(glfw)
+  if(POLICY CMP0169)
+    cmake_policy(POP)
+  endif()
+endif()
+find_package(Git REQUIRED)
+execute_process(
+  COMMAND "${GIT_EXECUTABLE}" -C "${glfw_SOURCE_DIR}" rev-parse HEAD
+  RESULT_VARIABLE pelican_glfw_revision_result
+  OUTPUT_VARIABLE pelican_glfw_revision
+  ERROR_VARIABLE pelican_glfw_revision_error
+  OUTPUT_STRIP_TRAILING_WHITESPACE)
+if(NOT pelican_glfw_revision_result EQUAL 0 OR
+   NOT pelican_glfw_revision STREQUAL "7b6aead9fb88b3623e3b3725ebb42670cbe4c579")
+  message(FATAL_ERROR
+    "GLFW input is not the pinned revision: ${pelican_glfw_revision} "
+    "${pelican_glfw_revision_error}")
+endif()
+set(pelican_glfw_patched_dir "${FETCHCONTENT_BASE_DIR}/glfw-pelican-src")
+file(REMOVE_RECURSE "${pelican_glfw_patched_dir}")
+file(COPY "${glfw_SOURCE_DIR}/" DESTINATION "${pelican_glfw_patched_dir}"
+  PATTERN ".git" EXCLUDE)
+execute_process(
+  COMMAND "${CMAKE_COMMAND}" "-DPELICAN_GLFW_SOURCE_DIR=${pelican_glfw_patched_dir}"
+          -P "${CMAKE_CURRENT_LIST_DIR}/../../../cmake/patch_glfw_dinput_bounds.cmake"
+  RESULT_VARIABLE pelican_glfw_patch_result)
+if(NOT pelican_glfw_patch_result EQUAL 0)
+  message(FATAL_ERROR "patching GLFW failed: ${pelican_glfw_patch_result}")
+endif()
+set(PELICAN_GLFW_INPUT_SOURCE_DIR "${glfw_SOURCE_DIR}" CACHE INTERNAL
+    "Pristine GLFW input source")
+set(PELICAN_GLFW_SOURCE_DIR "${pelican_glfw_patched_dir}" CACHE INTERNAL
+    "Build-private, patched GLFW source")
+add_subdirectory("${pelican_glfw_patched_dir}" "${glfw_BINARY_DIR}")
 
 target_link_libraries(pelican_core PRIVATE glfw)
 

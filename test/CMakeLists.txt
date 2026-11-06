@@ -1976,6 +1976,75 @@ pelican_define_test(animation_off_scene_test GROUP core_foundation pelican_core)
 endif()
 pelican_define_test(curve_test GROUP core_foundation pelican_core)
 pelican_define_test(read_fuzz_test GROUP core_foundation pelican_core)
+# DMAP-1a: run the actual patched DirectInput enumeration fragments on every
+# platform. This is a source-level unit test, not a Windows integration test.
+if(TARGET glfw)
+  set(glfw_dinput_source "${PELICAN_GLFW_SOURCE_DIR}/src/win32_joystick.c")
+  set(glfw_dinput_extract "${CMAKE_CURRENT_BINARY_DIR}/glfw_dinput_extract")
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS "${glfw_dinput_source}")
+  get_target_property(glfw_target_source_dir glfw SOURCE_DIR)
+  file(REAL_PATH "${glfw_target_source_dir}" glfw_target_source_dir)
+  file(REAL_PATH "${PELICAN_GLFW_SOURCE_DIR}/src" glfw_patched_source_dir)
+  if(NOT glfw_target_source_dir STREQUAL glfw_patched_source_dir)
+    message(FATAL_ERROR "the GLFW target does not use the patched private source")
+  endif()
+  if(WIN32)
+    get_target_property(glfw_sources glfw SOURCES)
+    list(FIND glfw_sources "win32_joystick.c" glfw_dinput_source_index)
+    if(glfw_dinput_source_index EQUAL -1)
+      message(FATAL_ERROR "the GLFW target does not compile the patched win32_joystick.c")
+    endif()
+  endif()
+  file(READ "${glfw_dinput_source}" glfw_dinput_text)
+  string(REPLACE "\r\n" "\n" glfw_dinput_text "${glfw_dinput_text}")
+  function(pelican_extract_glfw_dinput output first after)
+    string(FIND "${glfw_dinput_text}" "${first}" begin_at)
+    if(begin_at EQUAL -1)
+      message(FATAL_ERROR "GLFW win32_joystick.c: '${first}' was not found")
+    endif()
+    string(SUBSTRING "${glfw_dinput_text}" ${begin_at} -1 tail)
+    string(FIND "${tail}" "${after}" end_at)
+    if(end_at EQUAL -1)
+      message(FATAL_ERROR "GLFW win32_joystick.c: '${after}' was not found")
+    endif()
+    string(SUBSTRING "${tail}" 0 ${end_at} piece)
+    file(CONFIGURE OUTPUT "${glfw_dinput_extract}/${output}" CONTENT "${piece}\n" @ONLY)
+  endfunction()
+  pelican_extract_glfw_dinput(enum_struct.inc "typedef struct _GLFWobjenumWin32" "// Define local copies of the necessary GUIDs")
+  pelican_extract_glfw_dinput(object_callback.inc "static BOOL CALLBACK deviceObjectCallback" "// DirectInput device enumeration callback")
+  pelican_extract_glfw_dinput(guid_text.inc "if (memcmp(&di->guidProduct.Data4[2]" "js = _glfwAllocJoystick(name, guid,")
+  add_executable(pelican_test_glfw_dinput_bounds glfw_dinput_bounds_test.c)
+  target_include_directories(pelican_test_glfw_dinput_bounds PRIVATE "${glfw_dinput_extract}")
+  target_compile_definitions(pelican_test_glfw_dinput_bounds PRIVATE _CRT_SECURE_NO_WARNINGS)
+  add_test(NAME glfw_dinput_bounds COMMAND pelican_test_glfw_dinput_bounds)
+  set_tests_properties(glfw_dinput_bounds PROPERTIES LABELS cpu TIMEOUT 30)
+  add_test(NAME glfw_dinput_patch_script
+    COMMAND ${CMAKE_COMMAND}
+      "-DPATCH_SCRIPT=${CMAKE_SOURCE_DIR}/cmake/patch_glfw_dinput_bounds.cmake"
+      "-DGLFW_DIR=${PELICAN_GLFW_SOURCE_DIR}"
+      "-DPRISTINE_GLFW_DIR=${PELICAN_GLFW_INPUT_SOURCE_DIR}"
+      "-DOUT_DIR=${CMAKE_CURRENT_BINARY_DIR}/glfw_dinput_patch_test"
+      -P "${CMAKE_CURRENT_SOURCE_DIR}/run_glfw_dinput_patch_test.cmake")
+  set_tests_properties(glfw_dinput_patch_script PROPERTIES LABELS cpu TIMEOUT 60)
+endif()
+
+if(PELICAN_WITH_JOYSTICK_INPUT)
+pelican_define_test(joystick_monitor_test pelican_core)
+if(TARGET pelican_player)
+  add_test(NAME joystick_monitor_cli_requires_rpc
+    COMMAND pelican_player --headless --joystick-monitor)
+  set_tests_properties(joystick_monitor_cli_requires_rpc PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "joystick.config_invalid@1")
+endif()
+elseif(TARGET pelican_player)
+  add_test(NAME joystick_monitor_off_cli
+    COMMAND pelican_player --headless --joystick-monitor)
+  set_tests_properties(joystick_monitor_off_cli PROPERTIES
+    LABELS cpu TIMEOUT 30
+    PASS_REGULAR_EXPRESSION "joystick.module_unavailable@1")
+endif()
+
 # OSC-1a: declared live inputs, the frame freeze, and graph read validation.
 pelican_define_test(liveinputs_test pelican_core)
 if(PELICAN_WITH_OSC)
@@ -2574,7 +2643,7 @@ if(TARGET pelican_player)
   # OSC-2c drives the real executable so the --osc-port option path is tested
   # rather than an injected listener config.
   target_compile_definitions(pelican_test_liveinputs_rpc_test PRIVATE
-      PELICAN_OSC2C_PLAYER="$<TARGET_FILE:pelican_player>")
+      PELICAN_LIVEINPUTS_PLAYER="$<TARGET_FILE:pelican_player>")
   add_dependencies(pelican_test_liveinputs_rpc_test pelican_player)
 endif()
 target_link_libraries(pelican_test_liveinputs_rpc_test PRIVATE pelican_shaderc)

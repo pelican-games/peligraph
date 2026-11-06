@@ -142,6 +142,8 @@ DECLARE_MODULE(EngineLaunchConfig) {
     // OSC-2b: the process-wide UDP listener. Absent means no socket is opened.
     // Configured only by player options, never by the project file.
     std::optional<OscListenerConfig> osc_listener;
+    // Configured only by player options, never by the project file.
+    bool joystick_monitor = false;
     std::optional<EngineLaunchFreeCamera> free_camera;
     std::optional<std::filesystem::path> camera_bake_output;
     std::optional<std::filesystem::path> play_seq;

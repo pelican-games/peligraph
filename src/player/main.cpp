@@ -540,6 +540,9 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
         .help("override the project's active input binding profile");
     // OSC-2b: process-wide UDP listener. Port 0 asks the OS for a free port;
     // the actual endpoint is reported in get_live_inputs.osc.listener.
+    program.add_argument("--joystick-monitor")
+        .flag()
+        .help("with --rpc: get_input_devices may read every connected joystick while a client asks for values");
     program.add_argument("--osc-port")
         .default_value(std::string{})
         .metavar("0..65535")
@@ -809,6 +812,13 @@ ParsedLaunchConfig parseLaunchConfig(int argc, char *argv[]) {
                 program.get<std::string>("--osc-port"),
                 program.get<std::string>("--osc-interface"), allow);
         }
+#endif
+        const bool joystick_monitor = program.get<bool>("--joystick-monitor");
+#if !PELICAN_WITH_JOYSTICK_INPUT
+        if (joystick_monitor) throw std::runtime_error("joystick.module_unavailable@1: joystick monitoring is unavailable in this build");
+#else
+        if (joystick_monitor && !config.rpc) throw std::runtime_error("joystick.config_invalid@1: --joystick-monitor requires --rpc");
+        config.joystick_monitor = joystick_monitor;
 #endif
         if (program.is_used("--free-camera")) {
             const auto preset =

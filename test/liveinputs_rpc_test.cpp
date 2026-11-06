@@ -224,7 +224,7 @@ struct WinsockScope {
 };
 #endif
 
-#if defined(PELICAN_OSC2C_PLAYER)
+#if defined(PELICAN_LIVEINPUTS_PLAYER)
 // Drives the real pelican_player executable over its stdin/stdout JSON-RPC
 // transport.  The OSC port is chosen by the player from --osc-port 0; nothing
 // in this test injects a parsed listener config into the engine.
@@ -232,8 +232,13 @@ class PlayerProcess {
   public:
     explicit PlayerProcess(const std::filesystem::path &project,
                            std::vector<std::string> arguments = {}) {
-        arguments.insert(arguments.begin(), {"--rpc", "--headless", "--size", "64x64",
-            "--osc-port", "0", "--input-profile", "live", "--project", project.string()});
+        std::vector<std::string> player_arguments{"--rpc", "--headless", "--size", "64x64"};
+#if PELICAN_WITH_OSC
+        player_arguments.insert(player_arguments.end(), {"--osc-port", "0"});
+#endif
+        player_arguments.insert(player_arguments.end(),
+            {"--input-profile", "live", "--project", project.string()});
+        arguments.insert(arguments.begin(), player_arguments.begin(), player_arguments.end());
 #if defined(_WIN32)
         SECURITY_ATTRIBUTES attributes{};
         attributes.nLength = sizeof(attributes);
@@ -263,7 +268,7 @@ class PlayerProcess {
         startup.hStdError = log_ != INVALID_HANDLE_VALUE ? log_ : stdout_write_;
 
         std::wstring command = L"\"" +
-            std::filesystem::path{PELICAN_OSC2C_PLAYER}.wstring() + L"\"";
+            std::filesystem::path{PELICAN_LIVEINPUTS_PLAYER}.wstring() + L"\"";
         for (const auto &argument : arguments) {
             command += L" \"";
             command += std::filesystem::path{argument}.wstring();
@@ -284,7 +289,7 @@ class PlayerProcess {
         if (::pipe(input_pipe) != 0 || ::pipe(output_pipe) != 0)
             throw std::runtime_error("pipe failed");
         std::vector<char *> child_arguments;
-        child_arguments.push_back(const_cast<char *>(PELICAN_OSC2C_PLAYER));
+        child_arguments.push_back(const_cast<char *>(PELICAN_LIVEINPUTS_PLAYER));
         for (auto &argument : arguments) child_arguments.push_back(argument.data());
         child_arguments.push_back(nullptr);
         pid_ = ::fork();
@@ -306,7 +311,7 @@ class PlayerProcess {
             }
             (void)::close(input_pipe[1]);
             (void)::close(output_pipe[0]);
-            ::execv(PELICAN_OSC2C_PLAYER, child_arguments.data());
+            ::execv(PELICAN_LIVEINPUTS_PLAYER, child_arguments.data());
             ::_exit(127);
         }
         (void)::close(input_pipe[0]);
@@ -711,7 +716,7 @@ TEST_CASE("OSC-2b a headless player listens on the option-configured UDP port an
                 .get<std::uint64_t>() == 0);
 }
 
-#if defined(PELICAN_OSC2C_PLAYER)
+#if defined(PELICAN_LIVEINPUTS_PLAYER)
 TEST_CASE("OSC-2c the real --osc-port option listens and freezes a packet",
           "[osc2c][osc][liveinputs][rpc][gpu]") {
     setupLogger(true);
@@ -1015,7 +1020,7 @@ TEST_CASE("OSC-4a recording failures are named and never fail the frame",
     CHECK(rpc.result("get_status").at("live_inputs").at("recording").is_null());
 }
 
-#if defined(PELICAN_OSC2C_PLAYER)
+#if defined(PELICAN_LIVEINPUTS_PLAYER)
 TEST_CASE("OSC-4a CLI replay reproduces frozen values and simple graph pixels",
           "[osc4a][live_recording][rpc][gpu]") {
     setupLogger(true);
@@ -1496,4 +1501,128 @@ TEST_CASE("OSC-3d binding edits refuse missing and non-project profiles",
 }
 
 
+} // namespace Pelican
+
+namespace Pelican {
+#if defined(PELICAN_LIVEINPUTS_PLAYER) && PELICAN_WITH_JOYSTICK_INPUT
+namespace {
+Json injectedDevice(std::string op, int slot, std::string name = "Pad") {
+    Json params{{"op", std::move(op)}, {"slot", slot}};
+    if (params.at("op") == "connect") {
+        params["name"] = std::move(name);
+        params["guid"] = "shared-guid";
+        params["is_gamepad"] = false;
+    }
+    if (params.at("op") != "disconnect") {
+        params["axes"] = {0.25f, -0.5f};
+        params["buttons"] = {1, 0};
+        params["hats"] = {3};
+    }
+    return params;
+}
+
+void startDmapScene(PlayerProcess &player) {
+    (void)player.result("load_scene", {{"name", "default_scene"}});
+    (void)player.result("render_frame");
+}
+}
+
+TEST_CASE("DMAP-1a R1 disabled RPC never starts joystick monitoring", "[dmap1a][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_dmap1a_r1_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    PlayerProcess player{root};
+    startDmapScene(player);
+    (void)player.result("get_input_devices", {{"values", true}});
+    (void)player.result("step_frame");
+    const auto reply = player.result("get_input_devices", {{"values", true}});
+    CHECK_FALSE(reply.at("enabled").get<bool>());
+    CHECK_FALSE(reply.at("monitoring").get<bool>());
+    CHECK(reply.at("devices").empty());
+    const auto injected = player.call("inject_device_state", injectedDevice("connect", 0));
+    REQUIRE(injected.contains("error"));
+    CHECK(injected.at("error").at("message").get<std::string>().find(
+              "joystick.inject_unavailable@1") != std::string::npos);
+}
+
+TEST_CASE("DMAP-1a R2 injected devices expose values, reconnects, and lease expiry", "[dmap1a][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_dmap1a_r2_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    PlayerProcess player{root, {"--joystick-monitor"}};
+    startDmapScene(player);
+    const auto wrong_type = player.call("get_input_devices", {{"values", 1}});
+    REQUIRE(wrong_type.contains("error"));
+    CHECK(wrong_type.at("error").at("message").get<std::string>() ==
+          "get_input_devices field 'values' must be a bool");
+
+    (void)player.result("inject_device_state", injectedDevice("connect", 0, "First"));
+    (void)player.result("inject_device_state", injectedDevice("connect", 1, "Second"));
+    (void)player.result("get_input_devices", {{"values", true}});
+    (void)player.result("step_frame");
+    auto reply = player.result("get_input_devices", {{"values", true}});
+    REQUIRE(reply.at("devices").size() == 2);
+    CHECK(reply.at("backend") == "injected");
+    CHECK(reply.at("engine_instance_id") == player.result("get_status").at("instance_id"));
+    CHECK(reply.at("devices")[0].at("instance_id") != reply.at("devices")[1].at("instance_id"));
+    CHECK(reply.at("devices")[0].at("axes") == 2);
+    CHECK(reply.at("devices")[0].at("values").at("axes") == Json({0.25f, -0.5f}));
+    CHECK(reply.at("devices")[0].at("values").at("buttons") == Json({1, 0}));
+    CHECK(reply.at("devices")[0].at("values").at("hats") == Json({3}));
+
+    auto update = injectedDevice("set", 0);
+    update["axes"] = {0.75f, 1.0f};
+    (void)player.result("inject_device_state", update);
+    (void)player.result("step_frame");
+    reply = player.result("get_input_devices", {{"values", true}});
+    CHECK(reply.at("devices")[0].at("values").at("axes") == Json({0.75f, 1.0f}));
+
+    const auto old_id = reply.at("devices")[0].at("instance_id").get<std::uint64_t>();
+    const auto old_generation = reply.at("devices")[0].at("generation").get<std::uint64_t>();
+    (void)player.result("inject_device_state", injectedDevice("disconnect", 0));
+    (void)player.result("inject_device_state", injectedDevice("connect", 0));
+    (void)player.result("step_frame");
+    reply = player.result("get_input_devices", {{"values", true}});
+    CHECK(reply.at("devices")[0].at("instance_id").get<std::uint64_t>() != old_id);
+    CHECK(reply.at("devices")[0].at("generation").get<std::uint64_t>() > old_generation);
+
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds{30};
+    while (reply.value("monitoring", false) && std::chrono::steady_clock::now() < deadline) {
+        (void)player.result("step_frame");
+        reply = player.result("get_input_devices");
+    }
+    CHECK_FALSE(reply.at("monitoring").get<bool>());
+    const auto serial = reply.at("sample_serial").get<std::uint64_t>();
+    (void)player.result("step_frame");
+    const auto next = player.result("get_input_devices");
+    CHECK(next.at("sample_serial").get<std::uint64_t>() == serial);
+    for (const auto &device : next.at("devices")) CHECK_FALSE(device.contains("values"));
+}
+
+TEST_CASE("DMAP-1a R3 restarted processes restart device instance IDs", "[dmap1a][rpc][gpu]") {
+    setupLogger(true);
+    const TempDir dir{std::filesystem::temp_directory_path() /
+        ("pelican_dmap1a_r3_" + std::to_string(std::chrono::steady_clock::now().time_since_epoch().count()))};
+    const auto root = copyLiveProject(dir, false);
+    std::string first_engine;
+    {
+        PlayerProcess player{root, {"--joystick-monitor"}};
+        startDmapScene(player);
+        first_engine = player.result("get_status").at("instance_id").get<std::string>();
+    }
+    PlayerProcess restarted{root, {"--joystick-monitor"}};
+    startDmapScene(restarted);
+    CHECK(restarted.result("get_status").at("instance_id").get<std::string>() != first_engine);
+    (void)restarted.result("inject_device_state", injectedDevice("connect", 0));
+    (void)restarted.result("get_input_devices", {{"values", true}});
+    (void)restarted.result("step_frame");
+    const auto reply = restarted.result("get_input_devices", {{"values", true}});
+    REQUIRE(reply.at("devices").size() == 1);
+    CHECK(reply.at("devices")[0].at("instance_id") == 1);
+    CHECK(reply.at("devices")[0].at("sampled").get<bool>());
+    CHECK(reply.at("devices")[0].contains("values"));
+}
+#endif
 } // namespace Pelican

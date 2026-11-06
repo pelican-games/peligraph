@@ -53,6 +53,9 @@
 #include "../osc/oscinput.hpp"
 #include "../osc/osclistener.hpp"
 #endif
+#if PELICAN_WITH_JOYSTICK_INPUT
+#include "../joystick/joystickruntime.hpp"
+#endif
 #include "../os/actionmap.hpp"
 #include "../os/inputstate.hpp"
 #include "../os/window.hpp"
@@ -406,6 +409,9 @@ struct EngineRpcModules {
     OscInput &osc_input;
     OscListener &osc_listener;
 #endif
+#if PELICAN_WITH_JOYSTICK_INPUT
+    JoystickRuntime &joystick_runtime;
+#endif
 };
 
 EngineRpcModules resolveEngineRpcModules() {
@@ -447,6 +453,9 @@ EngineRpcModules resolveEngineRpcModules() {
 #if PELICAN_WITH_OSC
         GET_MODULE(OscInput),
         GET_MODULE(OscListener),
+#endif
+#if PELICAN_WITH_JOYSTICK_INPUT
+        GET_MODULE(JoystickRuntime),
 #endif
     };
 }
@@ -2167,6 +2176,29 @@ void configureEngineRpcHandlers(RpcServer &server, EngineRpcModules &modules,
 #endif
         return result;
     });
+
+#if PELICAN_WITH_JOYSTICK_INPUT
+    server.setHandler("get_input_devices", [instance_id, &modules](const nlohmann::json &params) {
+        requireObjectParams(params, "get_input_devices");
+        bool with_values = false;
+        if (const auto values = params.find("values"); values != params.end()) {
+            if (!values->is_boolean()) {
+                throw JsonRpcHandlerError(JsonRpcErrorCodes::invalidParams,
+                    "get_input_devices field 'values' must be a bool");
+            }
+            with_values = values->get<bool>();
+        }
+        return modules.joystick_runtime.devicesJson(with_values, instance_id);
+    });
+    server.setHandler("inject_device_state", [&modules](const nlohmann::json &params) {
+        requireObjectParams(params, "inject_device_state");
+        try {
+            return modules.joystick_runtime.injectJson(params);
+        } catch (const std::exception &error) {
+            throw JsonRpcHandlerError(JsonRpcErrorCodes::applicationError, error.what());
+        }
+    });
+#endif
 
     server.setHandler("start_live_record", [&modules](const nlohmann::json &params) {
         const auto path = absoluteCapturePath(requireStringParam(params, "path", "start_live_record"));

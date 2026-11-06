@@ -19,6 +19,7 @@
 | `PELICAN_WITH_EXR` | `ON` | `OFF` | — |
 | `PELICAN_WITH_RPC` | `ON` | `OFF` | — |
 | `PELICAN_WITH_OSC` | `ON` | `OFF` | — |
+| `PELICAN_WITH_JOYSTICK_INPUT` | `ON` | `OFF` | — |
 | `PELICAN_WITH_ANIMATION` | `ON` | `OFF` | — |
 | `PELICAN_WITH_CANVAS` | `ON` | `OFF` | — |
 | `PELICAN_WITH_VIDEO_OUTPUT` | `ON` | `OFF` | — |

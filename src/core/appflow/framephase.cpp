@@ -34,6 +34,9 @@
 #include "../imgui/imguisystem.hpp"
 #endif
 #include "../launchconfig.hpp"
+#if PELICAN_WITH_JOYSTICK_INPUT
+#include "../joystick/joystickruntime.hpp"
+#endif
 
 #include <algorithm>
 #include <cassert>
@@ -68,6 +71,9 @@ struct FrameStateModules {
     SeqPlayer &seq_player;
     SceneLoader &scene_loader;
     RuntimeSpawner &runtime_spawner;
+#if PELICAN_WITH_JOYSTICK_INPUT
+    JoystickRuntime &joystick_runtime;
+#endif
 };
 
 // GP-4: this machine's window-to-framebuffer conversion. With a window, its
@@ -129,6 +135,9 @@ FrameStateModules resolveFrameStateModules() {
         GET_MODULE(SeqPlayer),
         GET_MODULE(SceneLoader),
         GET_MODULE(RuntimeSpawner),
+#if PELICAN_WITH_JOYSTICK_INPUT
+        GET_MODULE(JoystickRuntime),
+#endif
     };
 }
 
@@ -163,6 +172,9 @@ void invokeEditorCommitQueueHook() noexcept {
 
 void updateFrameState() {
     auto modules = resolveFrameStateModules();
+#if PELICAN_WITH_JOYSTICK_INPUT
+    modules.joystick_runtime.pumpFrame();
+#endif
     const auto play_state = modules.engine_time.playState();
     // Audio completion happens asynchronously. Reap it at the common frame
     // boundary before game code can observe this frame's state.

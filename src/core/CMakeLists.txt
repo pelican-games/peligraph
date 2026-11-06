@@ -11,6 +11,7 @@ target_compile_definitions(pelican_core PUBLIC
   PELICAN_WITH_EXR=$<BOOL:${PELICAN_WITH_EXR}>
   PELICAN_WITH_RPC=$<BOOL:${PELICAN_WITH_RPC}>
   PELICAN_WITH_OSC=$<BOOL:${PELICAN_WITH_OSC}>
+  PELICAN_WITH_JOYSTICK_INPUT=$<BOOL:${PELICAN_WITH_JOYSTICK_INPUT}>
   PELICAN_WITH_ANIMATION=$<BOOL:${PELICAN_WITH_ANIMATION}>
   PELICAN_WITH_SEQPLAYER=$<BOOL:${PELICAN_WITH_SEQPLAYER}>
   PELICAN_WITH_IMGUI=$<BOOL:${PELICAN_WITH_IMGUI}>
@@ -38,6 +39,9 @@ add_subdirectory(renderdoc)
 add_subdirectory(os)
 if(PELICAN_WITH_OSC)
 add_subdirectory(osc)
+endif()
+if(PELICAN_WITH_JOYSTICK_INPUT)
+add_subdirectory(joystick)
 endif()
 add_subdirectory(watch)
 if(PELICAN_WITH_IMGUI)
