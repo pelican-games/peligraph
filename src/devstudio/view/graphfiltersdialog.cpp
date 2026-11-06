@@ -3,6 +3,7 @@
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCompleter>
+#include <QEvent>
 #include <QFile>
 #include <QFileDialog>
 #include <QFormLayout>
@@ -16,6 +17,8 @@
 #include <QSignalBlocker>
 #include <QTabWidget>
 #include <QTableWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItemIterator>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -39,6 +42,7 @@ class StringListWidget final : public QWidget {
     std::function<void(const std::vector<std::string> &)> edited;
     std::function<bool(const std::string &)> accepts;
     QStringList completions;
+    QStringList installed_completions;
 
     explicit StringListWidget(const QString &name, QWidget *parent = nullptr)
         : QWidget(parent) {
@@ -83,11 +87,18 @@ class StringListWidget final : public QWidget {
         });
     }
 
+    // Only what changed: a sync mustn't drop the list's selection or the
+    // completer of a field being typed in.
     void setStrings(const std::vector<std::string> &values) {
-        QSignalBlocker block{list};
-        list->clear();
-        for (const auto &value : values) list->addItem(qtext(value));
-        edit->setCompleter(new QCompleter(completions, edit));
+        if (values != strings()) {
+            QSignalBlocker block{list};
+            list->clear();
+            for (const auto &value : values) list->addItem(qtext(value));
+        }
+        if (completions != installed_completions) {
+            installed_completions = completions;
+            edit->setCompleter(new QCompleter(completions, edit));
+        }
     }
 
     std::vector<std::string> strings() const {
@@ -104,18 +115,53 @@ QPushButton *button(const QString &name, const QString &label, QWidget *parent) 
     return result;
 }
 
+// A double click arrives as press, release, double-click, release, and a button
+// clicks on both pairs. One double click isn't two deliberate confirmations.
+class SwallowDoubleClick final : public QObject {
+  public:
+    using QObject::QObject;
+
+  protected:
+    bool eventFilter(QObject *, QEvent *event) override {
+        return event->type() == QEvent::MouseButtonDblClick;
+    }
+};
+
+// One row of the tree. `key` tells rows apart: a preset row has no filter id,
+// because no button may reach it, so only `id` means "editable".
+struct TreeRow {
+    int depth = 0;
+    QString id;
+    QString key;
+    QString text;
+};
+
+void appendTreeRows(std::vector<TreeRow> &rows, const std::vector<Pelican::GraphFilter> &filters,
+                    int depth, bool preset) {
+    for (const auto &filter : filters) {
+        const auto id = qtext(filter.id);
+        rows.push_back({depth, preset ? QString{} : id,
+                        preset ? QStringLiteral("preset:") + id : id, qtext(filter.label)});
+        appendTreeRows(rows, filter.children, depth + 1, preset);
+    }
+}
+
 } // namespace
 
 struct GraphFiltersDialog::Impl {
     GraphFiltersDialog &view;
     GraphFiltersEdit *session = nullptr;
     QTabWidget *tabs = nullptr;
-    QListWidget *filters = nullptr;
+    QTreeWidget *filters = nullptr;
     QPushButton *add_filter = nullptr;
+    QPushButton *add_child = nullptr;
     QPushButton *remove_filter = nullptr;
     QPushButton *up = nullptr;
     QPushButton *down = nullptr;
+    QPushButton *move_in = nullptr;
+    QPushButton *move_out = nullptr;
     QLineEdit *label = nullptr;
+    QLineEdit *id = nullptr;
     QLabel *children = nullptr;
     StringListWidget *ops = nullptr;
     StringListWidget *node_ids = nullptr;
@@ -140,19 +186,30 @@ struct GraphFiltersDialog::Impl {
     QPushButton *export_file = nullptr;
     QPushButton *close = nullptr;
     QString selected_filter;
+    // The filter the detail fields were last filled from.
+    QString shown_filter;
     QString selected_category;
+    std::vector<TreeRow> shown_rows;
     std::set<std::string> typed_features;
     bool syncing = false;
+    // An edit and the selection it leaves are one step: no sync runs between them.
+    bool holding = false;
+    // The last Id commit was refused, and nothing has changed since. A Save
+    // press that took the focus from `id` stops here, so the reason stays.
+    bool id_refused = false;
 
     explicit Impl(GraphFiltersDialog &owner) : view(owner) {}
     void sync();
     void syncFilters();
     void syncCategories();
     void syncFeatures();
-    void syncMatch();
+    void syncDetails();
+    void syncTreeButtons();
+    void syncStatus();
     void updateMatch();
     void addFeature();
-    QString currentFilter() const;
+    void applyEdit(const std::function<bool()> &edit, const std::function<QString()> &selected = {});
+    void commitId();
     QString currentCategory() const;
 };
 
@@ -170,17 +227,38 @@ GraphFiltersDialog::GraphFiltersDialog(QWidget *parent)
     filters_page->setObjectName(graphFiltersObjectName(QStringLiteral("tab.filters")));
     auto *filters_layout = new QHBoxLayout(filters_page);
     auto *filter_column = new QVBoxLayout;
-    impl_->filters = new QListWidget(filters_page);
+    impl_->filters = new QTreeWidget(filters_page);
     impl_->filters->setObjectName(graphFiltersObjectName(QStringLiteral("filters")));
+    impl_->filters->setColumnCount(1);
+    impl_->filters->setHeaderHidden(true);
+    impl_->filters->setRootIsDecorated(false);
+    impl_->filters->setItemsExpandable(false);
+    impl_->filters->setExpandsOnDoubleClick(false);
+    impl_->filters->setIndentation(impl_->filters->fontMetrics().averageCharWidth() * 2);
+    // Every structural change goes through the session.
+    impl_->filters->setDragDropMode(QAbstractItemView::NoDragDrop);
+    impl_->filters->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    impl_->filters->setSelectionMode(QAbstractItemView::SingleSelection);
+    impl_->filters->setTabKeyNavigation(false);
     filter_column->addWidget(impl_->filters, 1);
     auto *filter_buttons = new QHBoxLayout;
     impl_->add_filter = button(QStringLiteral("addFilter"), tr("Add"), filters_page);
+    impl_->add_child = button(QStringLiteral("addChild"), tr("Add child"), filters_page);
     impl_->remove_filter = button(QStringLiteral("removeFilter"), tr("Remove"), filters_page);
-    impl_->up = button(QStringLiteral("up"), tr("Up"), filters_page);
-    impl_->down = button(QStringLiteral("down"), tr("Down"), filters_page);
-    for (auto *control : {impl_->add_filter, impl_->remove_filter, impl_->up, impl_->down})
+    impl_->remove_filter->installEventFilter(new SwallowDoubleClick(impl_->remove_filter));
+    for (auto *control : {impl_->add_filter, impl_->add_child, impl_->remove_filter})
         filter_buttons->addWidget(control);
     filter_column->addLayout(filter_buttons);
+    auto *move_buttons = new QHBoxLayout;
+    impl_->up = button(QStringLiteral("up"), tr("Up"), filters_page);
+    impl_->down = button(QStringLiteral("down"), tr("Down"), filters_page);
+    impl_->move_in = button(QStringLiteral("moveIn"), tr("Move in"), filters_page);
+    impl_->move_in->setToolTip(tr("Make this a child of the filter above it."));
+    impl_->move_out = button(QStringLiteral("moveOut"), tr("Move out"), filters_page);
+    impl_->move_out->setToolTip(tr("Place this after its parent."));
+    for (auto *control : {impl_->up, impl_->down, impl_->move_in, impl_->move_out})
+        move_buttons->addWidget(control);
+    filter_column->addLayout(move_buttons);
     filters_layout->addLayout(filter_column);
 
     auto *details = new QVBoxLayout;
@@ -188,7 +266,12 @@ GraphFiltersDialog::GraphFiltersDialog(QWidget *parent)
     label_row->addWidget(new QLabel(tr("Label"), filters_page));
     impl_->label = new QLineEdit(filters_page);
     impl_->label->setObjectName(graphFiltersObjectName(QStringLiteral("label")));
-    label_row->addWidget(impl_->label, 1);
+    label_row->addWidget(impl_->label, 2);
+    label_row->addWidget(new QLabel(tr("Id"), filters_page));
+    impl_->id = new QLineEdit(filters_page);
+    impl_->id->setObjectName(graphFiltersObjectName(QStringLiteral("id")));
+    impl_->id->setToolTip(tr("Lowercase letters, digits and _. It starts with a letter and is unique among the filters."));
+    label_row->addWidget(impl_->id, 1);
     details->addLayout(label_row);
     impl_->children = new QLabel(filters_page);
     impl_->children->setObjectName(graphFiltersObjectName(QStringLiteral("children")));
@@ -278,30 +361,66 @@ GraphFiltersDialog::GraphFiltersDialog(QWidget *parent)
         bottom->addWidget(control);
     layout->addLayout(bottom);
 
+    // A QDialog's Return presses its default button. Here Return belongs to the
+    // field it was typed in: it commits an Id, and it never saves or adds.
+    for (auto *control : findChildren<QPushButton *>()) control->setAutoDefault(false);
+
     auto &d = *impl_;
-    connect(d.filters, &QListWidget::currentRowChanged, this, [this] {
-        if (impl_->syncing) return;
-        impl_->selected_filter = impl_->currentFilter();
-        impl_->syncMatch();
+    connect(d.filters, &QTreeWidget::currentItemChanged, this, [this](QTreeWidgetItem *current) {
+        // syncFilters blocks this signal, so only a person's move arrives here.
+        // The tree is not rebuilt inside its own signal.
+        if (impl_->syncing || current == nullptr) return;
+        const auto id = current->data(0, Qt::UserRole).toString();
+        if (id.isEmpty() || id == impl_->selected_filter) return;
+        impl_->selected_filter = id;
+        impl_->id_refused = false;
+        if (impl_->session) impl_->session->cancelRemoveConfirmation();
+        impl_->syncDetails();
+        impl_->syncTreeButtons();
+        impl_->syncStatus();
     });
     connect(d.add_filter, &QPushButton::clicked, this, [this] {
-        if (impl_->session && impl_->session->addFilter("Filter")) {
-            impl_->selected_filter = qtext(impl_->session->draft().filters.back().id);
-            impl_->sync();
-        }
+        if (!impl_->session) return;
+        impl_->applyEdit([this] { return impl_->session->addFilter("Filter"); },
+                         [this] { return qtext(impl_->session->draft().filters.back().id); });
+    });
+    connect(d.add_child, &QPushButton::clicked, this, [this] {
+        if (!impl_->session) return;
+        const auto parent = impl_->selected_filter.toStdString();
+        impl_->applyEdit([this, parent] { return impl_->session->addChildFilter(parent, "Filter"); },
+                         [this, parent] {
+                             return qtext(std::as_const(*impl_->session).findFilter(parent)->children.back().id);
+                         });
     });
     connect(d.remove_filter, &QPushButton::clicked, this, [this] {
-        if (impl_->session) impl_->session->removeFilter(impl_->currentFilter().toStdString());
+        if (!impl_->session) return;
+        const auto id = impl_->selected_filter.toStdString();
+        const auto place = impl_->session->filterPlace(id);
+        const auto parent = place ? qtext(place->parent) : QString{};
+        impl_->applyEdit([this, id] { return impl_->session->removeFilter(id); },
+                         [parent] { return parent; });
     });
     connect(d.up, &QPushButton::clicked, this, [this] {
-        if (impl_->session) impl_->session->moveFilter(impl_->currentFilter().toStdString(), -1);
+        if (!impl_->session) return;
+        impl_->applyEdit([this] { return impl_->session->moveFilter(impl_->selected_filter.toStdString(), -1); });
     });
     connect(d.down, &QPushButton::clicked, this, [this] {
-        if (impl_->session) impl_->session->moveFilter(impl_->currentFilter().toStdString(), 1);
+        if (!impl_->session) return;
+        impl_->applyEdit([this] { return impl_->session->moveFilter(impl_->selected_filter.toStdString(), 1); });
+    });
+    connect(d.move_in, &QPushButton::clicked, this, [this] {
+        if (!impl_->session) return;
+        impl_->applyEdit([this] { return impl_->session->indentFilter(impl_->selected_filter.toStdString()); });
+    });
+    connect(d.move_out, &QPushButton::clicked, this, [this] {
+        if (!impl_->session) return;
+        impl_->applyEdit([this] { return impl_->session->outdentFilter(impl_->selected_filter.toStdString()); });
     });
     connect(d.label, &QLineEdit::textEdited, this, [this](const QString &text) {
-        if (impl_->session) impl_->session->setLabel(impl_->currentFilter().toStdString(), text.toStdString());
+        if (impl_->session) impl_->session->setLabel(impl_->selected_filter.toStdString(), text.toStdString());
     });
+    connect(d.id, &QLineEdit::editingFinished, this, [this] { impl_->commitId(); });
+    connect(d.id, &QLineEdit::textEdited, this, [this] { impl_->id_refused = false; });
     for (auto *list : {d.ops, d.node_ids, d.features, d.categories})
         list->edited = [this](const auto &) { impl_->updateMatch(); };
     d.categories->accepts = [this](const std::string &id) {
@@ -341,7 +460,12 @@ GraphFiltersDialog::GraphFiltersDialog(QWidget *parent)
     connect(d.add_feature, &QPushButton::clicked, this, [this] { impl_->addFeature(); });
     connect(d.feature_name, &QLineEdit::returnPressed, this, [this] { impl_->addFeature(); });
     connect(d.save, &QPushButton::clicked, this, [this] {
-        if (impl_->session && impl_->session->save() && requestReady) requestReady();
+        if (!impl_->session) return;
+        // An Id refused now, or when this press took the focus from `id`: the
+        // press stops there, so the reason isn't replaced by "Saving...".
+        impl_->commitId();
+        if (std::exchange(impl_->id_refused, false)) return;
+        if (impl_->session->save() && requestReady) requestReady();
     });
     connect(d.undo, &QPushButton::clicked, this, [this] {
         if (impl_->session && impl_->session->undo() && requestReady) requestReady();
@@ -418,9 +542,15 @@ void GraphFiltersDialog::bind(GraphFiltersEdit *session) {
     if (impl_->session != nullptr) impl_->session->changed = {};
     impl_->session = session;
     impl_->selected_filter.clear();
+    impl_->shown_filter.clear();
+    impl_->id_refused = false;
     impl_->selected_category.clear();
     impl_->typed_features.clear();
-    if (session != nullptr) session->changed = [this] { sync(); };
+    if (session != nullptr)
+        session->changed = [this] {
+            if (!impl_->holding) impl_->id_refused = false;
+            sync();
+        };
     sync();
 }
 
@@ -428,26 +558,62 @@ void GraphFiltersDialog::reject() { hide(); }
 
 void GraphFiltersDialog::sync() { impl_->sync(); }
 
-QString GraphFiltersDialog::Impl::currentFilter() const {
-    const auto *item = filters->currentItem();
-    return item != nullptr ? item->data(Qt::UserRole).toString() : QString{};
-}
-
 QString GraphFiltersDialog::Impl::currentCategory() const {
     const auto *item = category_list->currentItem();
     return item != nullptr ? item->data(Qt::UserRole).toString() : QString{};
 }
 
 void GraphFiltersDialog::Impl::sync() {
-    if (syncing) return;
+    if (syncing || holding) return;
     syncing = true;
     syncFilters();
     syncCategories();
     syncFeatures();
-    syncMatch();
+    syncDetails();
+    syncTreeButtons();
+    syncStatus();
+    syncing = false;
+}
+
+void GraphFiltersDialog::Impl::applyEdit(const std::function<bool()> &edit,
+                                         const std::function<QString()> &selected) {
+    id_refused = false;
+    holding = true;
+    const bool applied = edit();
+    holding = false;
+    if (applied && selected) selected_filter = selected();
+    sync();
+}
+
+void GraphFiltersDialog::Impl::commitId() {
+    if (syncing || session == nullptr) return;
+    const auto current = selected_filter;
+    const auto text = id->text();
+    if (current.isEmpty() || text == current) {
+        id->setModified(false);
+        return;
+    }
+    if (!session->state().editing_enabled) return;
+    bool renamed = false;
+    applyEdit(
+        [&] {
+            renamed = session->setFilterId(current.toStdString(), text.toStdString());
+            // Back to the old id before the sync, which keeps text being typed.
+            if (!renamed) {
+                const QSignalBlocker block{id};
+                id->setText(current);
+            }
+            return renamed;
+        },
+        [&] { return text; });
+    id_refused = !renamed;
+}
+
+void GraphFiltersDialog::Impl::syncStatus() {
     const auto status = session != nullptr ? session->state() : GraphFiltersEdit::State{};
     state->setText(qtext(status.text));
     state->setToolTip(qtext(status.text));
+    remove_filter->setText(status.confirm_remove ? tr("Confirm remove") : tr("Remove"));
     save->setEnabled(status.save_enabled);
     undo->setEnabled(status.undo_enabled);
     discard->setEnabled(status.discard_enabled);
@@ -456,40 +622,78 @@ void GraphFiltersDialog::Impl::sync() {
     import_file->setEnabled(status.editing_enabled);
     export_file->setEnabled(status.editing_enabled && session != nullptr && session->digest().has_value() && !status.dirty);
     export_file->setToolTip(export_file->isEnabled() ? QString{} : tr("Save the document before exporting."));
-    for (QWidget *control : {static_cast<QWidget *>(add_filter), static_cast<QWidget *>(label),
-                             static_cast<QWidget *>(ops), static_cast<QWidget *>(node_ids),
-                             static_cast<QWidget *>(features), static_cast<QWidget *>(categories),
-                             static_cast<QWidget *>(add_category), static_cast<QWidget *>(category_label),
+    for (QWidget *control : {static_cast<QWidget *>(add_category), static_cast<QWidget *>(category_label),
                              static_cast<QWidget *>(feature_name), static_cast<QWidget *>(add_feature),
                              static_cast<QWidget *>(feature_table)})
         control->setEnabled(status.editing_enabled);
-    add_selected->setEnabled(status.editing_enabled && view.selection && view.selection().root);
-    syncing = false;
 }
 
+// Signals stay blocked from the first change to the restored selection: a row
+// disappearing or coming back isn't a person choosing a filter.
 void GraphFiltersDialog::Impl::syncFilters() {
     const QSignalBlocker block{filters};
-    filters->clear();
-    if (session == nullptr) return;
-    int selected_row = 0;
-    int row = 0;
-    for (const auto &filter : session->draft().filters) {
-        auto *item = new QListWidgetItem(qtext(filter.label), filters);
-        item->setData(Qt::UserRole, qtext(filter.id));
-        item->setToolTip(qtext(filter.id));
-        if (qtext(filter.id) == selected_filter) selected_row = row;
-        ++row;
+    std::vector<TreeRow> rows;
+    if (session != nullptr) {
+        appendTreeRows(rows, session->draft().filters, 0, false);
+        const auto preset = view.presetFilters ? view.presetFilters() : PresetFilters{};
+        if (preset.document != nullptr) {
+            rows.push_back({0, {}, QStringLiteral("preset"), tr("From preset %1").arg(preset.name)});
+            appendTreeRows(rows, preset.document->filters, 1, true);
+        }
     }
-    if (!session->draft().filters.empty()) filters->setCurrentRow(selected_row);
-    selected_filter = currentFilter();
-    const auto id = selected_filter.toStdString();
-    const auto index = filters->currentRow();
-    remove_filter->setEnabled(session->state().editing_enabled && index >= 0);
-    up->setEnabled(session->state().editing_enabled && index > 0);
-    down->setEnabled(session->state().editing_enabled && index >= 0 &&
-                     index + 1 < static_cast<int>(session->draft().filters.size()));
-    const auto descendants = session->descendantCount(id);
-    children->setText(descendants == 0 ? QString{} : tr("Removing this filter also removes %1 children.").arg(descendants));
+    const bool same_shape = std::ranges::equal(rows, shown_rows, [](const TreeRow &a, const TreeRow &b) {
+        return a.depth == b.depth && a.key == b.key;
+    });
+    if (same_shape) {
+        // A label changes in place, so its row keeps its place and the scroll position.
+        QTreeWidgetItemIterator item{filters};
+        for (const auto &row : rows) {
+            if ((*item)->text(0) != row.text) (*item)->setText(0, row.text);
+            ++item;
+        }
+    } else {
+        filters->clear();
+        std::vector<QTreeWidgetItem *> parents;
+        for (const auto &row : rows) {
+            parents.resize(static_cast<std::size_t>(row.depth));
+            auto *item = parents.empty() ? new QTreeWidgetItem(filters) : new QTreeWidgetItem(parents.back());
+            item->setText(0, row.text);
+            if (row.id.isEmpty()) {
+                item->setFlags(Qt::NoItemFlags);
+                item->setToolTip(0, row.key == QLatin1String("preset")
+                                        ? tr("Read only. It comes with the preset.") : row.key);
+            } else {
+                item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
+                item->setData(0, Qt::UserRole, row.id);
+                item->setToolTip(0, row.id);
+            }
+            parents.push_back(item);
+        }
+        filters->expandAll();
+    }
+    shown_rows = std::move(rows);
+    QTreeWidgetItem *wanted = nullptr;
+    for (QTreeWidgetItemIterator item{filters}; *item != nullptr && wanted == nullptr; ++item)
+        if ((*item)->data(0, Qt::UserRole).toString() == selected_filter && !selected_filter.isEmpty())
+            wanted = *item;
+    if (wanted == nullptr && session != nullptr && !session->draft().filters.empty())
+        wanted = filters->topLevelItem(0);
+    if (filters->currentItem() != wanted) filters->setCurrentItem(wanted);
+    if (!same_shape && wanted != nullptr) filters->scrollToItem(wanted);
+    selected_filter = wanted != nullptr ? wanted->data(0, Qt::UserRole).toString() : QString{};
+}
+
+void GraphFiltersDialog::Impl::syncTreeButtons() {
+    const bool editing = session != nullptr && session->state().editing_enabled;
+    const auto place = editing ? session->filterPlace(selected_filter.toStdString())
+                               : std::optional<GraphFiltersEdit::FilterPlace>{};
+    add_filter->setEnabled(editing);
+    add_child->setEnabled(place.has_value());
+    remove_filter->setEnabled(place.has_value());
+    up->setEnabled(place && place->index > 0);
+    down->setEnabled(place && place->index + 1 < place->siblings);
+    move_in->setEnabled(place && place->index > 0);
+    move_out->setEnabled(place && place->depth > 1);
 }
 
 void GraphFiltersDialog::Impl::syncCategories() {
@@ -525,20 +729,31 @@ void GraphFiltersDialog::Impl::syncCategories() {
     for (const auto &entry : session->draft().categories) categories->completions.push_back(qtext(entry.id));
 }
 
-void GraphFiltersDialog::Impl::syncMatch() {
+// Fills the fields of the selected filter. A field being typed in is left alone:
+// its text, cursor and focus survive any sync that doesn't change the filter.
+void GraphFiltersDialog::Impl::syncDetails() {
     const auto *filter = session != nullptr
-                             ? static_cast<const GraphFiltersEdit *>(session)->findFilter(currentFilter().toStdString())
+                             ? std::as_const(*session).findFilter(selected_filter.toStdString())
                              : nullptr;
+    const bool same_filter = filter != nullptr && shown_filter == selected_filter;
+    shown_filter = filter != nullptr ? selected_filter : QString{};
     {
         const QSignalBlocker block{label};
-        label->setText(filter != nullptr ? qtext(filter->label) : QString{});
+        const auto wanted = filter != nullptr ? qtext(filter->label) : QString{};
+        const bool emptied_here = same_filter && label->hasFocus() && label->text().isEmpty();
+        if (!emptied_here && label->text() != wanted) label->setText(wanted);
+    }
+    {
+        const QSignalBlocker block{id};
+        const auto wanted = filter != nullptr ? qtext(filter->id) : QString{};
+        if (!(same_filter && id->isModified())) {
+            if (id->text() != wanted) id->setText(wanted);
+            id->setModified(false);
+        }
     }
     const auto match = filter != nullptr ? filter->match : Pelican::GraphFilterMatch{};
-    ops->setStrings(match.ops);
-    node_ids->setStrings(match.node_ids);
-    features->setStrings(match.features);
-    categories->setStrings(match.feature_categories);
-    remove_filter->setEnabled(session != nullptr && session->state().editing_enabled && filter != nullptr);
+    const auto descendants = session != nullptr ? session->descendantCount(selected_filter.toStdString()) : 0;
+    children->setText(descendants == 0 ? QString{} : tr("Removing this filter also removes %1 children.").arg(descendants));
     std::vector<GraphFilterFacts> facts = view.rootFacts ? view.rootFacts() : std::vector<GraphFilterFacts>{};
     QStringList operation_names;
     QStringList feature_names;
@@ -554,13 +769,22 @@ void GraphFiltersDialog::Impl::syncMatch() {
     ops->completions = operation_names;
     features->completions = feature_names;
     ops->setStrings(match.ops);
+    node_ids->setStrings(match.node_ids);
     features->setStrings(match.features);
+    categories->setStrings(match.feature_categories);
+    const bool editable = filter != nullptr && session->state().editing_enabled;
+    for (QWidget *control : {static_cast<QWidget *>(label), static_cast<QWidget *>(id),
+                             static_cast<QWidget *>(ops), static_cast<QWidget *>(node_ids),
+                             static_cast<QWidget *>(features), static_cast<QWidget *>(categories)})
+        control->setEnabled(editable);
+    add_selected->setEnabled(editable && view.selection && view.selection().root);
     if (filter == nullptr) {
         preview->setText(tr("Matches nothing"));
         return;
     }
+    // A parent is the union of itself and everything under it.
     const bool empty = match.ops.empty() && match.node_ids.empty() && match.features.empty() &&
-                       match.feature_categories.empty();
+                       match.feature_categories.empty() && filter->children.empty();
     if (empty) {
         preview->setText(tr("Matches nothing"));
         return;
@@ -571,10 +795,11 @@ void GraphFiltersDialog::Impl::syncMatch() {
         if (!graphFilterMatches(*filter, session->draft(), fact)) continue;
         ++count;
         if (names.size() < 5)
-            names.push_back(qtext(fact.kind == GraphFilterFacts::Kind::node ? fact.node_id : fact.feature_name));
+            names.push_back(qtext(fact.kind == GraphFilterFacts::Kind::folded_feature ? fact.feature_name : fact.node_id));
     }
     auto text = tr("Matches %1 nodes and features").arg(count);
     if (!names.isEmpty()) text += QStringLiteral(": ") + names.join(QStringLiteral(", ")) + QStringLiteral("...");
+    if (!filter->children.empty()) text += tr(" (with children)");
     preview->setText(text);
 }
 
@@ -637,7 +862,7 @@ void GraphFiltersDialog::Impl::syncFeatures() {
 
 void GraphFiltersDialog::Impl::updateMatch() {
     if (syncing || session == nullptr) return;
-    session->setMatch(currentFilter().toStdString(),
+    session->setMatch(selected_filter.toStdString(),
                       {ops->strings(), node_ids->strings(), features->strings(), categories->strings()});
 }
 

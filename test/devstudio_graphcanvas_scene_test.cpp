@@ -32402,3 +32402,901 @@ TEST_CASE("GF-1d a preset-only plan requests the filters shown in the Graph menu
     CHECK(nodeItem(tab.widget->scene(), QStringLiteral("lighting")) != nullptr);
     CHECK(nodeItem(tab.widget->scene(), QStringLiteral("gbuffer")) == nullptr);
 }
+
+// --- GF-1e: the dialog's tree. The input is real events: mouse presses on the
+// buttons and rows, and keys on the fields.
+namespace {
+
+Json gf1eFilterJson(const std::string &id, const std::vector<std::string> &node_ids = {},
+                    const std::vector<Json> &children = {}) {
+    Json filter{{"id", id}, {"label", "Label " + id}, {"match", Json::object()}};
+    if (!node_ids.empty()) filter["match"]["node_ids"] = node_ids;
+    if (!children.empty()) filter["children"] = children;
+    return filter;
+}
+
+Json gf1eDocument(const std::vector<Json> &filters) {
+    return Json{{"schema", "pelican.graph_filters"}, {"version", 1}, {"categories", Json::array()},
+                {"feature_categories", Json::object()}, {"filters", filters}};
+}
+
+// l1 > l2 > ... > l<levels>.
+Json gf1eChainJson(int levels) {
+    Json filter = gf1eFilterJson("l" + std::to_string(levels), {"deep"});
+    for (int level = levels - 1; level >= 1; --level)
+        filter = gf1eFilterJson("l" + std::to_string(level), {}, {filter});
+    return filter;
+}
+
+void gf1ePress(QWidget *widget, QEvent::Type type, QPointF at) {
+    QMouseEvent event{type, at, widget->mapToGlobal(at), Qt::LeftButton,
+                      type == QEvent::MouseButtonRelease ? Qt::NoButton : Qt::LeftButton, Qt::NoModifier};
+    QApplication::sendEvent(widget, &event);
+}
+
+void gf1eClick(QWidget *widget) {
+    REQUIRE(widget != nullptr);
+    const QPointF center{widget->width() / 2.0, widget->height() / 2.0};
+    gf1ePress(widget, QEvent::MouseButtonPress, center);
+    gf1ePress(widget, QEvent::MouseButtonRelease, center);
+    QCoreApplication::processEvents();
+}
+
+void gf1eDoubleClick(QWidget *widget) {
+    REQUIRE(widget != nullptr);
+    const QPointF center{widget->width() / 2.0, widget->height() / 2.0};
+    gf1ePress(widget, QEvent::MouseButtonPress, center);
+    gf1ePress(widget, QEvent::MouseButtonRelease, center);
+    gf1ePress(widget, QEvent::MouseButtonDblClick, center);
+    gf1ePress(widget, QEvent::MouseButtonRelease, center);
+    QCoreApplication::processEvents();
+}
+
+void gf1eKey(QWidget *widget, int key, const QString &text = {}) {
+    REQUIRE(widget != nullptr);
+    QKeyEvent press{QEvent::KeyPress, key, Qt::NoModifier, text};
+    QApplication::sendEvent(widget, &press);
+    QKeyEvent release{QEvent::KeyRelease, key, Qt::NoModifier, text};
+    QApplication::sendEvent(widget, &release);
+    QCoreApplication::processEvents();
+}
+
+void gf1eType(QLineEdit *edit, const QString &text) {
+    REQUIRE(edit != nullptr);
+    edit->selectAll();
+    for (const QChar c : text) gf1eKey(edit, c.toUpper().unicode(), QString{c});
+}
+
+QTreeWidgetItem *gf1eRow(QTreeWidget *tree, const QString &text) {
+    for (QTreeWidgetItemIterator item{tree}; *item != nullptr; ++item)
+        if ((*item)->text(0) == text) return *item;
+    return nullptr;
+}
+
+void gf1eClickRow(QTreeWidget *tree, const QString &text) {
+    auto *item = gf1eRow(tree, text);
+    REQUIRE(item != nullptr);
+    tree->scrollToItem(item);
+    const QPointF center = QRectF{tree->visualItemRect(item)}.center();
+    gf1ePress(tree->viewport(), QEvent::MouseButtonPress, center);
+    gf1ePress(tree->viewport(), QEvent::MouseButtonRelease, center);
+    QCoreApplication::processEvents();
+}
+
+QStringList gf1eRows(QTreeWidget *tree) {
+    QStringList rows;
+    for (QTreeWidgetItemIterator item{tree}; *item != nullptr; ++item) {
+        int depth = 0;
+        for (auto *up = (*item)->parent(); up != nullptr; up = up->parent()) ++depth;
+        rows.push_back(QString(depth, QLatin1Char('>')) + (*item)->text(0));
+    }
+    return rows;
+}
+
+// A dialog over its own session, for what doesn't need the Graph panel.
+struct Gf1eDialog {
+    using Kind = PelicanStudio::GraphFiltersEdit::RequestKind;
+    PelicanStudio::GraphFiltersEdit session;
+    std::optional<GraphFilters> preset;
+    std::vector<PelicanStudio::GraphFilterFacts> facts;
+    std::unique_ptr<GraphFiltersDialog> dialog;
+    int digest = 0;
+
+    explicit Gf1eDialog(const Json &document) {
+        (void)application();
+        session.activateProject(1);
+        session.engineReady(10);
+        REQUIRE(session.requestLoad());
+        answerLoad(document);
+        dialog = std::make_unique<GraphFiltersDialog>();
+        dialog->rootFacts = [this] { return facts; };
+        dialog->presetFilters = [this] {
+            return GraphFiltersDialog::PresetFilters{QStringLiteral("Hybrid"), preset ? &*preset : nullptr};
+        };
+        dialog->bind(&session);
+        dialog->show();
+        QCoreApplication::processEvents();
+    }
+    ~Gf1eDialog() { dialog.reset(); }
+
+    void answerLoad(const Json &document) {
+        const auto requests = session.takeRequests();
+        REQUIRE(requests.size() == 1);
+        const auto &request = requests.front();
+        REQUIRE(session.applyReply(request.id, request.project_generation, request.engine_generation, Kind::load,
+                                   false, {{"digest", "base"}, {"document", document}, {"error", nullptr}}));
+    }
+    // The request .save just made, accepted. Returns the document it sent.
+    Json acceptSave(const Json &previous = nullptr) {
+        const auto requests = session.takeRequests();
+        REQUIRE(requests.size() == 1);
+        const auto &request = requests.front();
+        const auto document = request.params.at("document");
+        REQUIRE(session.applyReply(request.id, request.project_generation, request.engine_generation, request.kind,
+                                   true, {{"committed", true}, {"changed", true},
+                                          {"digest", "digest-" + std::to_string(++digest)},
+                                          {"previous_digest", request.params.at("base_digest")},
+                                          {"previous", previous}, {"document", document}}));
+        QCoreApplication::processEvents();
+        return document;
+    }
+    template <typename Widget = QPushButton> Widget *field(const char *name) const {
+        return dialog->findChild<Widget *>(QStringLiteral("pelican.graphFiltersDialog.") + QLatin1String{name});
+    }
+    QTreeWidget *tree() const { return field<QTreeWidget>("filters"); }
+    QLineEdit *label() const { return field<QLineEdit>("label"); }
+    QLineEdit *id() const { return field<QLineEdit>("id"); }
+    QString state() const { return field<QLabel>("state")->text(); }
+    QString preview() const { return field<QLabel>("preview")->text(); }
+    QString selected() const {
+        auto *item = tree()->currentItem();
+        return item != nullptr ? item->data(0, Qt::UserRole).toString() : QString{};
+    }
+    std::string draftBytes() const { return Pelican::renderGraphFilters(session.draft()); }
+    void focus(QWidget *widget) const {
+        dialog->activateWindow();
+        widget->setFocus(Qt::OtherFocusReason);
+        QCoreApplication::processEvents();
+        REQUIRE(widget->hasFocus());
+    }
+};
+
+QString gf1eQString(const std::string &text) { return QString::fromStdString(text); }
+
+std::vector<std::string> gf1eStringsOf(const Json &array) {
+    std::vector<std::string> values;
+    for (const auto &value : array) values.push_back(value.get<std::string>());
+    return values;
+}
+
+// The Graph panel over a recorded transport, with the dialog open.
+QDialog *gf1eOpen(Ux2Tab &tab) {
+    tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.edit"))->trigger();
+    QCoreApplication::processEvents();
+    auto *dialog = tab.widget->findChild<QDialog *>(QStringLiteral("pelican.graphFiltersDialog"));
+    REQUIRE(dialog != nullptr);
+    REQUIRE(dialog->isVisible());
+    return dialog;
+}
+
+template <typename Widget = QPushButton> Widget *gf1eField(QDialog *dialog, const char *name) {
+    auto *widget = dialog->findChild<Widget *>(QStringLiteral("pelican.graphFiltersDialog.") + QLatin1String{name});
+    REQUIRE(widget != nullptr);
+    return widget;
+}
+
+} // namespace
+
+TEST_CASE("GF-1e the dialog shows a nested document as an open tree and edits the selected filter",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({gf1eFilterJson("a", {"a_node"}, {gf1eFilterJson("a1", {"a1_node"}),
+                                                                gf1eFilterJson("a2", {"a2_node"}, {gf1eFilterJson("a2x")})}),
+                               gf1eFilterJson("b", {"b_node"})})};
+    auto *tree = h.tree();
+    REQUIRE(tree != nullptr);
+    CHECK(gf1eRows(tree) == QStringList{"Label a", ">Label a1", ">Label a2", ">>Label a2x", "Label b"});
+    for (QTreeWidgetItemIterator item{tree}; *item != nullptr; ++item) {
+        if ((*item)->childCount() > 0) CHECK((*item)->isExpanded());
+        // Structure changes go through the session: no in-place edit, no drag.
+        CHECK((*item)->flags() == (Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    }
+    CHECK(tree->dragDropMode() == QAbstractItemView::NoDragDrop);
+    CHECK(tree->editTriggers() == QAbstractItemView::NoEditTriggers);
+    CHECK(h.selected() == QStringLiteral("a"));
+
+    // A real click on a child shows that child, and another shows another.
+    gf1eClickRow(tree, QStringLiteral("Label a2"));
+    CHECK(h.selected() == QStringLiteral("a2"));
+    CHECK(h.label()->text() == QStringLiteral("Label a2"));
+    CHECK(h.id()->text() == QStringLiteral("a2"));
+    auto *nodes = h.field<QListWidget>("nodeIds.list");
+    REQUIRE(nodes != nullptr);
+    REQUIRE(nodes->count() == 1);
+    CHECK(nodes->item(0)->text() == QStringLiteral("a2_node"));
+    gf1eClickRow(tree, QStringLiteral("Label b"));
+    CHECK(h.label()->text() == QStringLiteral("Label b"));
+    CHECK(h.id()->text() == QStringLiteral("b"));
+    REQUIRE(nodes->count() == 1);
+    CHECK(nodes->item(0)->text() == QStringLiteral("b_node"));
+
+    // Editing a child changes the child, not the row order or the selection.
+    gf1eClickRow(tree, QStringLiteral("Label a1"));
+    h.focus(h.label());
+    auto *row_before = tree->currentItem();
+    h.label()->setCursorPosition(2);
+    gf1eKey(h.label(), Qt::Key_Z, QStringLiteral("z"));
+    CHECK(h.label()->text() == QStringLiteral("Lazbel a1"));
+    CHECK(h.label()->cursorPosition() == 3);
+    CHECK(h.label()->hasFocus());
+    const auto &document = h.session.draft();
+    CHECK(PelicanStudio::findGraphFilter(document, "a1")->label == "Lazbel a1");
+    // The row changed in place: the tree wasn't rebuilt for a scalar.
+    CHECK(tree->currentItem() == row_before);
+    CHECK(row_before->text(0) == QStringLiteral("Lazbel a1"));
+    CHECK(h.selected() == QStringLiteral("a1"));
+    // Nor for a status change.
+    h.dialog->sync();
+    CHECK(tree->currentItem() == row_before);
+    CHECK(h.label()->cursorPosition() == 3);
+
+    h.field<QLineEdit>("nodeIds.edit")->setText(QStringLiteral("extra"));
+    gf1eClick(h.field("nodeIds.add"));
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "a1")->match.node_ids ==
+          std::vector<std::string>{"a1_node", "extra"});
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "a")->match.node_ids ==
+          std::vector<std::string>{"a_node"});
+    CHECK(h.selected() == QStringLiteral("a1"));
+}
+
+TEST_CASE("GF-1e the tree buttons edit through the session and send nothing until Save",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({gf1eFilterJson("a", {"a_own"}, {gf1eFilterJson("a1"), gf1eFilterJson("a2"), gf1eFilterJson("a3")}),
+                               gf1eFilterJson("b")})};
+    auto *tree = h.tree();
+    auto *up = h.field("up");
+    auto *down = h.field("down");
+    auto *move_in = h.field("moveIn");
+    auto *move_out = h.field("moveOut");
+    auto *add_child = h.field("addChild");
+    REQUIRE((up && down && move_in && move_out && add_child));
+
+    // Enabled states follow a selection change alone, with no edit in between.
+    gf1eClickRow(tree, QStringLiteral("Label a"));
+    CHECK_FALSE(up->isEnabled());
+    CHECK(down->isEnabled());
+    CHECK_FALSE(move_in->isEnabled());
+    CHECK_FALSE(move_out->isEnabled());
+    gf1eClickRow(tree, QStringLiteral("Label b"));
+    CHECK(up->isEnabled());
+    CHECK_FALSE(down->isEnabled());
+    CHECK(move_in->isEnabled());
+    CHECK_FALSE(move_out->isEnabled());
+    gf1eClickRow(tree, QStringLiteral("Label a1"));
+    CHECK_FALSE(up->isEnabled());
+    CHECK(down->isEnabled());
+    CHECK_FALSE(move_in->isEnabled());
+    CHECK(move_out->isEnabled());
+    gf1eClickRow(tree, QStringLiteral("Label a2"));
+    CHECK(up->isEnabled());
+    CHECK(down->isEnabled());
+    CHECK(move_in->isEnabled());
+    CHECK(move_out->isEnabled());
+    gf1eClickRow(tree, QStringLiteral("Label a3"));
+    CHECK(up->isEnabled());
+    CHECK_FALSE(down->isEnabled());
+    CHECK(move_in->isEnabled());
+    CHECK(move_out->isEnabled());
+
+    // Up keeps the moved filter selected, and the enabled states follow it.
+    gf1eClick(up);
+    CHECK(gf1eRows(tree) == QStringList{"Label a", ">Label a1", ">Label a3", ">Label a2", "Label b"});
+    CHECK(h.selected() == QStringLiteral("a3"));
+    CHECK(down->isEnabled());
+    gf1eClick(down);
+    CHECK(gf1eRows(tree) == QStringList{"Label a", ">Label a1", ">Label a2", ">Label a3", "Label b"});
+    CHECK(h.selected() == QStringLiteral("a3"));
+    CHECK_FALSE(down->isEnabled());
+
+    gf1eClick(move_out);
+    CHECK(gf1eRows(tree) == QStringList{"Label a", ">Label a1", ">Label a2", "Label a3", "Label b"});
+    CHECK(h.selected() == QStringLiteral("a3"));
+    CHECK_FALSE(move_out->isEnabled());
+    gf1eClick(move_in);
+    CHECK(gf1eRows(tree) == QStringList{"Label a", ">Label a1", ">Label a2", ">Label a3", "Label b"});
+    CHECK(h.selected() == QStringLiteral("a3"));
+    CHECK(move_out->isEnabled());
+
+    // Add child selects the new filter, and its fields are the ones being edited.
+    gf1eClickRow(tree, QStringLiteral("Label b"));
+    gf1eClick(add_child);
+    CHECK(h.selected() == QStringLiteral("filter"));
+    CHECK(h.id()->text() == QStringLiteral("filter"));
+    CHECK(gf1eRow(tree, QStringLiteral("Filter"))->parent() == gf1eRow(tree, QStringLiteral("Label b")));
+    CHECK(gf1eRow(tree, QStringLiteral("Label b"))->isExpanded());
+    gf1eType(h.label(), QStringLiteral("New"));
+    CHECK(h.label()->text() == QStringLiteral("New"));
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "filter")->label == "New");
+    CHECK(h.selected() == QStringLiteral("filter"));
+
+    // Add stays at the top level, and selects its new filter.
+    gf1eClick(h.field("addFilter"));
+    CHECK(h.selected() == QStringLiteral("filter_2"));
+    CHECK(gf1eRow(tree, QStringLiteral("Filter"))->parent() == nullptr);
+
+    // Nothing was sent, and Save sends the nesting once.
+    CHECK(h.session.takeRequests().empty());
+    REQUIRE(h.field("save")->isEnabled());
+    gf1eClick(h.field("save"));
+    const auto sent = h.acceptSave();
+    const auto &filters = sent.at("filters");
+    REQUIRE(filters.size() == 3);
+    CHECK(filters.at(0).at("id") == "a");
+    CHECK(gf1eStringsOf(filters.at(0).at("match").at("node_ids")) == std::vector<std::string>{"a_own"});
+    REQUIRE(filters.at(0).at("children").size() == 3);
+    CHECK(filters.at(0).at("children").at(2).at("id") == "a3");
+    CHECK(filters.at(1).at("children").at(0).at("id") == "filter");
+    CHECK(h.state() == QStringLiteral("Saved"));
+    CHECK(h.selected() == QStringLiteral("filter_2"));
+}
+
+TEST_CASE("GF-1e a refused edit leaves the whole draft and shows its reason",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({gf1eChainJson(8), gf1eFilterJson("free"), gf1eFilterJson("other")})};
+    auto *tree = h.tree();
+    gf1eClickRow(tree, QStringLiteral("Label l8"));
+    const auto rows = gf1eRows(tree);
+    const auto bytes = h.draftBytes();
+    auto *add_child = h.field("addChild");
+    REQUIRE(add_child->isEnabled());
+    gf1eClick(add_child);
+    CHECK(h.state().contains(QStringLiteral("nest deeper than 8")));
+    CHECK(gf1eRows(tree) == rows);
+    CHECK(h.draftBytes() == bytes);
+    CHECK(h.selected() == QStringLiteral("l8"));
+    CHECK_FALSE(h.field("save")->isEnabled());
+
+    // Return in Id commits it. A duplicate is refused, and Return saves nothing.
+    gf1eClickRow(tree, QStringLiteral("Label free"));
+    h.focus(h.id());
+    gf1eType(h.id(), QStringLiteral("l5"));
+    CHECK(h.id()->text() == QStringLiteral("l5"));
+    gf1eKey(h.id(), Qt::Key_Return);
+    CHECK(h.state().contains(QStringLiteral("is repeated")));
+    CHECK(h.id()->text() == QStringLiteral("free"));
+    CHECK(h.draftBytes() == bytes);
+    CHECK(h.session.takeRequests().empty());
+    CHECK(gf1eRows(tree) == rows);
+
+    // Text typed but not committed survives a sync.
+    gf1eType(h.id(), QStringLiteral("typing"));
+    h.dialog->sync();
+    CHECK(h.id()->text() == QStringLiteral("typing"));
+    CHECK(h.id()->hasFocus());
+
+    // A valid Id commits on Return, and neither saves nor adds a filter.
+    gf1eKey(h.id(), Qt::Key_Return);
+    CHECK(h.session.takeRequests().empty());
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "typing") != nullptr);
+    CHECK(gf1eRows(tree) == rows);
+    CHECK(h.selected() == QStringLiteral("typing"));
+    CHECK(h.state() == QStringLiteral("Unsaved changes"));
+
+    // Focus loss commits too.
+    gf1eType(h.id(), QStringLiteral("by_focus"));
+    h.focus(h.label());
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "by_focus") != nullptr);
+    CHECK(h.selected() == QStringLiteral("by_focus"));
+
+    // Save with an invalid Id in the field: refused, nothing sent, reason shown.
+    // Save stays usable, and the next press saves the draft with the old id.
+    const auto dirty_bytes = h.draftBytes();
+    h.focus(h.id());
+    gf1eType(h.id(), QStringLiteral("Bad"));
+    gf1eClick(h.field("save"));
+    CHECK(h.session.takeRequests().empty());
+    CHECK(h.state().contains(QStringLiteral("is not")));
+    CHECK(h.id()->text() == QStringLiteral("by_focus"));
+    CHECK(h.draftBytes() == dirty_bytes);
+    gf1eClick(h.field("save"));
+    const auto sent = h.acceptSave();
+    CHECK(sent.at("filters").at(1).at("id") == "by_focus");
+
+    // Same when pressing Save is what takes the focus: the commit is refused on
+    // focus-out, and the click that follows doesn't replace the reason.
+    gf1eClick(h.field("addFilter"));
+    const auto next_bytes = h.draftBytes();
+    h.focus(h.id());
+    gf1eType(h.id(), QStringLiteral("Bad"));
+    auto *save = h.field("save");
+    REQUIRE(save->isEnabled());
+    h.focus(save);
+    CHECK(h.state().contains(QStringLiteral("is not")));
+    CHECK(h.draftBytes() == next_bytes);
+    gf1eClick(save);
+    CHECK(h.session.takeRequests().empty());
+    CHECK(h.state().contains(QStringLiteral("is not")));
+}
+
+TEST_CASE("GF-1e a rename keeps the same filter selected through its next edits",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({gf1eFilterJson("first", {"first_node"}),
+                               gf1eFilterJson("parent", {}, {gf1eFilterJson("sibling"),
+                                                             gf1eFilterJson("target", {"target_node"})})})};
+    auto *tree = h.tree();
+    gf1eClickRow(tree, QStringLiteral("Label target"));
+    h.focus(h.id());
+    gf1eType(h.id(), QStringLiteral("renamed"));
+    gf1eKey(h.id(), Qt::Key_Return);
+    CHECK(h.selected() == QStringLiteral("renamed"));
+    CHECK(h.id()->text() == QStringLiteral("renamed"));
+    CHECK(h.label()->text() == QStringLiteral("Label target"));
+    CHECK(h.field<QListWidget>("nodeIds.list")->item(0)->text() == QStringLiteral("target_node"));
+
+    gf1eType(h.label(), QStringLiteral("Now"));
+    CHECK(h.selected() == QStringLiteral("renamed"));
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "renamed")->label == "Now");
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "first")->label == "Label first");
+    h.field<QLineEdit>("nodeIds.edit")->setText(QStringLiteral("more"));
+    gf1eClick(h.field("nodeIds.add"));
+    CHECK(h.selected() == QStringLiteral("renamed"));
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "renamed")->match.node_ids ==
+          std::vector<std::string>{"target_node", "more"});
+    CHECK(PelicanStudio::findGraphFilter(h.session.draft(), "first")->match.node_ids ==
+          std::vector<std::string>{"first_node"});
+}
+
+TEST_CASE("GF-1e Remove asks once for a subtree and one double click isn't a confirmation",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({gf1eFilterJson("top", {}, {gf1eFilterJson("parent", {}, {gf1eFilterJson("kid", {}, {gf1eFilterJson("grand")}),
+                                                                                        gf1eFilterJson("kid2")}),
+                                                          gf1eFilterJson("after")}),
+                               gf1eFilterJson("leaf")})};
+    auto *tree = h.tree();
+    auto *remove = h.field("removeFilter");
+    gf1eClickRow(tree, QStringLiteral("Label parent"));
+    const auto rows = gf1eRows(tree);
+    const auto bytes = h.draftBytes();
+
+    // The first press survives the sync it causes. It's armed, plainly.
+    gf1eClick(remove);
+    CHECK(gf1eRows(tree) == rows);
+    CHECK(h.draftBytes() == bytes);
+    CHECK(h.session.state().confirm_remove);
+    CHECK(h.state().contains(QStringLiteral("and 3 more")));
+    CHECK(h.state().contains(QStringLiteral("Label parent")));
+    CHECK(remove->text() == QStringLiteral("Confirm remove"));
+    CHECK(h.selected() == QStringLiteral("parent"));
+
+    // Another filter cancels it. Coming back, a click only arms again.
+    gf1eClickRow(tree, QStringLiteral("Label leaf"));
+    CHECK_FALSE(h.session.state().confirm_remove);
+    CHECK(remove->text() == QStringLiteral("Remove"));
+    CHECK(h.state() == QStringLiteral("Saved"));
+    gf1eClickRow(tree, QStringLiteral("Label parent"));
+    gf1eClick(remove);
+    CHECK(h.session.state().confirm_remove);
+    CHECK(gf1eRows(tree) == rows);
+
+    // Reselecting the same filter isn't a change of selection.
+    gf1eClickRow(tree, QStringLiteral("Label parent"));
+    CHECK(h.session.state().confirm_remove);
+
+    // An edit cancels it too.
+    gf1eType(h.label(), QStringLiteral("Edited"));
+    CHECK_FALSE(h.session.state().confirm_remove);
+    CHECK(remove->text() == QStringLiteral("Remove"));
+    REQUIRE(h.session.discard());
+    QCoreApplication::processEvents();
+
+    // One double click from rest arms and stops there.
+    gf1eDoubleClick(remove);
+    CHECK(h.draftBytes() == bytes);
+    CHECK(h.session.state().confirm_remove);
+    CHECK(gf1eRows(tree) == rows);
+
+    // A second deliberate press removes the subtree and selects its parent.
+    gf1eClick(remove);
+    CHECK_FALSE(h.session.state().confirm_remove);
+    CHECK(gf1eRows(tree) == QStringList{"Label top", ">Label after", "Label leaf"});
+    CHECK(h.selected() == QStringLiteral("top"));
+    CHECK(remove->text() == QStringLiteral("Remove"));
+    CHECK(h.state() == QStringLiteral("Unsaved changes"));
+
+    // A leaf goes at once.
+    gf1eClickRow(tree, QStringLiteral("Label after"));
+    gf1eClick(remove);
+    CHECK(gf1eRows(tree) == QStringList{"Label top", "Label leaf"});
+    CHECK(h.selected() == QStringLiteral("top"));
+}
+
+TEST_CASE("GF-1e the keyboard reaches project rows only, and Escape and close keep a dirty draft",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({gf1eFilterJson("a", {}, {gf1eFilterJson("a1")}), gf1eFilterJson("b")})};
+    h.preset = Pelican::parseGraphFilters(gf1eDocument({gf1eFilterJson("a"), gf1eFilterJson("p2")})).document;
+    h.dialog->sync();
+    auto *tree = h.tree();
+    CHECK(gf1eRows(tree) == QStringList{"Label a", ">Label a1", "Label b", "From preset Hybrid", ">Label a", ">Label p2"});
+    h.focus(tree);
+    CHECK(h.selected() == QStringLiteral("a"));
+    gf1eKey(tree, Qt::Key_Down);
+    CHECK(h.selected() == QStringLiteral("a1"));
+    CHECK(h.id()->text() == QStringLiteral("a1"));
+    CHECK(h.field("moveOut")->isEnabled());
+    gf1eKey(tree, Qt::Key_Down);
+    CHECK(h.selected() == QStringLiteral("b"));
+    CHECK_FALSE(h.field("moveOut")->isEnabled());
+    // Down from the last project row can't enter the preset's rows.
+    gf1eKey(tree, Qt::Key_Down);
+    gf1eKey(tree, Qt::Key_Down);
+    CHECK(h.selected() == QStringLiteral("b"));
+    CHECK(h.id()->text() == QStringLiteral("b"));
+    gf1eKey(tree, Qt::Key_Up);
+    CHECK(h.selected() == QStringLiteral("a1"));
+
+    // Tab leaves the tree for the next control, rather than moving a row.
+    CHECK_FALSE(tree->tabKeyNavigation());
+    gf1eKey(tree, Qt::Key_Tab);
+    CHECK_FALSE(tree->hasFocus());
+    CHECK(h.selected() == QStringLiteral("a1"));
+
+    // Return in Label neither saves nor adds.
+    gf1eClick(h.field("addFilter"));
+    const auto dirty = h.draftBytes();
+    h.focus(h.label());
+    gf1eKey(h.label(), Qt::Key_Return);
+    CHECK(h.draftBytes() == dirty);
+    CHECK(h.session.takeRequests().empty());
+
+    // Escape hides and keeps the draft, sending nothing. So does closing the window.
+    gf1eKey(h.label(), Qt::Key_Escape);
+    CHECK_FALSE(h.dialog->isVisible());
+    CHECK(h.draftBytes() == dirty);
+    CHECK(h.session.takeRequests().empty());
+    h.dialog->show();
+    QCoreApplication::processEvents();
+    CHECK(h.state() == QStringLiteral("Unsaved changes"));
+    h.dialog->close();
+    QCoreApplication::processEvents();
+    CHECK_FALSE(h.dialog->isVisible());
+    CHECK(h.draftBytes() == dirty);
+    CHECK(h.session.takeRequests().empty());
+    CHECK(h.session.state().dirty);
+}
+
+TEST_CASE("GF-1e a preset's rows are shown and can't be selected or edited",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    Gf1eDialog h{gf1eDocument({})};
+    h.preset = Pelican::parseGraphFilters(gf1eDocument({gf1eFilterJson("render", {}, {gf1eFilterJson("scene", {"gbuffer"})})})).document;
+    h.dialog->sync();
+    auto *tree = h.tree();
+    CHECK(gf1eRows(tree) == QStringList{"From preset Hybrid", ">Label render", ">>Label scene"});
+    for (QTreeWidgetItemIterator item{tree}; *item != nullptr; ++item) {
+        CHECK((*item)->flags() == Qt::NoItemFlags);
+        CHECK((*item)->data(0, Qt::UserRole).toString().isEmpty());
+    }
+    CHECK(gf1eRow(tree, QStringLiteral("Label scene"))->toolTip(0) == QStringLiteral("preset:scene"));
+    // With no project filter the selection stays empty, and only Add can act.
+    CHECK(tree->currentItem() == nullptr);
+    CHECK(h.selected().isEmpty());
+    CHECK(h.field("addFilter")->isEnabled());
+    for (const char *name : {"addChild", "removeFilter", "up", "down", "moveIn", "moveOut", "save", "addSelected"})
+        CHECK_FALSE(h.field(name)->isEnabled());
+    CHECK_FALSE(h.label()->isEnabled());
+    CHECK_FALSE(h.id()->isEnabled());
+    for (const char *name : {"ops", "nodeIds", "features", "categories"})
+        CHECK_FALSE(h.field<QWidget>(name)->isEnabled());
+
+    // The mouse and the keyboard can't make a preset row current.
+    gf1eClickRow(tree, QStringLiteral("Label scene"));
+    CHECK(tree->currentItem() == nullptr);
+    h.focus(tree);
+    gf1eKey(tree, Qt::Key_Down);
+    gf1eKey(tree, Qt::Key_Up);
+    CHECK(h.selected().isEmpty());
+    CHECK_FALSE(h.label()->isEnabled());
+
+    // A project filter can have a preset's id, and they stay separate.
+    gf1eClick(h.field("addFilter"));
+    gf1eClick(h.field("addFilter"));
+    h.focus(h.id());
+    gf1eType(h.id(), QStringLiteral("scene"));
+    gf1eKey(h.id(), Qt::Key_Return);
+    CHECK(h.selected() == QStringLiteral("scene"));
+    CHECK(h.id()->text() == QStringLiteral("scene"));
+    auto *project_row = tree->currentItem();
+    REQUIRE(project_row != nullptr);
+    CHECK(project_row->parent() == nullptr);
+    CHECK(project_row->text(0) == QStringLiteral("Filter"));
+    gf1eClickRow(tree, QStringLiteral("Label scene"));
+    CHECK(tree->currentItem() == project_row);
+
+    // A click on a preset row leaves the selected filter alone.
+    CHECK(h.selected() == QStringLiteral("scene"));
+    gf1eClick(h.field("save"));
+    const auto sent = h.acceptSave();
+    const auto &filters = sent.at("filters");
+    REQUIRE(filters.size() == 2);
+    CHECK(filters.at(0).at("id") == "filter");
+    CHECK(filters.at(1).at("id") == "scene");
+    CHECK_FALSE(filters.at(1).contains("children"));
+
+    // No preset document, no section.
+    h.preset.reset();
+    h.dialog->sync();
+    CHECK(gf1eRows(tree) == QStringList{"Filter", "Filter"});
+}
+
+TEST_CASE("GF-1e a parent's preview is the union of its tree, each fact once, named by its own field",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    using Facts = PelicanStudio::GraphFilterFacts;
+    Gf1eDialog h{gf1eDocument({gf1eFilterJson("hollow", {}, {gf1eFilterJson("hollow_kid", {"blur"})}),
+                               gf1eFilterJson("overlap", {"blur"}, {gf1eFilterJson("overlap_kid", {"blur"})}),
+                               gf1eFilterJson("pass_named", {"gbuffer"}),
+                               gf1eFilterJson("nothing_here")})};
+    // The two fields are different, so a preview naming the wrong one shows.
+    h.facts = {{Facts::Kind::node, "blur", "render.blur", ""},
+               {Facts::Kind::folded_other, "gbuffer", "", "wrong_feature_field"},
+               {Facts::Kind::folded_feature, "wrong_node_field", "", "bloom"}};
+    h.dialog->sync();
+    auto *tree = h.tree();
+
+    gf1eClickRow(tree, QStringLiteral("Label hollow"));
+    CHECK(h.preview().contains(QStringLiteral("Matches 1 ")));
+    CHECK(h.preview().contains(QStringLiteral("blur")));
+    CHECK(h.preview().contains(QStringLiteral("(with children)")));
+    CHECK_FALSE(h.preview().contains(QStringLiteral("Matches nothing")));
+
+    gf1eClickRow(tree, QStringLiteral("Label overlap"));
+    CHECK(h.preview().contains(QStringLiteral("Matches 1 ")));
+    CHECK(h.preview().contains(QStringLiteral("(with children)")));
+
+    gf1eClickRow(tree, QStringLiteral("Label overlap_kid"));
+    CHECK(h.preview().contains(QStringLiteral("Matches 1 ")));
+    CHECK_FALSE(h.preview().contains(QStringLiteral("(with children)")));
+
+    gf1eClickRow(tree, QStringLiteral("Label pass_named"));
+    CHECK(h.preview().contains(QStringLiteral("gbuffer")));
+    CHECK_FALSE(h.preview().contains(QStringLiteral("wrong_feature_field")));
+
+    // A folded feature is named by its feature, not by its node id.
+    h.field<QLineEdit>("features.edit")->setText(QStringLiteral("bloom"));
+    gf1eClick(h.field("features.add"));
+    CHECK(h.preview().contains(QStringLiteral("Matches 2 ")));
+    CHECK(h.preview().contains(QStringLiteral("bloom")));
+    CHECK_FALSE(h.preview().contains(QStringLiteral("wrong_node_field")));
+
+    gf1eClickRow(tree, QStringLiteral("Label nothing_here"));
+    CHECK(h.preview() == QStringLiteral("Matches nothing"));
+}
+
+TEST_CASE("GF-1e the new controls don't add height, and the left column doesn't set it",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    std::vector<Json> many;
+    for (int index = 0; index < 32; ++index) many.push_back(gf1eFilterJson("many" + std::to_string(index)));
+    many.push_back(gf1eChainJson(8));
+    Gf1eDialog large{gf1eDocument(many)};
+    large.preset = Pelican::parseGraphFilters(gf1eDocument({gf1eFilterJson("p1"), gf1eFilterJson("p2")})).document;
+    large.dialog->sync();
+    Gf1eDialog small{gf1eDocument({gf1eFilterJson("one")})};
+
+    // Label and Id share one row, in the dialog's own coordinates.
+    small.dialog->adjustSize();
+    large.dialog->adjustSize();
+    QCoreApplication::processEvents();
+    auto *dialog = small.dialog.get();
+    const auto label_top = small.label()->mapTo(dialog, QPoint{0, 0}).y();
+    const auto id_top = small.id()->mapTo(dialog, QPoint{0, 0}).y();
+    CHECK(label_top == id_top);
+    CHECK(small.label()->height() == small.id()->height());
+    CHECK(small.id()->mapTo(dialog, QPoint{0, 0}).x() >
+          small.label()->mapTo(dialog, QPoint{small.label()->width(), 0}).x());
+
+    const auto hint = dialog->sizeHint();
+    CAPTURE(hint.width(), hint.height(), dialog->width(), dialog->height());
+    CHECK(large.dialog->sizeHint().height() == hint.height());
+#ifdef _WIN32
+    // Measured at dded17967 with this test's style and screen: sizeHint 958x1120,
+    // adjusted 958x632. Fonts differ elsewhere, so the number is Windows only.
+    CHECK(hint.height() <= 1120);
+    CHECK(dialog->height() <= 632);
+    // Selecting a parent fills the .children line, which was always there.
+    gf1eClickRow(large.tree(), QStringLiteral("Label l1"));
+    CHECK(large.field<QLabel>("children")->text().contains(QStringLiteral("7 children")));
+    CHECK(large.dialog->sizeHint().height() <= 1120);
+#endif
+    // The tree asks for what the flat list asked for.
+    QListWidget flat;
+    CHECK(small.tree()->sizeHint().height() == flat.sizeHint().height());
+
+    // Without the left column the height is the same: the right column sets it.
+    const std::vector<QWidget *> left{small.tree(), small.field("addFilter"), small.field("addChild"),
+                                      small.field("removeFilter"), small.field("up"), small.field("down"),
+                                      small.field("moveIn"), small.field("moveOut")};
+    for (auto *widget : left) widget->hide();
+    QCoreApplication::processEvents();
+    CHECK(dialog->sizeHint().height() == hint.height());
+    for (auto *widget : left) widget->show();
+    QCoreApplication::processEvents();
+    CHECK(dialog->sizeHint().height() == hint.height());
+}
+
+TEST_CASE("GF-1e the Graph follows moves and removals, and the dialog reads nothing new",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    (void)application();
+    const auto document = gf1eDocument({gf1eFilterJson("parent", {"bloomed"}, {gf1eFilterJson("child", {"blur"})}),
+                                        gf1eFilterJson("next")});
+    Gf1aProject project{document};
+    Ux2Tab tab{false, true, false, true};
+    tab.widget->setProjectRoot(project.root());
+    tab.answer("get_graph_filters", Json{{"digest", "base"}, {"document", document}, {"error", nullptr}});
+    tab.read(gf1aRead(), "gf1e-graph");
+    tab.answer("get_frame_plan", gf1aPlan());
+    auto &model = tab.widget->model();
+    auto &scene = tab.widget->scene();
+    auto *button = tab.field<QToolButton>("pelican.graphCanvasFilter");
+    REQUIRE(tab.widget->findChild<QMenu *>(QStringLiteral("pelican.graphCanvasFilter.submenu.parent")) != nullptr);
+    auto *child_action = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.child"));
+    REQUIRE(child_action != nullptr);
+    child_action->trigger();
+    QCoreApplication::processEvents();
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"child"});
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+    CHECK(button->toolTip().contains(QStringLiteral("Label parent ▸ Label child")));
+
+    const int width_before = tab.widget->minimumSizeHint().width();
+    const int filter_reads = tab.reads("get_graph_filters");
+    const int context_reads = tab.reads("get_render_authoring_context");
+    auto *dialog = gf1eOpen(tab);
+    CHECK(tab.widget->minimumSizeHint().width() == width_before);
+    auto *tree = gf1eField<QTreeWidget>(dialog, "filters");
+    auto *state = gf1eField<QLabel>(dialog, "state");
+    auto *save = gf1eField(dialog, "save");
+    const auto answerSave = [&](const std::string &digest, const Json &previous) {
+        REQUIRE(tab.reads("edit_graph_filters") > 0);
+        const auto sent = Json::parse(tab.transport.calls.back().body.toStdString());
+        tab.answer("edit_graph_filters",
+                   Json{{"committed", true}, {"changed", true}, {"digest", digest},
+                        {"previous_digest", sent.at("base_digest")}, {"previous", previous},
+                        {"document", sent.at("document")}});
+        return sent.at("document");
+    };
+
+    // Moving the active filter keeps it, and its path follows.
+    gf1eClickRow(tree, QStringLiteral("Label child"));
+    gf1eClick(gf1eField(dialog, "moveOut"));
+    CHECK(tab.reads("edit_graph_filters") == 0);
+    gf1eClick(save);
+    const auto moved = answerSave("gf1e-moved", document);
+    CHECK(state->text() == QStringLiteral("Saved"));
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"child"});
+    CHECK(button->text() == QStringLiteral("Filter: Label child"));
+    CHECK_FALSE(button->toolTip().contains(QStringLiteral("Label parent ▸")));
+    CHECK(nodeItem(scene, QStringLiteral("blur")) != nullptr);
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) == nullptr);
+    CHECK(tab.widget->findChild<QMenu *>(QStringLiteral("pelican.graphCanvasFilter.submenu.parent")) == nullptr);
+    CHECK(tree->currentItem()->text(0) == QStringLiteral("Label child"));
+
+    // Back in: the submenu returns, and the selection and the filter stay.
+    gf1eClick(gf1eField(dialog, "moveIn"));
+    gf1eClick(save);
+    const auto back = answerSave("gf1e-back", moved);
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"child"});
+    CHECK(tab.widget->findChild<QMenu *>(QStringLiteral("pelican.graphCanvasFilter.submenu.parent")) != nullptr);
+
+    // Renaming the active filter's id is removing that id: All, after Save only.
+    auto *id = gf1eField<QLineEdit>(dialog, "id");
+    id->setFocus();
+    id->selectAll();
+    for (const QChar c : QStringLiteral("kid")) gf1eKey(id, c.toUpper().unicode(), QString{c});
+    gf1eKey(id, Qt::Key_Return);
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"child"});
+    gf1eClick(save);
+    const auto renamed = answerSave("gf1e-renamed", back);
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(button->text() == QStringLiteral("Filter: All"));
+    CHECK(tree->currentItem()->data(0, Qt::UserRole).toString() == QStringLiteral("kid"));
+    CHECK(nodeItem(scene, QStringLiteral("bloomed")) != nullptr);
+
+    // Removing the active parent's subtree returns to All as well.
+    tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.filter.kid"))->trigger();
+    QCoreApplication::processEvents();
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"kid"});
+    gf1eClickRow(tree, QStringLiteral("Label parent"));
+    auto *remove = gf1eField(dialog, "removeFilter");
+    gf1eClick(remove);
+    CHECK(state->text().contains(QStringLiteral("and 1 more")));
+    gf1eClick(remove);
+    CHECK(model.activeGraphFilter() == std::optional<std::string>{"kid"});
+    gf1eClick(save);
+    answerSave("gf1e-removed", renamed);
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+    CHECK(button->text() == QStringLiteral("Filter: All"));
+    CHECK(gf1eRows(tree) == QStringList{"Label next"});
+
+    // Discard goes back to the last saved draft and sends nothing.
+    gf1eClick(gf1eField(dialog, "addFilter"));
+    const int edits_before_discard = tab.reads("edit_graph_filters");
+    CHECK(gf1eRows(tree).size() == 2);
+    gf1eClick(gf1eField(dialog, "discard"));
+    CHECK(gf1eRows(tree) == QStringList{"Label next"});
+    CHECK(tab.reads("edit_graph_filters") == edits_before_discard);
+    CHECK(state->text() == QStringLiteral("Saved"));
+
+    // Undo is its own request, restoring the committed tree with its nesting.
+    gf1eClick(gf1eField(dialog, "undo"));
+    REQUIRE(tab.reads("edit_graph_filters") == edits_before_discard + 1);
+    const auto undone = Json::parse(tab.transport.calls.back().body.toStdString());
+    CHECK(undone.at("base_digest") == "gf1e-removed");
+    CHECK(undone.at("document").at("filters").at(0).at("id") == "parent");
+    CHECK(undone.at("document").at("filters").at(0).at("children").at(0).at("id") == "kid");
+    tab.answer("edit_graph_filters", Json{{"committed", true}, {"changed", true}, {"digest", "gf1e-undone"},
+                                          {"previous_digest", "gf1e-removed"}, {"previous", gf1eDocument({gf1eFilterJson("next")})},
+                                          {"document", undone.at("document")}});
+    REQUIRE(gf1eRow(tree, QStringLiteral("Label child")) != nullptr);
+    CHECK(gf1eRow(tree, QStringLiteral("Label child"))->parent() == gf1eRow(tree, QStringLiteral("Label parent")));
+    // Undo restores the document, not the filter that was active before.
+    CHECK_FALSE(model.activeGraphFilter().has_value());
+
+    // None of it read anything else.
+    CHECK(tab.reads("get_graph_filters") == filter_reads);
+    CHECK(tab.reads("get_render_authoring_context") == context_reads);
+    // The button's own text is shorter now, so it can be narrower, never wider.
+    CHECK(tab.widget->minimumSizeHint().width() <= width_before);
+}
+
+TEST_CASE("GF-1e Reload re-reads a preset's filters with no active filter, open or hidden",
+          "[devstudio][graph-canvas][scene][gf1e]") {
+    (void)application();
+    QTemporaryDir root;
+    REQUIRE(root.isValid());
+    Ux2Tab tab{true, true, false, true};
+    tab.widget->setProjectRoot(std::filesystem::path{root.path().toStdString()});
+    tab.answer("get_graph_filters", Json{{"digest", "base"}, {"document", gf1eDocument({gf1eFilterJson("mine")})},
+                                         {"error", nullptr}});
+    tab.read(gf1aRead(), "gf1e-preset");
+    auto plan = gf1aPlan();
+    plan["pipeline_preset"] = {{"ref", "engine://recipe"}, {"name", "Hybrid"}, {"version", 2}};
+    tab.answer("get_frame_plan", plan);
+    REQUIRE(tab.reads("get_render_authoring_context") > 0);
+    // The real menu action. It's found each time, because a rebuild replaces it.
+    const auto reload = [&] {
+        const int before = tab.reads("get_render_authoring_context");
+        auto *action = tab.widget->findChild<QAction *>(QStringLiteral("pelican.graphCanvasFilter.reload"));
+        REQUIRE(action != nullptr);
+        action->trigger();
+        QCoreApplication::processEvents();
+        REQUIRE(tab.reads("get_render_authoring_context") == before + 1);
+    };
+    const auto context = [](const std::vector<Json> &filters) {
+        auto reply = ux2Authoring();
+        reply["pipeline_preset"] = {{"reference", "engine://recipe"}, {"name", "Hybrid"}};
+        reply["preset_graph_filters"] = gf1eDocument(filters);
+        return reply;
+    };
+    tab.answer("get_render_authoring_context", context({gf1eFilterJson("first")}));
+    auto *dialog = gf1eOpen(tab);
+    auto *tree = gf1eField<QTreeWidget>(dialog, "filters");
+    CHECK(gf1eRows(tree) == QStringList{"Label mine", "From preset Hybrid", ">Label first"});
+
+    // Replaced while visible: the rows follow, and the selection stays.
+    auto *current = tree->currentItem();
+    REQUIRE(current != nullptr);
+    CHECK(current->text(0) == QStringLiteral("Label mine"));
+    CHECK_FALSE(tab.widget->model().activeGraphFilter().has_value());
+    reload();
+    tab.answer("get_render_authoring_context", context({gf1eFilterJson("second")}));
+    CHECK(gf1eRows(tree) == QStringList{"Label mine", "From preset Hybrid", ">Label second"});
+    CHECK(tree->currentItem()->text(0) == QStringLiteral("Label mine"));
+
+    // Replaced while hidden: reopening shows the new rows.
+    gf1eClick(gf1eField(dialog, "close"));
+    CHECK_FALSE(dialog->isVisible());
+    reload();
+    tab.answer("get_render_authoring_context", context({gf1eFilterJson("third")}));
+    CHECK(gf1eRows(tree) == QStringList{"Label mine", "From preset Hybrid", ">Label second"});
+    gf1eOpen(tab);
+    CHECK(gf1eRows(tree) == QStringList{"Label mine", "From preset Hybrid", ">Label third"});
+    CHECK(tree->currentItem()->text(0) == QStringLiteral("Label mine"));
+    for (const char *name : {"addChild", "removeFilter"}) CHECK(gf1eField(dialog, name)->isEnabled());
+}

@@ -1,5 +1,7 @@
 #include "graphfiltersedit.hpp"
 
+#include "graphfilters.hpp"
+
 #include <algorithm>
 #include <utility>
 
@@ -51,6 +53,30 @@ void eraseCategory(std::vector<GraphFilter> &filters, const std::string &id) {
     }
 }
 
+// A filter's position as indexes from the top level. Indexes stay meaningful in
+// a copy of the document, and across an erase or insert, where pointers don't.
+using FilterPath = std::vector<std::size_t>;
+
+bool findPath(const std::vector<GraphFilter> &filters, const std::string &id, FilterPath &path) {
+    for (std::size_t index = 0; index < filters.size(); ++index) {
+        path.push_back(index);
+        if (filters[index].id == id || findPath(filters[index].children, id, path)) return true;
+        path.pop_back();
+    }
+    return false;
+}
+
+std::vector<GraphFilter> &siblingsAt(GraphFilters &document, const FilterPath &path) {
+    auto *siblings = &document.filters;
+    for (std::size_t level = 0; level + 1 < path.size(); ++level)
+        siblings = &(*siblings)[path[level]].children;
+    return *siblings;
+}
+
+GraphFilter &filterAt(GraphFilters &document, const FilterPath &path) {
+    return siblingsAt(document, path)[path.back()];
+}
+
 bool categoriesDeclared(const GraphFilters &document, const GraphFilterMatch &match) {
     return std::ranges::all_of(match.feature_categories, [&](const std::string &id) {
         return std::ranges::any_of(document.categories, [&](const auto &category) {
@@ -67,6 +93,7 @@ void GraphFiltersEdit::activateProject(std::uint64_t generation) {
     pending_.reset();
     external_modification_ = false;
     confirm_load_ = false;
+    confirm_remove_.reset();
     state_text_ = loaded_ ? "Saved" : "Not loaded";
     syncState();
 }
@@ -91,6 +118,7 @@ void GraphFiltersEdit::engineGone() {
     pending_.reset();
     engine_ready_ = false;
     confirm_load_ = false;
+    confirm_remove_.reset();
     state_text_ = unknown_ ? "Connection lost; the save result is unknown. Reload after reconnecting."
                            : "No engine connected";
     syncState();
@@ -104,6 +132,7 @@ bool GraphFiltersEdit::start(RequestKind kind, Json params) {
     pending_ = request;
     requests_.push_back(std::move(request));
     confirm_load_ = false;
+    confirm_remove_.reset();
     external_modification_ = false;
     syncState();
     return true;
@@ -127,7 +156,9 @@ bool GraphFiltersEdit::undo() {
 }
 
 bool GraphFiltersEdit::discard() {
-    if (!editable() || draft_ == saved_) return false;
+    if (!editable()) return false;
+    cancelRemoveConfirmation();
+    if (draft_ == saved_) return false;
     draft_ = saved_;
     state_text_ = "Saved";
     external_modification_ = false;
@@ -138,6 +169,7 @@ bool GraphFiltersEdit::discard() {
 
 bool GraphFiltersEdit::loadReplacesDirtyDraft() {
     if (!project_current_ || !engine_ready_ || pending_ || !loaded_) return false;
+    cancelRemoveConfirmation();
     if (draft_ != saved_ && !confirm_load_) {
         confirm_load_ = true;
         state_text_ = "Load from disk will discard the draft. Press it again to confirm.";
@@ -158,8 +190,31 @@ bool GraphFiltersEdit::editable() const {
 void GraphFiltersEdit::markEdited() {
     external_modification_ = false;
     confirm_load_ = false;
+    confirm_remove_.reset();
     state_text_ = "Unsaved changes";
     syncState();
+}
+
+bool GraphFiltersEdit::refuse(std::string reason) {
+    confirm_remove_.reset();
+    state_text_ = std::move(reason);
+    syncState();
+    return false;
+}
+
+bool GraphFiltersEdit::replaceDraft(GraphFilters candidate, const std::string &what) {
+    const auto checked = Pelican::parseGraphFilters(documentJson(candidate));
+    if (!checked.document) return refuse(what + ": " + checked.error);
+    draft_ = std::move(candidate);
+    markEdited();
+    return true;
+}
+
+bool GraphFiltersEdit::cancelRemoveConfirmation() {
+    if (!confirm_remove_) return false;
+    confirm_remove_.reset();
+    state_text_ = draft_ != saved_ ? "Unsaved changes" : "Saved";
+    return true;
 }
 
 std::string GraphFiltersEdit::makeId(const std::string &label, const std::string &fallback,
@@ -200,31 +255,90 @@ bool GraphFiltersEdit::addFilter(const std::string &label) {
     return true;
 }
 
+bool GraphFiltersEdit::addChildFilter(const std::string &parent_id, const std::string &label) {
+    if (!editable()) return false;
+    FilterPath path;
+    if (!findPath(draft_.filters, parent_id, path)) return false;
+    std::vector<std::string> ids;
+    childIds(draft_.filters, ids);
+    auto candidate = draft_;
+    filterAt(candidate, path).children.push_back(
+        {makeId(label, "filter", ids), label.empty() ? "Filter" : label, {}, {}});
+    return replaceDraft(std::move(candidate), "Can't add a child to \"" + filterAt(draft_, path).label + "\"");
+}
+
 GraphFilter *GraphFiltersEdit::findFilter(const std::string &id) {
-    const auto found = std::ranges::find_if(draft_.filters, [&](const auto &filter) { return filter.id == id; });
-    return found == draft_.filters.end() ? nullptr : &*found;
+    FilterPath path;
+    return findPath(draft_.filters, id, path) ? &filterAt(draft_, path) : nullptr;
 }
 
 bool GraphFiltersEdit::removeFilter(const std::string &id) {
     if (!editable()) return false;
-    const auto found = std::ranges::find_if(draft_.filters, [&](const auto &filter) { return filter.id == id; });
-    if (found == draft_.filters.end()) return false;
-    draft_.filters.erase(found);
-    markEdited();
-    return true;
+    FilterPath path;
+    if (!findPath(draft_.filters, id, path)) return false;
+    const auto &filter = filterAt(draft_, path);
+    if (!filter.children.empty() &&
+        !(confirm_remove_ && confirm_remove_->id == id && confirm_remove_->draft == draft_)) {
+        confirm_remove_ = ConfirmRemove{id, draft_};
+        confirm_load_ = false;
+        state_text_ = "Remove \"" + filter.label + "\" and " + std::to_string(countChildren(filter)) +
+                      " more under it? Press Remove again.";
+        syncState();
+        return false;
+    }
+    const auto what = "Can't remove \"" + filter.label + "\"";
+    auto candidate = draft_;
+    auto &siblings = siblingsAt(candidate, path);
+    siblings.erase(siblings.begin() + static_cast<std::ptrdiff_t>(path.back()));
+    return replaceDraft(std::move(candidate), what);
 }
 
 bool GraphFiltersEdit::moveFilter(const std::string &id, int delta) {
     if (!editable()) return false;
-    const auto found = std::ranges::find_if(draft_.filters, [&](const auto &filter) { return filter.id == id; });
-    const auto index = std::distance(draft_.filters.begin(), found);
-    const auto destination = index + delta;
-    if (found == draft_.filters.end() || destination < 0 ||
-        destination >= static_cast<std::ptrdiff_t>(draft_.filters.size())) return false;
-    std::swap(draft_.filters[static_cast<std::size_t>(index)],
-              draft_.filters[static_cast<std::size_t>(destination)]);
-    markEdited();
-    return true;
+    FilterPath path;
+    if (!findPath(draft_.filters, id, path)) return false;
+    const auto destination = static_cast<std::ptrdiff_t>(path.back()) + delta;
+    auto candidate = draft_;
+    auto &siblings = siblingsAt(candidate, path);
+    if (destination < 0 || destination >= static_cast<std::ptrdiff_t>(siblings.size())) return false;
+    std::swap(siblings[path.back()], siblings[static_cast<std::size_t>(destination)]);
+    return replaceDraft(std::move(candidate), "Can't move \"" + filterAt(draft_, path).label + "\"");
+}
+
+bool GraphFiltersEdit::indentFilter(const std::string &id) {
+    if (!editable()) return false;
+    FilterPath path;
+    if (!findPath(draft_.filters, id, path) || path.back() == 0) return false;
+    auto candidate = draft_;
+    auto &siblings = siblingsAt(candidate, path);
+    auto moved = siblings[path.back()];
+    siblings.erase(siblings.begin() + static_cast<std::ptrdiff_t>(path.back()));
+    siblings[path.back() - 1].children.push_back(std::move(moved));
+    return replaceDraft(std::move(candidate), "Can't move \"" + filterAt(draft_, path).label + "\" in");
+}
+
+bool GraphFiltersEdit::outdentFilter(const std::string &id) {
+    if (!editable()) return false;
+    FilterPath path;
+    if (!findPath(draft_.filters, id, path) || path.size() < 2) return false;
+    auto candidate = draft_;
+    auto &siblings = siblingsAt(candidate, path);
+    auto moved = siblings[path.back()];
+    siblings.erase(siblings.begin() + static_cast<std::ptrdiff_t>(path.back()));
+    FilterPath parent = path;
+    parent.pop_back();
+    auto &outer = siblingsAt(candidate, parent);
+    outer.insert(outer.begin() + static_cast<std::ptrdiff_t>(parent.back()) + 1, std::move(moved));
+    return replaceDraft(std::move(candidate), "Can't move \"" + filterAt(draft_, path).label + "\" out");
+}
+
+bool GraphFiltersEdit::setFilterId(const std::string &id, const std::string &new_id) {
+    if (!editable() || id == new_id) return false;
+    FilterPath path;
+    if (!findPath(draft_.filters, id, path)) return false;
+    auto candidate = draft_;
+    filterAt(candidate, path).id = new_id;
+    return replaceDraft(std::move(candidate), "Can't rename \"" + id + "\"");
 }
 
 bool GraphFiltersEdit::setLabel(const std::string &id, const std::string &label) {
@@ -427,6 +541,7 @@ GraphFiltersEdit::State GraphFiltersEdit::state() const {
     result.external_modification = external_modification_;
     result.commit_result_unknown = unknown_.has_value();
     result.confirm_load = confirm_load_;
+    result.confirm_remove = confirm_remove_.has_value();
     if (pending_) {
         result.text = pending_->kind == RequestKind::load ? "Loading..." :
                           pending_->kind == RequestKind::save ? "Saving..." : "Undoing...";
@@ -442,6 +557,7 @@ GraphFiltersEdit::State GraphFiltersEdit::state() const {
 
 bool GraphFiltersEdit::importFilters(const GraphFilters &incoming) {
     if (!editable()) return false;
+    confirm_remove_.reset();
     auto merged = mergeGraphFilters(draft_, incoming);
     const auto validated = Pelican::parseGraphFilters(Json::parse(Pelican::renderGraphFilters(merged.merged)));
     if (!validated.document) {
@@ -468,8 +584,19 @@ bool GraphFiltersEdit::importFilters(const GraphFilters &incoming) {
 }
 
 const GraphFilter *GraphFiltersEdit::findFilter(const std::string &id) const {
-    const auto found = std::ranges::find_if(draft_.filters, [&](const auto &filter) { return filter.id == id; });
-    return found == draft_.filters.end() ? nullptr : &*found;
+    return findGraphFilter(draft_, id);
+}
+
+std::optional<GraphFiltersEdit::FilterPlace> GraphFiltersEdit::filterPlace(const std::string &id) const {
+    FilterPath path;
+    if (!findPath(draft_.filters, id, path)) return std::nullopt;
+    const auto *siblings = &draft_.filters;
+    std::string parent;
+    for (std::size_t level = 0; level + 1 < path.size(); ++level) {
+        parent = (*siblings)[path[level]].id;
+        siblings = &(*siblings)[path[level]].children;
+    }
+    return FilterPlace{static_cast<int>(path.size()), path.back(), siblings->size(), std::move(parent)};
 }
 
 std::size_t GraphFiltersEdit::descendantCount(const std::string &id) const {

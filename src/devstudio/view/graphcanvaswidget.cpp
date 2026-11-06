@@ -9692,6 +9692,12 @@ struct GraphCanvasWidget::Impl {
                                  node.id, {}, node.feature});
             return facts;
         };
+        graph_filter_dialog->presetFilters = [this] {
+            // The optional is the model's member, so the pointer lasts the sync.
+            const auto &preset = model.presetGraphFilters();
+            return GraphFiltersDialog::PresetFilters{qtext(graph_filter_preset_name),
+                                                     preset ? &*preset : nullptr};
+        };
         graph_filter_dialog->selection = [this] {
             GraphFiltersDialog::Selection result;
             result.root = model.currentScope().empty() && scene->selectedScope().empty();
@@ -12589,8 +12595,9 @@ struct GraphCanvasWidget::Impl {
         const bool had_active = model.activeGraphFilter().has_value();
         const bool had_document = model.graphFilters().document.has_value();
         refreshGraphFilters();
-        if (model.presetGraphFilters()) model.readRenderAuthoringAgain();
-        if (had_active || had_document != model.graphFilters().document.has_value()) dispatch();
+        const bool read_preset = model.presetGraphFilters().has_value();
+        if (read_preset) model.readRenderAuthoringAgain();
+        if (read_preset || had_active || had_document != model.graphFilters().document.has_value()) dispatch();
     }
 
     void clearPresetGraphFilters() {
@@ -12599,6 +12606,13 @@ struct GraphCanvasWidget::Impl {
         model.setPresetGraphFilters(std::nullopt);
         rebuildGraphFilterMenu();
         syncGraphFilterControls();
+        syncVisibleGraphFilterDialog();
+    }
+
+    // Opening the dialog syncs it, so a hidden one needs nothing. The destructor
+    // has already deleted the dialog when a late call arrives during teardown.
+    void syncVisibleGraphFilterDialog() {
+        if (graph_filter_dialog != nullptr && graph_filter_dialog->isVisible()) graph_filter_dialog->sync();
     }
 
     void syncPresetGraphFilters() {
@@ -12633,6 +12647,7 @@ struct GraphCanvasWidget::Impl {
         model.setPresetGraphFilters(std::move(document));
         rebuildGraphFilterMenu();
         syncGraphFilterControls();
+        syncVisibleGraphFilterDialog();
     }
 
     GraphFiltersEdit &currentGraphFilterSession() {
