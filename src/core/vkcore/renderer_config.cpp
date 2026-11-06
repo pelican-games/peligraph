@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <array>
 #include <cstdint>
+#include <map>
 #include <optional>
 #include <stdexcept>
 #include <type_traits>
@@ -370,16 +371,38 @@ bool generationEnablesFeature(
            generation.enabled_feature_names.end();
 }
 
-void validateFrozenRuntimeFeatureModules(
-    const RendererRuntimeGeneration &generation) {
+using FrozenRuntimeFeatureModuleState =
+    std::map<std::string, bool, std::less<>>;
+
+std::optional<FrozenRuntimeFeatureModuleState>
+snapshotFrozenRuntimeFeatureModules() {
     if (!FastModuleContainer::isCreationFrozen()) {
+        return std::nullopt;
+    }
+    FrozenRuntimeFeatureModuleState result;
+    for (const auto &requirement :
+         renderFeatureRuntimeModuleRequirements()) {
+        for (const auto &module : requirement.modules) {
+            result.emplace(module.module, module.initialized());
+        }
+    }
+    return result;
+}
+
+void validateFrozenRuntimeFeatureModules(
+    const RendererRuntimeGeneration &generation,
+    const std::optional<FrozenRuntimeFeatureModuleState> &modules) {
+    if (!modules) {
         return;
     }
     for (const auto &requirement :
          renderFeatureRuntimeModuleRequirements()) {
         if (generationEnablesFeature(
                 generation, requirement.feature)) {
-            requireRuntimeFeatureModules(requirement, {});
+            requireRuntimeFeatureModules(
+                requirement, [&](std::string_view name) {
+                    return modules->find(name)->second;
+                });
         }
     }
 }
@@ -703,22 +726,19 @@ RenderGraphVariantConfig loadRenderGraphVariantsFromConfigData(
         !isRenderPipelineFallbackConfig(rendering_config_json);
     flat_options.validate_prepared_generation =
         [default_pass_name, &prepared_flat_rendering_pass_id,
-         validate_live_materials =
-             hooks.validate_live_materials](
+         frozen_runtime_modules = snapshotFrozenRuntimeFeatureModules(),
+         materials = hooks.validate_live_materials
+             ? FastModuleContainer::tryGet<MaterialContainer>()
+             : nullptr](
             const RendererRuntimeGeneration &generation) {
             prepared_flat_rendering_pass_id =
                 validateDefaultPass(generation,
                                     default_pass_name);
             validateFrozenRuntimeFeatureModules(
-                generation);
-            if (validate_live_materials) {
-                if (auto *materials =
-                    FastModuleContainer::tryGet<
-                        MaterialContainer>()) {
-                    materials
-                        ->validateRuntimeGenerationCompatibility(
-                            generation);
-                }
+                generation, frozen_runtime_modules);
+            if (materials != nullptr) {
+                materials->validateRuntimeGenerationCompatibility(
+                    generation);
             }
         };
     flat_options.before_publish_prepared_generation =

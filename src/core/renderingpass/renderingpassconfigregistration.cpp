@@ -736,6 +736,7 @@ class RegistrationStages {
         native_scope_providers;
     std::shared_ptr<const RayTracingProjectConfig>
         ray_tracing_project;
+    RayLayoutRuntimeState *ray_layout_runtime_state = nullptr;
     std::map<std::string, GltfAttributeData> attribute_data;
     std::vector<GraphDeformedAttribute> deformed_attributes;
     std::vector<GraphPoseAttribute> pose_attributes;
@@ -790,6 +791,7 @@ class RegistrationStages {
     // VO-1a: the candidate's sink table, installed with this exact
     // generation in publish().
     std::shared_ptr<const OutputSinkTable> output_sink_table;
+    OutputSinks *output_sinks = nullptr;
 #endif
 };
 
@@ -800,6 +802,13 @@ void RegistrationStages::prepare() {
     }
     owner_scope =
         gpuOwnerScope(dependencies.front().options);
+    if (dependencies.front().options.judge_ray_layout_mode) {
+        ray_layout_runtime_state =
+            FastModuleContainer::tryGet<RayLayoutRuntimeState>();
+    }
+#if PELICAN_WITH_VIDEO_OUTPUT
+    output_sinks = FastModuleContainer::tryGet<OutputSinks>();
+#endif
     std::size_t enabled_feature_publishers = 0;
     std::size_t coordinated_commit_owners = 0;
     for (const auto &variant : dependencies) {
@@ -1490,12 +1499,9 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
     // validated, and before anything is staged or published: the editor
     // then knows the mode was the only thing in the way and commits the
     // documents for the next start (restart_required).
-    if (first.options.judge_ray_layout_mode) {
-        if (const auto *runtime =
-                FastModuleContainer::tryGet<RayLayoutRuntimeState>()) {
-            runtime->validate(
-                rayLayoutSemanticMode(ray_tracing_project.get()));
-        }
+    if (ray_layout_runtime_state != nullptr) {
+        ray_layout_runtime_state->validate(
+            rayLayoutSemanticMode(ray_tracing_project.get()));
     }
     std::function<void(
         const RendererRuntimeGeneration &)>
@@ -1531,12 +1537,11 @@ RegisteredRenderGraphVariantFamily RegistrationStages::publish() {
     // callback to its later publication.
     auto previous_publication = std::move(coordinated_publication);
     coordinated_publication =
-        [table = output_sink_table,
+        [table = output_sink_table, sinks = output_sinks,
          previous = std::move(previous_publication)](
             const RendererRuntimeGeneration &generation) {
             if (previous) previous(generation);
-            if (auto *sinks =
-                    FastModuleContainer::tryGet<OutputSinks>()) {
+            if (sinks != nullptr) {
                 sinks->install(table);
             }
         };

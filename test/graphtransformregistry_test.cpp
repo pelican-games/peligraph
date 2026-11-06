@@ -667,10 +667,13 @@ TEST_CASE(
     release_started.acquire();
     const bool released_while_snapshot_leased =
         release_finished.try_acquire_for(150ms);
+    const auto resolved = resolveLogicalGraphTransforms(
+        graphTransformConfig(name), *compile_snapshot);
     compile_snapshot.reset();
     release_thread.join();
 
-    REQUIRE_FALSE(released_while_snapshot_leased);
+    REQUIRE(released_while_snapshot_leased);
+    REQUIRE(resolved.selections.size() == 1);
     REQUIRE(
         registry.unregisterProvider(first, owner) ==
         RenderGraphTransform::Status::

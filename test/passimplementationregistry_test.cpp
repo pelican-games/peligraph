@@ -682,7 +682,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP200 pass provider snapshot leases block owner release",
+    "WP200 pass provider snapshots own providers",
     "[render-pass][provider][lifetime][wp200]") {
     using namespace std::chrono_literals;
 
@@ -711,12 +711,19 @@ TEST_CASE(
     }};
 
     release_started.acquire();
-    const bool released_while_snapshot_leased =
+    const bool released_while_snapshot_held =
         release_finished.try_acquire_for(150ms);
+    REQUIRE(released_while_snapshot_held);
+    {
+        auto pass = fullscreenPass();
+        pass.requested_implementation_provider = std::string{name};
+        const auto resolved = compile_snapshot->resolveFullscreen(
+            pass, fullscreenNode(pass.name));
+        (void)resolved;
+        REQUIRE(state.calls == 1);
+    }
     compile_snapshot.reset();
     release_thread.join();
-
-    REQUIRE_FALSE(released_while_snapshot_leased);
     {
         const auto providers = registry.snapshot();
         auto pass = fullscreenPass();

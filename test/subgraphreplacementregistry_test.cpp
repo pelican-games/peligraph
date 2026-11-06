@@ -580,7 +580,7 @@ TEST_CASE(
 }
 
 TEST_CASE(
-    "WP201 registry lifecycle rejects stale handles and snapshots lease providers",
+    "WP201 registry lifecycle rejects stale handles and snapshots own providers",
     "[render-subgraph][provider][abi][lifetime][wp201]") {
     using namespace std::chrono_literals;
 
@@ -621,12 +621,14 @@ TEST_CASE(
         release_finished.release();
     }};
     release_started.acquire();
-    const bool released_while_snapshot_leased =
+    const bool released_while_snapshot_held =
         release_finished.try_acquire_for(150ms);
+
+    REQUIRE(released_while_snapshot_held);
+    (void)resolveTaggedSubgraphReplacements(
+        taggedRegionConfig(name), *compile_snapshot);
     compile_snapshot.reset();
     release_thread.join();
-
-    REQUIRE_FALSE(released_while_snapshot_leased);
     REQUIRE(
         registry.unregisterProvider(first, owner) ==
         RenderSubgraph::Status::stale_provider);

@@ -476,16 +476,32 @@ struct RenderStrategyRegistryState
           RenderStrategyRegistryTraits> {};
 
 struct RenderStrategyRegistrySnapshot::Impl {
-    std::shared_lock<std::shared_mutex> lock;
-    const RenderStrategyRegistryState *registry = nullptr;
+    using ProviderSlot = RenderStrategyRegistryState::ProviderSlot;
 
-    Impl(
-        std::shared_lock<std::shared_mutex>
-            registry_lock,
-        const RenderStrategyRegistryState
-            *value) noexcept
-        : lock{std::move(registry_lock)},
-          registry{value} {}
+    std::vector<ProviderSlot> providers;
+    internal::RegistrationOwner active_game_owner;
+
+    explicit Impl(const RenderStrategyRegistryState &registry)
+        : providers{registry.providers},
+          active_game_owner{registry.active_game_owner} {}
+
+    const ProviderSlot *findActiveProvider(std::string_view name) const noexcept {
+        const auto find_for_owner = [&](internal::RegistrationOwner owner) {
+            const auto found = std::find_if(
+                providers.begin(), providers.end(), [&](const ProviderSlot &slot) {
+                    return slot.active && slot.owner == owner && slot.name == name;
+                });
+            return found == providers.end() ? nullptr : &*found;
+        };
+        const ProviderSlot *selected = nullptr;
+        if (active_game_owner != internal::engineRegistrationOwner) {
+            selected = find_for_owner(active_game_owner);
+        }
+        if (selected == nullptr) {
+            selected = find_for_owner(internal::engineRegistrationOwner);
+        }
+        return selected;
+    }
 };
 
 RenderStrategyRegistrySnapshot::
@@ -516,8 +532,7 @@ RenderStrategyRegistrySnapshot::resolveStrategy(
     bool runtime_shader_compiler_enabled,
     const std::optional<std::string>
         &requested_provider) const {
-    if (impl_ == nullptr ||
-        impl_->registry == nullptr) {
+    if (impl_ == nullptr) {
         throw std::runtime_error(
             "render strategy registry snapshot is empty");
     }
@@ -552,7 +567,6 @@ RenderStrategyRegistrySnapshot::resolveStrategy(
         RenderStrategy::maximumConfigJsonBytesV1,
         "seed config JSON");
 
-    const auto &registry = *impl_->registry;
     const auto requested =
         requested_provider.value_or(
             std::string{
@@ -566,7 +580,7 @@ RenderStrategyRegistrySnapshot::resolveStrategy(
             std::string{strategy_name} + "'");
     }
     const RenderStrategyRegistryState::ProviderSlot
-        *selected = registry.findActiveProvider(requested);
+        *selected = impl_->findActiveProvider(requested);
     if (selected == nullptr) {
         throw std::runtime_error(
             "render strategy provider '" + requested +
@@ -662,7 +676,7 @@ RenderStrategyRegistrySnapshot::resolveStrategy(
 
     const auto slot_index =
         static_cast<std::uint64_t>(
-            selected - registry.providers.data());
+            selected - impl_->providers.data());
     return {
         .config_json = std::move(generated_config),
         .selection =
@@ -731,9 +745,7 @@ RenderStrategyRegistrySnapshot
 RenderStrategyRegistry::snapshot() const {
     std::shared_lock lock{impl_->mutex};
     return RenderStrategyRegistrySnapshot{
-        std::make_unique<
-            RenderStrategyRegistrySnapshot::Impl>(
-            std::move(lock), impl_.get())};
+        std::make_unique<RenderStrategyRegistrySnapshot::Impl>(*impl_)};
 }
 
 std::vector<RenderProviderListing>

@@ -746,10 +746,15 @@ TEST_CASE(
     release_started.acquire();
     const bool released_while_snapshot_leased =
         release_finished.try_acquire_for(150ms);
+    const auto resolved = resolveRenderStrategy(
+        authoredRendererConfig(name),
+        compileGraphVariantPolicy(GraphVariantPolicyRequest{}),
+        true, *compile_snapshot);
     compile_snapshot.reset();
     release_thread.join();
 
-    REQUIRE_FALSE(released_while_snapshot_leased);
+    REQUIRE(released_while_snapshot_leased);
+    REQUIRE(resolved.selection.has_value());
     REQUIRE(
         registry.unregisterProvider(first, owner) ==
         RenderStrategy::Status::stale_provider);
