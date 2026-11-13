@@ -70,6 +70,21 @@ jobs:
           # The default TEMP is an 8.3 short path (RUNNER~1); tests compare it with canonical paths.
           "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # The runner is elevated, and an elevated process's Vulkan loader ignores VK_ADD_LAYER_PATH.
+          # Register the validation layer's manifest where the loader always looks.
+          $layers = "HKLM:\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+          New-Item -Path $layers -Force | Out-Null
+          New-ItemProperty -Path $layers -Name "$env:VULKAN_SDK\Bin\VkLayer_khronos_validation.json" -PropertyType DWord -Value 0 -Force | Out-Null
+          # Some images (windows-2022) have no Vulkan loader at all; the unpacked SDK has none either.
+          if (-not (where.exe vulkan-1.dll 2>$null)) {
+            $zip = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
+            Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/1.4.309.0/windows/vulkan-runtime-components.zip?Human=true" -OutFile $zip
+            Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "vulkan-runtime") -Force
+            $loader = Get-ChildItem (Join-Path $env:RUNNER_TEMP "vulkan-runtime") -Recurse -Filter vulkan-1.dll |
+              Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+            if ($loader) { $loader.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append; "Vulkan loader: $($loader.FullName)" }
+            else { "no vulkan-1.dll in the runtime components archive"; Get-ChildItem (Join-Path $env:RUNNER_TEMP "vulkan-runtime") -Recurse | Select-Object -First 30 FullName }
+          }
           Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "VkLayer_khronos_validation*" | Select-Object Name, Length | Format-Table
           Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "*.dll" | Select-Object -First 40 Name | Format-Table
           where.exe vulkan-1.dll
@@ -168,6 +183,21 @@ jobs:
           # The default TEMP is an 8.3 short path (RUNNER~1); tests compare it with canonical paths.
           "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          # The runner is elevated, and an elevated process's Vulkan loader ignores VK_ADD_LAYER_PATH.
+          # Register the validation layer's manifest where the loader always looks.
+          $layers = "HKLM:\SOFTWARE\Khronos\Vulkan\ExplicitLayers"
+          New-Item -Path $layers -Force | Out-Null
+          New-ItemProperty -Path $layers -Name "$env:VULKAN_SDK\Bin\VkLayer_khronos_validation.json" -PropertyType DWord -Value 0 -Force | Out-Null
+          # Some images (windows-2022) have no Vulkan loader at all; the unpacked SDK has none either.
+          if (-not (where.exe vulkan-1.dll 2>$null)) {
+            $zip = Join-Path $env:RUNNER_TEMP "vulkan-runtime-components.zip"
+            Invoke-WebRequest "https://sdk.lunarg.com/sdk/download/1.4.309.0/windows/vulkan-runtime-components.zip?Human=true" -OutFile $zip
+            Expand-Archive $zip -DestinationPath (Join-Path $env:RUNNER_TEMP "vulkan-runtime") -Force
+            $loader = Get-ChildItem (Join-Path $env:RUNNER_TEMP "vulkan-runtime") -Recurse -Filter vulkan-1.dll |
+              Where-Object { $_.FullName -match 'x64' } | Select-Object -First 1
+            if ($loader) { $loader.DirectoryName | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append; "Vulkan loader: $($loader.FullName)" }
+            else { "no vulkan-1.dll in the runtime components archive"; Get-ChildItem (Join-Path $env:RUNNER_TEMP "vulkan-runtime") -Recurse | Select-Object -First 30 FullName }
+          }
           Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "VkLayer_khronos_validation*" | Select-Object Name, Length | Format-Table
           Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "*.dll" | Select-Object -First 40 Name | Format-Table
           where.exe vulkan-1.dll
