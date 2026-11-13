@@ -502,7 +502,9 @@ TEST_CASE("WP360a case 6 stores inactive behavior errors and names active bind f
     setupWp360aProject(
         sandbox, wp360aProjectJson(1000.0f, "active"), scene);
     GET_MODULE(ECSPredefinedRegistration).reg();
-    REQUIRE_NOTHROW(test_support::loadScene(GET_MODULE(SceneLoader), SceneId{"active"}));
+    // Called plainly: an exception still fails the case, and the helper can skip it on a machine with no
+    // Vulkan driver (inside REQUIRE_NOTHROW that skip would be reported as a failure).
+    test_support::loadScene(GET_MODULE(SceneLoader), SceneId{"active"});
     const auto &resolved = GET_MODULE(ProjectBasicConfig).resolvedScene();
     const auto *inactive = resolved.findScene("inactive");
     REQUIRE(inactive != nullptr);
@@ -540,7 +542,9 @@ TEST_CASE("WP378 inactive scene retains typed and legacy failures until two acti
         sandbox, wp360aProjectJson(1000.0f, "active"), scene);
     GET_MODULE(ECSPredefinedRegistration).reg();
     auto &loader = GET_MODULE(SceneLoader);
-    REQUIRE_NOTHROW(test_support::loadScene(loader, SceneId{"active"}));
+    // Called plainly: an exception still fails the case, and the helper can skip it on a machine with no
+    // Vulkan driver (inside REQUIRE_NOTHROW that skip would be reported as a failure).
+    test_support::loadScene(loader, SceneId{"active"});
 
     auto &config = GET_MODULE(ProjectBasicConfig);
     const EditorCommandService service{EditorCommandServiceDependencies{

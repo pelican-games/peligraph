@@ -82,7 +82,9 @@ TEST_CASE("PG-1 scene load refuses a collider by the physics module's name",
 
     // The scene without the collider loads, so the result below is about the
     // component and not about this build being unable to load scenes at all.
-    REQUIRE_NOTHROW(test_support::loadScene(loader, SceneId{"active"}));
+    // Called plainly: an exception still fails the case, and the helper can skip it on a machine with no
+    // Vulkan driver (inside REQUIRE_NOTHROW that skip would be reported as a failure).
+    test_support::loadScene(loader, SceneId{"active"});
     REQUIRE(loader.currentScene() == SceneId{"active"});
 
     const auto result = loader.load(SceneLoadRequest::borrowed(

@@ -124,6 +124,14 @@ jobs:
               if ($found) { "ok       $name  ($found)" } else { "MISSING  $name" }
             }
           } else { "no executable or no dumpbin: exe=$($exe.FullName) dumpbin=$($dumpbin.FullName)" }
+          # crash_symbol_archive_contract: show what the archive holds (names, sizes, the manifests' bytes).
+          cmake --version | Select-Object -First 1
+          Get-ChildItem build -Recurse -Filter manifest.txt -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'pelican_symbol_probe' } | Select-Object -First 4 | ForEach-Object {
+              "== $($_.FullName) ($($_.Length) bytes)"
+              Get-Content $_.FullName -Raw | Format-Hex | Select-Object -First 12
+              Get-ChildItem $_.DirectoryName | Select-Object Name, Length | Format-Table
+            }
           exit 0
 
       - name: Upload CI diagnostics

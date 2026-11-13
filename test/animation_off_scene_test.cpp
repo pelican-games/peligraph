@@ -84,7 +84,9 @@ TEST_CASE("a build without the animation module refuses a scene that animates",
     // The scene without the component loads, so the refusal below is about the
     // component and not about this build being unable to load scenes at all.
     // Decoding is untouched either way: both scenes came through the same codec.
-    REQUIRE_NOTHROW(test_support::loadScene(loader, SceneId{"active"}));
+    // Called plainly: an exception still fails the case, and the helper can skip it on a machine with no
+    // Vulkan driver (inside REQUIRE_NOTHROW that skip would be reported as a failure).
+    test_support::loadScene(loader, SceneId{"active"});
     REQUIRE(loader.currentScene() == SceneId{"active"});
 
     const auto result = loader.load(SceneLoadRequest::borrowed(
