@@ -3934,8 +3934,11 @@ if(NOT "${PELICAN_TEST_PROJECTS_DIR}" STREQUAL "")
     endforeach()
 endif()
 
-add_dependencies(pelican_test_png_nonuniform_check
-    ${pelican_catalog_game_logic_targets})
+# With no project corpus the list is empty, and CMake before 3.29 refuses add_dependencies with only a target (the windows-2022 runner image).
+if(pelican_catalog_game_logic_targets)
+    add_dependencies(pelican_test_png_nonuniform_check
+        ${pelican_catalog_game_logic_targets})
+endif()
 if(TARGET pelican_test_studio_player_arguments)
     add_dependencies(pelican_test_png_nonuniform_check
         pelican_test_studio_player_arguments)
