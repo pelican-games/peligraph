@@ -148,6 +148,11 @@ def run_ctest(
             errors="replace",
         )
         assert process.stdout is not None
+        # A hosted Windows runner's console is cp1252; a test name or its output can hold any character
+        # (JP-1 prints Japanese paths). The log file keeps the exact text; the console replaces what it
+        # cannot show instead of raising.
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="backslashreplace")
         for line in process.stdout:
             sys.stdout.write(line)
             log.write(line)
