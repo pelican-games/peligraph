@@ -21,9 +21,13 @@ inline void loadScene(SceneLoader &loader, SceneId scene_id) {
             loader.load(std::move(request)));
     } catch (const std::exception &error) {
         // A scene load creates a Vulkan instance. A machine with no Vulkan driver at all (a hosted CI
-        // runner) cannot do that: vk::createInstanceUnique reports ErrorIncompatibleDriver. The case is
-        // skipped there, by name (test/ci/cpu_skip_allowlist.txt); every other failure is still a failure.
-        if (std::string_view{error.what()}.find("ErrorIncompatibleDriver") != std::string_view::npos) {
+        // runner) cannot do that: vk::createInstanceUnique reports ErrorIncompatibleDriver, or, when a
+        // window is involved, GLFW finds no surface extensions (glfwGetRequiredInstanceExtensions failed).
+        // The case is skipped there, by name (test/ci/cpu_skip_allowlist.txt); every other failure is
+        // still a failure.
+        const std::string_view what{error.what()};
+        if (what.find("ErrorIncompatibleDriver") != std::string_view::npos ||
+            what.find("glfwGetRequiredInstanceExtensions failed") != std::string_view::npos) {
             SKIP("no Vulkan driver on this machine: a scene load creates a Vulkan instance");
         }
         throw;
