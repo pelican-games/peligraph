@@ -336,6 +336,10 @@ struct ProjectSandbox {
         root = std::filesystem::temp_directory_path() / ("pelican_play_controls_" + suffix);
         std::filesystem::create_directories(root / "scenes");
         std::filesystem::create_directories(root / "config");
+        // The temporary directory can be an alias of the real path (a short 8.3 name on a hosted
+        // Windows runner, a junction). Studio opens a project by its canonical root, and the rig
+        // hands the same root to the viewport, so the sandbox uses the canonical form too.
+        root = std::filesystem::canonical(root);
         write("project.json", R"json({
   "schema":"pelican.project","version":1,"name":"pm3a",
   "basic_config":{"scene_data_json":"scenes/main.scene.json"}

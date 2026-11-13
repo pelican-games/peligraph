@@ -6,6 +6,9 @@ on:
     branches:
       - develop
       - main
+      # Temporary: branches used to bring the hosted checks back to green.
+      - "ci/**"
+  workflow_dispatch:
 
 concurrency:
   group: cpu-gate-${{ github.event.pull_request.number || github.ref }}
@@ -16,8 +19,13 @@ permissions:
 
 jobs:
   windows-msvc:
-    name: Windows MSVC / GPU-free CTest
-    runs-on: windows-latest
+    name: Windows MSVC / GPU-free CTest (${{ matrix.os }})
+    # windows-2022 has Visual Studio 2022; windows-latest has the newest Visual Studio. Both must build.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-2022, windows-latest]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     env:
       CMAKE_BUILD_PARALLEL_LEVEL: 4
@@ -74,7 +82,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: cpu-gate-${{ github.run_id }}-${{ github.run_attempt }}
+          name: cpu-gate-${{ matrix.os }}-${{ github.run_id }}-${{ github.run_attempt }}
           if-no-files-found: warn
           retention-days: 14
           path: |

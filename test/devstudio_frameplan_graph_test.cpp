@@ -351,6 +351,13 @@ Json animgraphFramePlan(
         variant != Pelican::RenderPipelineGraphVariant::preview);
 }
 
+// Without the runtime shader compiler exampleFramePlan() resolves the example with no features, so the
+// targets those features declare (the bloom chain, ...) are absent. A case that selects those targets or
+// switches a feature needs the compiler; the Studio CI lane builds without it and lists these cases in
+// test/ci/studio_skip_allowlist.txt.
+bool exampleFeaturesResolve() { return PELICAN_RUNTIME_SHADER_COMPILER != 0; }
+constexpr const char *ExampleFeaturesSkipReason =
+    "WP318 the example's feature targets exist only with the runtime shader compiler";
 Json exampleFramePlan(bool ui_enabled) {
     // P-2a-4b: the shipping project is a `pelican.graph` root, so the edits
     // below go through the production section locator. The document handed to
@@ -5162,6 +5169,7 @@ TEST_CASE(
 TEST_CASE(
     "WP318 every example target stays within five direct nodes and named depths are exact",
     "[devstudio][frame-plan][target-subtree][wp318]") {
+    if (!exampleFeaturesResolve()) SKIP(ExampleFeaturesSkipReason);
     (void)application();
     Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
@@ -5844,6 +5852,7 @@ TEST_CASE(
 TEST_CASE(
     "WP318 selected target preserves every WP307 physical fact and scopes both alias outcomes",
     "[devstudio][frame-plan][physical-overlay][target][wp318]") {
+    if (!exampleFeaturesResolve()) SKIP(ExampleFeaturesSkipReason);
     (void)application();
     Json wire = capturedRuntimeFramePlan();
     wire["runtime_resolution"] =
@@ -6037,6 +6046,7 @@ TEST_CASE(
 TEST_CASE(
     "WP318 flat compiler feature toggle purges removed subtree nodes in one widget",
     "[devstudio][frame-plan][target-subtree][feature-toggle][wp318]") {
+    if (!exampleFeaturesResolve()) SKIP(ExampleFeaturesSkipReason);
     (void)application();
     CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER, PELICAN_WITH_IMGUI);
 #if !PELICAN_RUNTIME_SHADER_COMPILER
@@ -6186,6 +6196,7 @@ TEST_CASE(
 TEST_CASE(
     "WP318 compiler feature removal purges target subtree selection and physical details in one widget",
     "[devstudio][frame-plan][target-subtree][purge][wp318]") {
+    if (!exampleFeaturesResolve()) SKIP(ExampleFeaturesSkipReason);
     (void)application();
     CAPTURE(PELICAN_RUNTIME_SHADER_COMPILER, PELICAN_WITH_IMGUI);
     const Json enabled = animgraphFramePlan(

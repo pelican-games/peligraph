@@ -3,3 +3,7 @@
 # For a compiler-ON local run, pass --allowlist with an empty file.
 WP344 shipped planar prefilter region collapses and opens through the production path
 WP348 cube capture measures the non-degenerate view-family loop on the production path
+WP318 every example target stays within five direct nodes and named depths are exact
+WP318 selected target preserves every WP307 physical fact and scopes both alias outcomes
+WP318 flat compiler feature toggle purges removed subtree nodes in one widget
+WP318 compiler feature removal purges target subtree selection and physical details in one widget
