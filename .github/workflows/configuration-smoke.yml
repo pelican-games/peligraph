@@ -60,6 +60,21 @@ jobs:
           version: 1.4.309.0
           cache: true
 
+      - name: Make the SDK's layers and DLLs visible; use a long temporary path
+        shell: pwsh
+        run: |
+          # The hosted image has no installed Vulkan runtime: the validation layer and the SDK's DLLs
+          # exist only inside the unpacked SDK, and a Debug build asks for the validation layer by default.
+          "VK_ADD_LAYER_PATH=$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # The default TEMP is an 8.3 short path (RUNNER~1); tests compare it with canonical paths.
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "VkLayer_khronos_validation*" | Select-Object Name, Length | Format-Table
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "*.dll" | Select-Object -First 40 Name | Format-Table
+          where.exe vulkan-1.dll
+          exit 0
+
       - name: Set up Python
         if: matrix.kind == 'build-unit'
         uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
@@ -142,6 +157,21 @@ jobs:
         with:
           version: 1.4.309.0
           cache: true
+
+      - name: Make the SDK's layers and DLLs visible; use a long temporary path
+        shell: pwsh
+        run: |
+          # The hosted image has no installed Vulkan runtime: the validation layer and the SDK's DLLs
+          # exist only inside the unpacked SDK, and a Debug build asks for the validation layer by default.
+          "VK_ADD_LAYER_PATH=$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # The default TEMP is an 8.3 short path (RUNNER~1); tests compare it with canonical paths.
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "VkLayer_khronos_validation*" | Select-Object Name, Length | Format-Table
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "*.dll" | Select-Object -First 40 Name | Format-Table
+          where.exe vulkan-1.dll
+          exit 0
 
       - name: Prepare logs
         shell: pwsh

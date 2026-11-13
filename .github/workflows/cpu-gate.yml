@@ -45,6 +45,21 @@ jobs:
           version: 1.4.309.0
           cache: true
 
+      - name: Make the SDK's layers and DLLs visible; use a long temporary path
+        shell: pwsh
+        run: |
+          # The hosted image has no installed Vulkan runtime: the validation layer and the SDK's DLLs
+          # exist only inside the unpacked SDK, and a Debug build asks for the validation layer by default.
+          "VK_ADD_LAYER_PATH=$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # The default TEMP is an 8.3 short path (RUNNER~1); tests compare it with canonical paths.
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "VkLayer_khronos_validation*" | Select-Object Name, Length | Format-Table
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "*.dll" | Select-Object -First 40 Name | Format-Table
+          where.exe vulkan-1.dll
+          exit 0
+
       - name: Prepare logs
         shell: pwsh
         run: New-Item -ItemType Directory -Force build/ci-artifacts | Out-Null
@@ -77,6 +92,24 @@ jobs:
           --build-dir build
           --config Debug
           --artifacts-dir build/ci-artifacts
+
+      - name: Name the DLL a test executable cannot find
+        if: failure()
+        shell: pwsh
+        run: |
+          # A test executable that exits with 0xc0000135 at discovery lacks a DLL; Windows does not say which.
+          $exe = Get-ChildItem build -Recurse -Filter pelican_test_gp2_spawn_test.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+          $dumpbin = Get-ChildItem "C:\Program Files\Microsoft Visual Studio" -Recurse -Filter dumpbin.exe -ErrorAction SilentlyContinue |
+            Where-Object { $_.FullName -match 'Hostx64\\x64' } | Select-Object -First 1
+          if ($exe -and $dumpbin) {
+            & $dumpbin.FullName /dependents $exe.FullName | Select-String '^\s+\S+\.dll\s*$' | ForEach-Object {
+              $name = $_.ToString().Trim()
+              $found = (where.exe $name 2>$null | Select-Object -First 1)
+              if (-not $found -and (Test-Path (Join-Path $exe.DirectoryName $name))) { $found = "next to the executable" }
+              if ($found) { "ok       $name  ($found)" } else { "MISSING  $name" }
+            }
+          } else { "no executable or no dumpbin: exe=$($exe.FullName) dumpbin=$($dumpbin.FullName)" }
+          exit 0
 
       - name: Upload CI diagnostics
         if: always()
@@ -111,6 +144,21 @@ jobs:
         with:
           version: 1.4.309.0
           cache: true
+
+      - name: Make the SDK's layers and DLLs visible; use a long temporary path
+        shell: pwsh
+        run: |
+          # The hosted image has no installed Vulkan runtime: the validation layer and the SDK's DLLs
+          # exist only inside the unpacked SDK, and a Debug build asks for the validation layer by default.
+          "VK_ADD_LAYER_PATH=$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "$env:VULKAN_SDK\Bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          # The default TEMP is an 8.3 short path (RUNNER~1); tests compare it with canonical paths.
+          "TEMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "TMP=$env:RUNNER_TEMP" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "VkLayer_khronos_validation*" | Select-Object Name, Length | Format-Table
+          Get-ChildItem "$env:VULKAN_SDK\Bin" -Filter "*.dll" | Select-Object -First 40 Name | Format-Table
+          where.exe vulkan-1.dll
+          exit 0
 
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
