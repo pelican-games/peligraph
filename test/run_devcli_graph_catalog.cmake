@@ -1,3 +1,5 @@
+# Policies of a -P script: see cmake/verify_feature_registry.cmake.
+cmake_minimum_required(VERSION 3.20)
 # AG-0: the shipped CLI prints the module catalog. Discovery goes through the
 # production entry point, not through a helper the test calls itself.
 if(NOT DEFINED CLI OR NOT EXISTS "${CLI}")

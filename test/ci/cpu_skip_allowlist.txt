@@ -5,3 +5,27 @@ PathResolver rejects symlink escapes after canonicalization
 # The Debug CRT reports only exist in Debug builds. In Release the probe reports
 # CRT_PROBE_SKIPPED; Debug must execute it and pass (TI-1).
 crt_report_to_stderr
+#
+# These cases load a scene, and a scene load creates a Vulkan instance. A machine with no Vulkan
+# driver at all (a hosted runner) reports ErrorIncompatibleDriver there, and the shared helper
+# test/scene_load_test_support.hpp skips the case. With a driver they run and must pass.
+AU-1 a scene change stops the graph's voices and a time-clocked BGM carries on
+CT-1 get_status lists each graph voice's state and position, the same on the null backend
+GP-1 a game DLL resolves objects by name and reads world transforms
+GP-1 a runtime world write on a parented object survives the transform update
+GP-1 a scene without parents gives every transform a localtransform
+GP-2 a spawn inside a behavior callback and one outside land the same way
+GP-2 a spawn the engine cannot carry out is refused at the call by name
+GP-2 a spawned object is not saved and ends with its scene run
+GP-2 a spawned prefab passes the build-feature gate a scene load asks
+GP-2 a spawned prefab's collider and behavior live from the next boundary until its destroy
+GP-2 the same input in two runs of a scene gives the same attachment identifiers
+GP-2b a spawn name in a form the engine gives is refused by name
+GP-4 screenRay through the screen centre hits the collider in front of a moved and turned camera
+OL-1 an owner keeps its object after duplicating and inserting before it, saving and reopening
+PG-1 scene load refuses a collider by the physics module's name
+PM-1a a paused frame runs no game code and lands no spawn, and the editor systems still run
+Saving after removing an earlier object preserves the graph owner on reopen
+WP360a case 6 stores inactive behavior errors and names active bind failures
+WP378 inactive scene retains typed and legacy failures until two active loads
+an unmatched graph instance owner is named once per graph generation
