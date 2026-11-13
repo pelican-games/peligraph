@@ -1,3 +1,8 @@
+# This file runs as a -P script after each link. A -P script starts with every policy unset, which
+# before CMake 4 means OLD: while(TRUE) is then not a loop (the generation number stayed empty and each
+# build overwrote the one archived before it).
+cmake_minimum_required(VERSION 3.20)
+
 if(NOT PELICAN_ARCHIVE_CONFIG STREQUAL "Debug")
   return()
 endif()
